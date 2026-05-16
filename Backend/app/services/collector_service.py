@@ -1,0 +1,145 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import AgentPositionTrail, Defect, GameEvent, NotableEventScreenshot
+from app.repositories.defect_repository import DefectRepository
+from app.repositories.game_event_repository import GameEventRepository
+
+
+class CollectorService:
+    def __init__(self, db: AsyncSession) -> None:
+        self.db = db
+        self.repo = GameEventRepository(db)
+        self._previous: dict[str, Any] | None = None
+        self._stuck_count = 0
+
+    async def collect(
+        self,
+        run_id: UUID,
+        tick: int,
+        state: dict[str, Any],
+        llm_input: dict[str, Any],
+        decision: dict[str, Any],
+        mcp_response_summary: str,
+    ) -> GameEvent:
+        variables = normalize_variables(state)
+        event_type = self.detect_event(variables)
+        action_taken = {
+            "mcp_tool": decision.get("mcp_tool"),
+            "mcp_params": decision.get("mcp_params") or {},
+            "mcp_response_summary": mcp_response_summary,
+        }
+        event = GameEvent(
+            run_id=run_id,
+            tick_number=tick,
+            player_x=float(variables["x"]),
+            player_y=float(variables["y"]),
+            player_angle=int(variables["angle"]),
+            health=int(variables["health"]),
+            armor=int(variables["armor"]),
+            ammo_bullets=int(variables["ammo_bullets"]),
+            ammo_shells=int(variables["ammo_shells"]),
+            ammo_rockets=int(variables["ammo_rockets"]),
+            ammo_cells=int(variables["ammo_cells"]),
+            kill_count=int(variables["kill_count"]),
+            item_count=int(variables["item_count"]),
+            secret_count=int(variables["secret_count"]),
+            weapon_selected=int(variables["weapon_selected"]),
+            event_type=event_type,
+            damage_received=variables.get("damage_received"),
+            llm_input_summary=json.dumps(llm_input, default=str)[:12000],
+            llm_reasoning=decision.get("reasoning_summary"),
+            action_taken=action_taken,
+        )
+        event = await self.repo.create_event(event)
+        if tick % 10 == 0:
+            await self.repo.create_position(
+                AgentPositionTrail(
+                    run_id=run_id,
+                    tick_number=tick,
+                    x=event.player_x,
+                    y=event.player_y,
+                    health=event.health,
+                )
+            )
+        issue = decision.get("observed_issue")
+        if issue:
+            await DefectRepository(self.db).create(
+                Defect(
+                    run_id=run_id,
+                    severity=2,
+                    priority=2,
+                    defect_type="agent_observed",
+                    title="Agent-observed issue",
+                    description=str(issue),
+                    detected_at_tick=tick,
+                    position_x=event.player_x,
+                    position_y=event.player_y,
+                )
+            )
+        self._previous = variables
+        return event
+
+    async def attach_screenshot(self, run_id: UUID, event: GameEvent, screenshot_path: str) -> None:
+        await self.repo.create_screenshot(
+            NotableEventScreenshot(run_id=run_id, game_event_id=event.id, screenshot_path=screenshot_path)
+        )
+
+    def detect_event(self, current: dict[str, Any]) -> str:
+        if current.get("level_completed") or current.get("map_exit"):
+            return "map_exit"
+        previous = self._previous
+        if current["health"] <= 0:
+            return "death"
+        if previous is None:
+            return "normal"
+        if current["kill_count"] > previous["kill_count"]:
+            return "kill"
+        if current["secret_count"] > previous["secret_count"]:
+            return "secret_found"
+        if current["item_count"] > previous["item_count"]:
+            return "item_pickup"
+        if current["health"] < previous["health"]:
+            current["damage_received"] = previous["health"] - current["health"]
+            return "damage_taken"
+        if abs(current["x"] - previous["x"]) < 1 and abs(current["y"] - previous["y"]) < 1:
+            self._stuck_count += 1
+            if self._stuck_count >= 30:
+                return "stuck"
+        else:
+            self._stuck_count = 0
+        return "normal"
+
+
+def normalize_variables(state: dict[str, Any]) -> dict[str, Any]:
+    variables = state.get("game_variables") or state.get("variables") or state
+
+    def num(*keys: str, default: float = 0) -> float:
+        for key in keys:
+            if key in variables and variables[key] is not None:
+                return variables[key]
+        return default
+
+    normalized = {
+        "x": num("POSITION_X", "position_x", "x"),
+        "y": num("POSITION_Y", "position_y", "y"),
+        "angle": num("ANGLE", "angle", "player_angle"),
+        "health": num("HEALTH", "health"),
+        "armor": num("ARMOR", "armor"),
+        "ammo_bullets": num("AMMO0", "ammo_bullets", "bullets"),
+        "ammo_shells": num("AMMO1", "ammo_shells", "shells"),
+        "ammo_rockets": num("AMMO2", "ammo_rockets", "rockets"),
+        "ammo_cells": num("AMMO3", "ammo_cells", "cells"),
+        "kill_count": num("KILLCOUNT", "kill_count", "kills"),
+        "item_count": num("ITEMCOUNT", "item_count", "items"),
+        "secret_count": num("SECRETCOUNT", "secret_count", "secrets"),
+        "weapon_selected": num("SELECTED_WEAPON", "weapon_selected"),
+    }
+    normalized["level_completed"] = bool(state.get("level_completed") or state.get("next_map"))
+    normalized["map_exit"] = bool(state.get("map_exit"))
+    return normalized

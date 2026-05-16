@@ -1,0 +1,8 @@
+{
+  "servers": {
+    "doom": {
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["-m", "doom_mcp"]
+    }
+  }
+}
