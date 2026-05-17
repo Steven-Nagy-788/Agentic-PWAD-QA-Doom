@@ -171,6 +171,31 @@ def test_load_freedoom1_map(manager):
     assert state["episode_finished"] is False
 
 
+def test_custom_map_normalizes_player_one_starts(manager, monkeypatch):
+    import os
+
+    import doom_mcp.game_manager as game_manager
+    from doom_mcp.game_manager import _wad_map_player_one_start_count
+
+    no_start_wad = os.path.abspath("../Backend/storage/wads/a08955ed-e988-4de9-b553-3ba8476c037e.wad")
+    multi_start_wad = os.path.abspath("../Backend/storage/wads/a2c3fe65-0427-4d17-b88c-0c3fbaf9f1ed.wad")
+    valid_wad = os.path.abspath("../Backend/storage/wads/e90e40b9-1f1e-49a0-a473-c91fdc069b61.wad")
+
+    assert _wad_map_player_one_start_count(no_start_wad, "MAP01") == 0
+    assert _wad_map_player_one_start_count(multi_start_wad, "E1M1") == 3
+    assert _wad_map_player_one_start_count(valid_wad, "E1M1") == 1
+
+    result = manager.start(wad="freedoom2", scenario_wad=no_start_wad, map_name="MAP01")
+    assert result["status"] == "running"
+    state = manager.get_state()
+    assert state["episode_finished"] is False
+    manager.stop()
+
+    monkeypatch.setattr(game_manager, "_PREFLIGHT_TIMEOUT_SECONDS", 1.0)
+    with pytest.raises(ToolError, match="could not be loaded safely"):
+        manager.start(wad="freedoom1", scenario_wad=multi_start_wad, map_name="E1M1")
+
+
 def test_campaign_auto_advance(manager):
     """When player completes a level (not dead), new_episode advances to next map."""
     manager.start(wad="freedoom2", map_name="MAP01", episode_timeout=5)

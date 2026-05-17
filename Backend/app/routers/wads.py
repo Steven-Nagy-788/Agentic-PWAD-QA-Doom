@@ -38,7 +38,11 @@ async def get_wad_maps(wad_id: UUID, db: AsyncSession = Depends(get_db)) -> list
     return await WadService(db).maps(wad_id)
 
 
-@router.get("/{wad_id}/map-png")
+@router.get(
+    "/{wad_id}/map-png",
+    responses={200: {"content": {"image/png": {}}, "description": "Map overview PNG"}},
+    response_class=FileResponse,
+)
 async def get_map_png(
     wad_id: UUID,
     map_name: str | None = None,

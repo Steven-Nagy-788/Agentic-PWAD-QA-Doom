@@ -3,7 +3,11 @@
 import contextlib
 import math
 import os
+import shutil
+import struct
+import subprocess
 import sys
+import tempfile
 import threading
 from contextlib import contextmanager
 
@@ -36,6 +40,7 @@ _STUCK_THRESHOLD = 15.0   # map units - min spread to not be stuck
 _ARRIVE_DISTANCE = 64.0   # map units - close enough for move_to
 _ENEMY_ALERT_DIST = 800.0 # map units - enemy proximity alert
 _AIM_TOLERANCE = 3.0      # degrees - close enough to fire
+_PREFLIGHT_TIMEOUT_SECONDS = 15.0
 
 
 def _filter_objects(objects: list[dict]) -> list[dict]:
@@ -167,6 +172,118 @@ def _next_map(current: str) -> str | None:
     return None
 
 
+def _wad_map_start_info(wad_path: str, map_name: str) -> dict:
+    """Return start thing positions for a Doom-format WAD map."""
+    target = map_name.upper()
+    with open(wad_path, "rb") as wad_file:
+        header = wad_file.read(12)
+        if len(header) != 12:
+            raise ToolError(f"Invalid WAD header in {wad_path!r}")
+        magic, lump_count, directory_offset = struct.unpack("<4sii", header)
+        if magic not in {b"IWAD", b"PWAD"} or lump_count < 0 or directory_offset < 0:
+            raise ToolError(f"Invalid WAD header in {wad_path!r}")
+
+        wad_file.seek(directory_offset)
+        directory = []
+        for _ in range(lump_count):
+            entry = wad_file.read(16)
+            if len(entry) != 16:
+                raise ToolError(f"Invalid WAD directory in {wad_path!r}")
+            offset, size, raw_name = struct.unpack("<ii8s", entry)
+            name = raw_name.rstrip(b"\0").decode("ascii", errors="ignore").upper()
+            directory.append((name, offset, size))
+
+        for index, (name, _, _) in enumerate(directory):
+            if name != target:
+                continue
+            if index + 1 >= len(directory) or directory[index + 1][0] != "THINGS":
+                return {"player_one": [], "deathmatch": []}
+            _, things_offset, things_size = directory[index + 1]
+            if things_size < 10 or things_size % 10 != 0:
+                return {"player_one": [], "deathmatch": []}
+            wad_file.seek(things_offset)
+            things = wad_file.read(things_size)
+            player_starts = []
+            player_one = []
+            deathmatch = []
+            for pos in range(0, len(things), 10):
+                _, _, _, thing_type, _ = struct.unpack_from("<hhhhh", things, pos)
+                if thing_type in {1, 2, 3, 4}:
+                    player_starts.append(things_offset + pos)
+                if thing_type == 1:
+                    player_one.append(things_offset + pos)
+                elif thing_type == 11:
+                    deathmatch.append(things_offset + pos)
+            return {"player_starts": player_starts, "player_one": player_one, "deathmatch": deathmatch}
+
+    raise ToolError(f"Map {target} not found in WAD {wad_path!r}")
+
+
+def _wad_map_player_one_start_count(wad_path: str, map_name: str) -> int:
+    """Return the number of Player 1 start things in a Doom-format WAD map."""
+    return len(_wad_map_start_info(wad_path, map_name)["player_one"])
+
+
+def _assert_wad_loadable(
+    base_wad_path: str,
+    scenario_wad_path: str,
+    map_name: str | None,
+    screen_resolution: str,
+) -> None:
+    """Run ViZDoom init in a child process so bad maps cannot kill the server."""
+    if not map_name:
+        return
+    script = """
+import contextlib
+import sys
+import vizdoom as vzd
+
+base_wad, scenario_wad, map_name, screen_resolution = sys.argv[1:5]
+game = vzd.DoomGame()
+game.set_doom_game_path(base_wad)
+game.add_game_args(f"-file {scenario_wad}")
+game.set_doom_map(map_name)
+game.set_screen_format(vzd.ScreenFormat.RGB24)
+game.set_screen_resolution(getattr(vzd.ScreenResolution, screen_resolution))
+game.set_objects_info_enabled(True)
+game.set_labels_buffer_enabled(True)
+game.set_depth_buffer_enabled(True)
+game.set_sectors_info_enabled(True)
+game.set_automap_buffer_enabled(True)
+game.set_automap_mode(vzd.AutomapMode.OBJECTS_WITH_SIZE)
+game.set_automap_rotate(False)
+game.set_episode_start_time(14)
+game.set_window_visible(False)
+game.set_mode(vzd.Mode.PLAYER)
+game.set_doom_skill(3)
+game.set_render_hud(False)
+with contextlib.redirect_stdout(sys.stderr):
+    game.init()
+game.close()
+"""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script, base_wad_path, scenario_wad_path, map_name, screen_resolution],
+            capture_output=True,
+            text=True,
+            timeout=_PREFLIGHT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ToolError(
+            f"Map {map_name.upper()} could not be loaded safely by ViZDoom "
+            f"(preflight timed out after {exc.timeout:g}s)."
+        ) from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        if len(detail) > 500:
+            detail = detail[-500:]
+        raise ToolError(
+            f"Map {map_name.upper()} could not be loaded safely by ViZDoom "
+            f"(preflight exit code {result.returncode}). {detail}"
+        )
+
+
 class GameManager:
     """Manages a single ViZDoom game instance."""
 
@@ -179,6 +296,7 @@ class GameManager:
         self._current_map: str | None = None
         self._async: bool = False
         self._recording_path: str | None = None
+        self._runtime_wad_path: str | None = None
         self._nav_memory = NavigationMemory()
         self._game_lock = threading.Lock()
         self._executor: AutonomousExecutor | None = None
@@ -229,6 +347,51 @@ class GameManager:
             f"WAD not found: {wad!r}. Use 'freedoom1', 'freedoom2', "
             f"or an absolute path to a .wad file."
         )
+
+    def _prepare_single_player_wad(self, wad_path: str, map_name: str | None) -> str:
+        """Return a WAD path with exactly one Player 1 start for this map."""
+        if not map_name:
+            return wad_path
+        start_info = _wad_map_start_info(wad_path, map_name)
+        player_starts = start_info["player_starts"]
+        player_one_starts = start_info["player_one"]
+        deathmatch_starts = start_info["deathmatch"]
+        if len(player_one_starts) == 1 and len(player_starts) == 1:
+            return wad_path
+        if not player_starts and not deathmatch_starts:
+            raise ToolError(
+                f"Map {map_name.upper()} in {wad_path!r} has no Player 1 or deathmatch starts. "
+                "Single-player ViZDoom runs need a start position."
+            )
+
+        handle = tempfile.NamedTemporaryFile(
+            prefix="doom_mcp_",
+            suffix=f"_{map_name.upper()}.wad",
+            delete=False,
+        )
+        handle.close()
+        runtime_path = handle.name
+        shutil.copy2(wad_path, runtime_path)
+
+        with open(runtime_path, "r+b") as runtime_wad:
+            chosen_start = player_one_starts[0] if player_one_starts else (
+                player_starts[0] if player_starts else deathmatch_starts[0]
+            )
+            runtime_wad.seek(chosen_start + 6)
+            runtime_wad.write(struct.pack("<h", 1))
+
+            for start_offset in player_starts:
+                if start_offset == chosen_start:
+                    continue
+                runtime_wad.seek(start_offset + 6)
+                runtime_wad.write(struct.pack("<h", 11))
+
+            if chosen_start in deathmatch_starts:
+                runtime_wad.seek(chosen_start + 6)
+                runtime_wad.write(struct.pack("<h", 1))
+
+        self._runtime_wad_path = runtime_path
+        return runtime_path
 
     def _get_player_pos(self, game: vzd.DoomGame) -> tuple[float, float, float]:
         """Get player position and angle for computing relative object info."""
@@ -372,6 +535,15 @@ class GameManager:
                     raise ToolError(
                         f"PWAD not found: {scenario_wad!r}. Provide an absolute path to a .wad file."
                     )
+                try:
+                    scenario_wad = self._prepare_single_player_wad(scenario_wad, map_name)
+                    _assert_wad_loadable(base_path, scenario_wad, map_name, screen_resolution)
+                except Exception:
+                    if self._runtime_wad_path is not None:
+                        with contextlib.suppress(OSError):
+                            os.unlink(self._runtime_wad_path)
+                        self._runtime_wad_path = None
+                    raise
                 game.add_game_args(f"-file {scenario_wad}")
 
             if map_name:
@@ -488,6 +660,10 @@ class GameManager:
             self._current_map = None
             self._async = False
             self._recording_path = None
+        if self._runtime_wad_path is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(self._runtime_wad_path)
+            self._runtime_wad_path = None
         return {"status": "stopped"}
 
     def new_episode(self, recording_path: str | None = None) -> dict:

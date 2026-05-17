@@ -34,6 +34,8 @@ class CollectorService:
             "mcp_params": decision.get("mcp_params") or {},
             "mcp_response_summary": mcp_response_summary,
         }
+        if decision.get("recording_fidelity_warning"):
+            action_taken["recording_fidelity_warning"] = decision["recording_fidelity_warning"]
         event = GameEvent(
             run_id=run_id,
             tick_number=tick,
@@ -57,16 +59,15 @@ class CollectorService:
             action_taken=action_taken,
         )
         event = await self.repo.create_event(event)
-        if tick % 10 == 0:
-            await self.repo.create_position(
-                AgentPositionTrail(
-                    run_id=run_id,
-                    tick_number=tick,
-                    x=event.player_x,
-                    y=event.player_y,
-                    health=event.health,
-                )
+        await self.repo.create_position(
+            AgentPositionTrail(
+                run_id=run_id,
+                tick_number=tick * 1000 + 999,
+                x=event.player_x,
+                y=event.player_y,
+                health=event.health,
             )
+        )
         issue = decision.get("observed_issue")
         if issue:
             await DefectRepository(self.db).create(
@@ -84,6 +85,18 @@ class CollectorService:
             )
         self._previous = variables
         return event
+
+    async def collect_position(self, run_id: UUID, tick_number: int, state: dict[str, Any]) -> None:
+        variables = normalize_variables(state)
+        await self.repo.create_position(
+            AgentPositionTrail(
+                run_id=run_id,
+                tick_number=tick_number,
+                x=float(variables["x"]),
+                y=float(variables["y"]),
+                health=int(variables["health"]),
+            )
+        )
 
     async def attach_screenshot(self, run_id: UUID, event: GameEvent, screenshot_path: str) -> None:
         await self.repo.create_screenshot(

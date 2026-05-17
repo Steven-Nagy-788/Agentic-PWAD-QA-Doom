@@ -57,12 +57,15 @@ class Settings:
         )
 
         self.iwad_used = os.getenv("IWAD_USED", "freedoom2")
-        self.llm_model = os.getenv("LLM_MODEL", "gemini-2.5-flash")
+        self.llm_model = os.getenv("LLM_MODEL", "gemini-2.5-flash-lite")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+        self.llm_throttle_seconds = float(os.getenv("LLM_THROTTLE_SECONDS", "12"))
+        self.gemini_retry_max_delay_seconds = float(os.getenv("GEMINI_RETRY_MAX_DELAY_SECONDS", "20"))
         self.mcp_doom_sse_url = os.getenv("MCP_DOOM_SSE_URL", "http://localhost:8001/sse")
         self.max_run_ticks = int(os.getenv("MAX_RUN_TICKS", "35000"))
         self.default_run_ticks = int(os.getenv("DEFAULT_RUN_TICKS", "3000"))
         self.live_frame_fps = float(os.getenv("LIVE_FRAME_FPS", "2"))
+        self.recording_telemetry_stride = int(os.getenv("RECORDING_TELEMETRY_STRIDE", "1"))
         self.cors_origins = [
             origin.strip()
             for origin in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")

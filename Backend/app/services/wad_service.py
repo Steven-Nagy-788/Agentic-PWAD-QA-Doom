@@ -12,7 +12,12 @@ from app.models import WadFile
 from app.repositories.wad_repository import WadRepository
 from app.repositories.analysis_repository import AnalysisRepository
 from app.serializers.wad_serializers import WadMapOut
-from app.services.analysis_service import AnalysisService, detect_iwad_requirement, detect_map_names
+from app.services.analysis_service import (
+    AnalysisService,
+    detect_iwad_requirement,
+    detect_map_names,
+    player_start_counts,
+)
 
 
 class WadService:
@@ -43,6 +48,27 @@ class WadService:
         if not map_names:
             stored_path.unlink(missing_ok=True)
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "PWAD contains no supported Doom maps")
+
+        start_counts = {
+            map_name: player_start_counts(str(stored_path), map_name)
+            for map_name in map_names
+        }
+        unplayable_maps = [
+            map_name
+            for map_name, counts in start_counts.items()
+            if counts["player_one"] == 0 and counts["deathmatch"] == 0
+        ]
+        if unplayable_maps:
+            stored_path.unlink(missing_ok=True)
+            maps = ", ".join(
+                f"{map_name} (no Player 1 or deathmatch starts)"
+                for map_name in unplayable_maps
+            )
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Map(s) {maps} are not valid for QA runs. "
+                "Each map must have a Player 1 start or a deathmatch start that can be normalized.",
+            )
 
         wad_file = WadFile(
             id=wad_id,

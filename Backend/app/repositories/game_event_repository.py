@@ -42,6 +42,8 @@ class GameEventRepository:
         query = select(GameEvent).where(GameEvent.run_id == run_id)
         if event_types:
             query = query.where(GameEvent.event_type.in_(event_types))
+        else:
+            query = query.where(GameEvent.event_type != "normal")
         result = await self.db.execute(query.order_by(GameEvent.tick_number))
         return list(result.scalars().all())
 

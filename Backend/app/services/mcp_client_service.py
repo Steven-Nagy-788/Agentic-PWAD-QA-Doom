@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 from typing import Any
 
@@ -93,6 +94,3 @@ def normalize_mcp_state(result: Any) -> tuple[dict[str, Any], bytes | None]:
         elif hasattr(item, "structured_content") and isinstance(item.structured_content, dict):
             state = item.structured_content
     return state, screenshot
-
-
-import contextlib

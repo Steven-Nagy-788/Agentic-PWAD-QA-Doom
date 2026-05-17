@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.repositories.report_repository import ReportRepository
-from app.serializers.report_serializers import ReportOut
+from app.repositories.run_repository import RunRepository
+from app.serializers.report_serializers import ReportOut, ReportStatusOut
 from app.services.report_service import ReportService
 
 router = APIRouter(prefix="/runs", tags=["Reports"])
@@ -24,11 +25,43 @@ async def get_report(run_id: UUID, db: AsyncSession = Depends(get_db)) -> Report
     return report
 
 
-@router.get("/{run_id}/report/pdf")
+@router.get("/{run_id}/report/status", response_model=ReportStatusOut)
+async def get_report_status(run_id: UUID, db: AsyncSession = Depends(get_db)) -> ReportStatusOut:
+    run = await RunRepository(db).get_by_id(run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
+    report = await ReportRepository(db).get_by_run(run_id)
+    if report is None:
+        terminal = run.status in {"completed", "cancelled", "failed"}
+        return ReportStatusOut(status="missing" if terminal else "generating")
+    pdf_available = bool(report.pdf_path and Path(report.pdf_path).exists())
+    status_value = report.generation_status
+    if status_value == "complete" and not pdf_available:
+        status_value = "missing"
+    return ReportStatusOut(
+        status=status_value,
+        report_id=report.id,
+        pdf_available=pdf_available,
+        pdf_path=report.pdf_path,
+        generation_error=report.generation_error,
+    )
+
+
+@router.get(
+    "/{run_id}/report/pdf",
+    responses={200: {"content": {"application/pdf": {}}, "description": "QA report PDF"}},
+    response_class=FileResponse,
+)
 async def get_report_pdf(run_id: UUID, db: AsyncSession = Depends(get_db)) -> FileResponse:
     report = await ReportRepository(db).get_by_run(run_id)
     if report is None or not report.pdf_path:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Report PDF not found")
+        run = await RunRepository(db).get_by_id(run_id)
+        if run is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
+        if run.status not in {"completed", "cancelled", "failed"}:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Report PDF not found")
+        report = await ReportService(db).generate(run_id)
+        await db.commit()
     path = Path(report.pdf_path)
     if not path.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Report PDF file is missing")

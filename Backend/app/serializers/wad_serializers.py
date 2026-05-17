@@ -24,7 +24,6 @@ class WadFileOut(BaseModel):
 
     id: UUID
     original_filename: str
-    stored_path: str
     file_size_bytes: int
     sha256_hash: str
     validation_status: str

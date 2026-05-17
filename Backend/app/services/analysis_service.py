@@ -30,6 +30,31 @@ def detect_map_names(wad_path: str) -> list[str]:
     return sorted(names)
 
 
+def player_one_start_count(wad_path: str, map_name: str) -> int:
+    return player_start_counts(wad_path, map_name)["player_one"]
+
+
+def player_start_counts(wad_path: str, map_name: str) -> dict[str, int]:
+    wad = WAD(wad_path)
+    map_name = map_name.upper()
+    if map_name not in wad.maps:
+        return {"player_one": 0, "deathmatch": 0}
+    editor = MapEditor(wad.maps[map_name])
+    return {
+        "player_one": sum(1 for thing in editor.things if int(thing.type) == 1),
+        "deathmatch": sum(1 for thing in editor.things if int(thing.type) == 11),
+    }
+
+
+def map_has_single_player_start(wad_path: str, map_name: str) -> bool:
+    return player_one_start_count(wad_path, map_name) == 1
+
+
+def map_can_be_normalized_for_single_player(wad_path: str, map_name: str) -> bool:
+    counts = player_start_counts(wad_path, map_name)
+    return counts["player_one"] > 0 or counts["deathmatch"] > 0
+
+
 class AnalysisService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db

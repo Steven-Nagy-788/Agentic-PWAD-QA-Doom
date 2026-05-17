@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import UUID
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,17 +44,17 @@ async def cancel_run(run_id: UUID, db: AsyncSession = Depends(get_db)) -> RunOut
     return await RunService(db).cancel(run_id)
 
 
-@router.post("/{run_id}/cancel", response_model=RunOut)
-async def cancel_run_post(run_id: UUID, db: AsyncSession = Depends(get_db)) -> RunOut:
-    return await RunService(db).cancel(run_id)
-
-
 @router.post("/{run_id}/force-stop", response_model=RunOut)
 async def force_stop_run(run_id: UUID, db: AsyncSession = Depends(get_db)) -> RunOut:
     return await RunService(db).cancel(run_id)
 
 
-@router.get("/{run_id}/trace", response_model=list[TraceEntryOut], tags=["Trace"])
+@router.get(
+    "/{run_id}/trace",
+    response_model=list[TraceEntryOut],
+    tags=["Trace"],
+    summary="Full ordered action trace",
+)
 async def get_trace(
     run_id: UUID,
     page: int = Query(default=1, ge=1),
@@ -62,10 +64,25 @@ async def get_trace(
     return await GameEventRepository(db).list_trace(run_id, page, page_size)
 
 
-@router.get("/{run_id}/events", response_model=list[TraceEntryOut], tags=["Trace"])
+@router.get(
+    "/{run_id}/events",
+    response_model=list[TraceEntryOut],
+    tags=["Trace"],
+    summary="Notable or filtered run events",
+)
 async def get_events(
     run_id: UUID,
-    type: str | None = None,
+    type: Optional[str] = Query(
+        default=None,
+        description=(
+            "Comma-separated list of event types to filter. "
+            "When omitted, this endpoint returns only notable events where event_type != normal. "
+            "Use /trace for the full ordered action history. "
+            "Valid values: normal, kill, death, damage_taken, item_pickup, "
+            "secret_found, map_exit, stuck. "
+            "Example: ?type=kill,death,damage_taken"
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> list[TraceEntryOut]:
     event_types = [value.strip() for value in (type or "").split(",") if value.strip()]
@@ -85,7 +102,11 @@ async def get_position_trail(run_id: UUID, db: AsyncSession = Depends(get_db)) -
     return await GameEventRepository(db).list_position_trail(run_id)
 
 
-@router.get("/{run_id}/recording")
+@router.get(
+    "/{run_id}/recording",
+    responses={200: {"content": {"video/mp4": {}}, "description": "MP4 recording"}},
+    response_class=FileResponse,
+)
 async def get_recording(run_id: UUID, db: AsyncSession = Depends(get_db)) -> FileResponse:
     run = await RunRepository(db).get_by_id(run_id)
     if run is None or not run.recording_mp4_path:

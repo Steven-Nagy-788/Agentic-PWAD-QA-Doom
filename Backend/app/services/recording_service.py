@@ -18,6 +18,7 @@ class RecordingService:
         self.path = self.settings.recording_storage_dir / f"{run_id}.mp4"
         self.source_path = self.settings.recording_storage_dir / f"{run_id}.source.mp4"
         self.writer: cv2.VideoWriter | None = None
+        self.frames_written = 0
 
     def start_from_frame(self, frame: np.ndarray) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -32,6 +33,7 @@ class RecordingService:
             self.start_from_frame(frame)
         assert self.writer is not None
         self.writer.write(self._bgr(frame))
+        self.frames_written += 1
 
     def save_screenshot(self, frame: np.ndarray, event_id: int) -> Path:
         path = self.settings.screenshot_storage_dir / f"{event_id}.png"

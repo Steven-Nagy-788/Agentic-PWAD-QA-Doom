@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
-from typing import Any
+from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class StaticAnalysisOut(BaseModel):
@@ -41,12 +40,19 @@ class StaticAnalysisOut(BaseModel):
     total_monster_hp: int | None = None
     total_health_pickup_pts: int | None = None
     total_armor_pickup_pts: int | None = None
-    hitscanner_percent: Decimal | None = None
-    health_ratio: Decimal | None = None
-    ammo_ratio: Decimal | None = None
+    hitscanner_percent: Optional[float] = None
+    health_ratio: Optional[float] = None
+    ammo_ratio: Optional[float] = None
     estimated_difficulty: str | None = None
     enemy_breakdown: dict[str, Any]
     item_breakdown: dict[str, Any]
     map_overview_png_path: str | None = None
     map_overview_png_url: str | None = None
     analyzed_at: datetime
+
+    @field_validator("hitscanner_percent", "health_ratio", "ammo_ratio", mode="before")
+    @classmethod
+    def coerce_decimal(cls, value: Any) -> float | None:
+        if value is None:
+            return None
+        return float(value)

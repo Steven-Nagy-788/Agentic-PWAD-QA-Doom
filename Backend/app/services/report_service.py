@@ -24,8 +24,11 @@ class ReportService:
 
     async def generate(self, run_id: UUID) -> TestReport:
         existing = await self.repo.get_by_run(run_id)
+        if existing is not None and existing.generation_status == "complete" and existing.pdf_path:
+            if Path(existing.pdf_path).exists():
+                return existing
         if existing is not None:
-            return existing
+            await self.repo.update(existing, generation_status="generating", generation_error=None)
         run = await self.db.get(TestRun, run_id)
         if run is None:
             raise ValueError("Run not found")
@@ -43,21 +46,48 @@ class ReportService:
         }
         report_json = await self._call_gemini_or_fallback(payload)
         pdf_path = self._render_pdf(run_id, report_json, payload)
-        report = TestReport(
-            run_id=run_id,
-            report_purpose=report_json.get("report_purpose"),
-            test_items_summary=report_json.get("test_items_summary"),
-            test_environment_summary=report_json.get("test_environment_summary"),
-            defect_summary_narrative=report_json.get("defect_summary_narrative"),
-            pass_fail_summary=report_json.get("pass_fail_summary"),
-            pdf_path=str(pdf_path),
-            generation_status="complete",
-            elapsed_time_seconds=run.duration_seconds,
-            total_actions_taken=run.total_actions_taken,
-        )
-        created = await self.repo.create(report)
+        fields = self._report_fields(run, report_json, pdf_path)
+        if existing is not None:
+            created = await self.repo.update(existing, **fields)
+        else:
+            created = await self.repo.create(TestReport(run_id=run_id, **fields))
         await RunRepository(self.db).update(run, report_pdf_path=str(pdf_path))
         return created
+
+    @staticmethod
+    def _report_fields(run: TestRun, report_json: dict, pdf_path: Path) -> dict:
+        return {
+            "generation_status": "complete",
+            "generation_error": None,
+            "report_purpose": report_json.get("report_purpose"),
+            "intended_audience": report_json.get("intended_audience") or "Game developers and QA engineers",
+            "problem_and_escalation": report_json.get("problem_and_escalation"),
+            "test_items_summary": report_json.get("test_items_summary"),
+            "test_environment_summary": report_json.get("test_environment_summary"),
+            "hardware_spec": report_json.get("hardware_spec"),
+            "software_spec": report_json.get("software_spec"),
+            "variances_from_plan": report_json.get("variances_from_plan"),
+            "test_procedure_variances": report_json.get("test_procedure_variances"),
+            "test_case_variances": report_json.get("test_case_variances"),
+            "test_coverage_evaluation": report_json.get("test_coverage_evaluation"),
+            "objectives_planned": report_json.get("objectives_planned"),
+            "objectives_covered": report_json.get("objectives_covered"),
+            "objectives_omitted": report_json.get("objectives_omitted"),
+            "uncovered_attributes": report_json.get("uncovered_attributes"),
+            "test_process_changes": report_json.get("test_process_changes"),
+            "defect_summary_narrative": report_json.get("defect_summary_narrative"),
+            "defect_patterns": report_json.get("defect_patterns"),
+            "test_item_limitations": report_json.get("test_item_limitations"),
+            "dropped_features": report_json.get("dropped_features"),
+            "pass_fail_summary": report_json.get("pass_fail_summary"),
+            "risk_areas": report_json.get("risk_areas"),
+            "good_quality_areas": report_json.get("good_quality_areas"),
+            "major_activities_summary": report_json.get("major_activities_summary"),
+            "activity_variances": report_json.get("activity_variances"),
+            "elapsed_time_seconds": report_json.get("elapsed_time_seconds") or run.duration_seconds,
+            "total_actions_taken": report_json.get("total_actions_taken") or run.total_actions_taken,
+            "pdf_path": str(pdf_path),
+        }
 
     async def _call_gemini_or_fallback(self, payload: dict) -> dict:
         prompt = report_prompt_path().read_text()

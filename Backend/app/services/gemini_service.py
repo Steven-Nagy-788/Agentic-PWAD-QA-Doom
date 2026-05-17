@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import random
+import re
 from typing import Any
 
 from app.core.config import get_settings
@@ -43,19 +46,35 @@ class GeminiService:
                 "observed_issue": None,
             }
         try:
-            from google import genai
-
-            client = genai.Client(api_key=self.settings.gemini_api_key)
-            contents = f"{system_prompt}\n\nCURRENT STATE JSON:\n{json.dumps(llm_input, default=str)}"
-            response = client.models.generate_content(model=self.settings.llm_model, contents=contents)
-            return self.parse_decision(response.text or "")
+            response = await self._call_gemini(system_prompt, llm_input)
+            return self.parse_decision(response)
         except Exception as exc:
+            exc_str = str(exc)
+            if "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str:
+                match = re.search(r"retryDelay['\"]:\s*['\"](\d+)s", exc_str)
+                wait = int(match.group(1)) if match else 15
+                wait += random.uniform(1, 3)
+                wait = min(wait, self.settings.gemini_retry_max_delay_seconds)
+                await asyncio.sleep(wait)
+                try:
+                    response = await self._call_gemini(system_prompt, llm_input)
+                    return self.parse_decision(response)
+                except Exception:
+                    pass
             return {
-                "reasoning_summary": f"Gemini call failed; using fallback retreat/explore action. Error: {exc}",
+                "reasoning_summary": "Rate limited — fallback explore used.",
                 "mcp_tool": "explore",
                 "mcp_params": {},
                 "observed_issue": None,
             }
+
+    async def _call_gemini(self, system_prompt: str, llm_input: dict) -> str:
+        from google import genai
+
+        client = genai.Client(api_key=self.settings.gemini_api_key)
+        contents = f"{system_prompt}\n\nCURRENT STATE JSON:\n{json.dumps(llm_input, default=str)}"
+        response = client.models.generate_content(model=self.settings.llm_model, contents=contents)
+        return response.text or ""
 
     def parse_decision(self, text: str) -> dict[str, Any]:
         cleaned = text.strip()

@@ -208,7 +208,7 @@ def aim_and_shoot(
     This is a compound action - it runs many game tics internally in milliseconds,
     so the player doesn't stand idle between LLM decisions.
 
-    Typical workflow: get_state -> find enemy -> aim_and_shoot(enemy_id) -> assess result.
+    Typical workflow: get_state -> find enemy -> aim_and_shoot(object_id) -> assess result.
 
     Args:
         object_id: Numeric ID of the target (from the objects list in game state).
