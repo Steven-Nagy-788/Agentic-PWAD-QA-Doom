@@ -40,11 +40,11 @@ OBJECT_ID_ALIASES: dict[str, tuple[str, ...]] = {
     "move_to": ("object_id", "target_id", "item_id", "pickup_id", "enemy_id", "monster_id"),
 }
 TOOL_PARAM_ALLOWLIST: dict[str, set[str]] = {
-    "aim_and_shoot": {"object_id", "shots", "max_tics"},
-    "strafe_and_shoot": {"object_id", "direction", "shots", "max_tics"},
-    "move_to": {"object_id", "max_tics", "use", "stop_on_enemy"},
-    "explore": {"max_tics", "stop_on_enemy", "stop_on_item"},
-    "retreat": {"tics", "backpedal"},
+    "aim_and_shoot": {"object_id", "shots", "max_tics", "capture_telemetry", "telemetry_stride"},
+    "strafe_and_shoot": {"object_id", "direction", "shots", "max_tics", "capture_telemetry", "telemetry_stride"},
+    "move_to": {"object_id", "max_tics", "use", "stop_on_enemy", "capture_telemetry", "telemetry_stride"},
+    "explore": {"max_tics", "stop_on_enemy", "stop_on_item", "capture_telemetry", "telemetry_stride"},
+    "retreat": {"tics", "backpedal", "capture_telemetry", "telemetry_stride"},
     "get_state": {"include_sectors", "include_depth"},
     "get_threat_assessment": set(),
     "get_navigation_info": set(),
@@ -176,7 +176,7 @@ async def agent_run_task(run_id: UUID) -> None:
             return
         prompt = render_agent_prompt(wad, analysis, run)
         collector = CollectorService(db)
-        recorder = RecordingService(str(run.id), fps=max(1.0, get_settings().live_frame_fps))
+        recorder = RecordingService(str(run.id), fps=max(10.0, get_settings().live_frame_fps))
         gemini = GeminiService()
         total_actions = 0
         total_llm_calls = 0
@@ -260,6 +260,9 @@ async def agent_run_task(run_id: UUID) -> None:
                     if latest_event.health <= 0:
                         outcome = "player_died"
                         break
+                    if state.get("episode_finished") or state.get("episode_timeout"):
+                        outcome = "timeout"
+                        break
                     throttle_seconds = max(0.0, get_settings().llm_throttle_seconds)
                     if throttle_seconds:
                         await websocket_service.broadcast(
@@ -309,7 +312,7 @@ async def agent_run_task(run_id: UUID) -> None:
                 )
             await run_repo.update(run, **final_fields)
             await db.commit()
-            if run.status in {"completed", "cancelled"}:
+            if run.status in {"completed", "cancelled", "failed"}:
                 await DefectService(db).detect_for_run(run)
                 await ReportService(db).generate(run.id)
                 await db.commit()
@@ -324,6 +327,9 @@ async def _execute_tool(mcp: McpDoomClient, decision: dict[str, Any]) -> Any:
         decision["tool_param_warning"] = f"{tool} requested without an object_id; fallback explore used."
         tool = "explore"
         params = {}
+    if tool in COMPOUND_TELEMETRY_TOOLS:
+        params.setdefault("capture_telemetry", True)
+        params.setdefault("telemetry_stride", max(1, get_settings().recording_telemetry_stride))
     decision["mcp_tool"] = tool
     decision["mcp_params"] = params
     if tool == "step":

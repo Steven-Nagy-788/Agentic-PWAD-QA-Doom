@@ -196,19 +196,19 @@ def test_custom_map_normalizes_player_one_starts(manager, monkeypatch):
         manager.start(wad="freedoom1", scenario_wad=multi_start_wad, map_name="E1M1")
 
 
-def test_campaign_auto_advance(manager):
-    """When player completes a level (not dead), new_episode advances to next map."""
+def test_campaign_timeout_does_not_auto_advance(manager):
+    """Episode timeout is not map completion and should not advance the campaign."""
     manager.start(wad="freedoom2", map_name="MAP01", episode_timeout=5)
-    # Let episode timeout (player not dead = level "completed")
     while not manager._game.is_episode_finished():
         manager.take_action(None, tics=1)
     state = manager.get_state()
-    assert state["level_completed"] is True
-    assert state["next_map"] == "MAP02"
+    assert state["level_completed"] is False
+    assert state["episode_timeout"] is True
+    assert "next_map" not in state
 
     result = manager.new_episode()
-    assert result["map"] == "MAP02"
-    assert result["advanced"] is True
+    assert result["map"] == "MAP01"
+    assert "advanced" not in result
 
 
 def test_campaign_death_restarts_same_map(manager):

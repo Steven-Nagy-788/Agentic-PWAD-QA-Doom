@@ -202,6 +202,8 @@ def aim_and_shoot(
     object_id: int,
     shots: int = 3,
     max_tics: int = 100,
+    capture_telemetry: bool = False,
+    telemetry_stride: int = 4,
 ):
     """Aim at an enemy and fire multiple shots. Handles aiming, firing, and weapon cooldown automatically.
 
@@ -220,7 +222,13 @@ def aim_and_shoot(
     Stop reasons: shots_complete, target_killed, target_lost, player_died,
         out_of_ammo, episode_finished, max_tics.
     """
-    result = manager.aim_and_shoot(object_id, shots=shots, max_tics=max_tics)
+    result = manager.aim_and_shoot(
+        object_id,
+        shots=shots,
+        max_tics=max_tics,
+        capture_telemetry=capture_telemetry,
+        telemetry_stride=telemetry_stride,
+    )
     screenshot_png = result.pop("screenshot_png", None)
     if screenshot_png is not None:
         return [Image(data=screenshot_png, format="png"), result]
@@ -233,6 +241,8 @@ def move_to(
     max_tics: int = 140,
     use: bool = False,
     stop_on_enemy: bool = True,
+    capture_telemetry: bool = False,
+    telemetry_stride: int = 4,
 ):
     """Move toward an object by ID. Handles pathfinding, turning, and stuck recovery automatically.
 
@@ -253,7 +263,12 @@ def move_to(
         episode_finished, max_tics.
     """
     result = manager.move_to(
-        object_id, max_tics=max_tics, use=use, stop_on_enemy=stop_on_enemy,
+        object_id,
+        max_tics=max_tics,
+        use=use,
+        stop_on_enemy=stop_on_enemy,
+        capture_telemetry=capture_telemetry,
+        telemetry_stride=telemetry_stride,
     )
     screenshot_png = result.pop("screenshot_png", None)
     if screenshot_png is not None:
@@ -266,6 +281,8 @@ def explore(
     max_tics: int = 200,
     stop_on_enemy: bool = True,
     stop_on_item: bool = False,
+    capture_telemetry: bool = False,
+    telemetry_stride: int = 4,
 ):
     """Explore the environment autonomously. Walks forward, avoids walls, scans for threats and items.
 
@@ -285,7 +302,11 @@ def explore(
         episode_finished, max_tics.
     """
     result = manager.explore(
-        max_tics=max_tics, stop_on_enemy=stop_on_enemy, stop_on_item=stop_on_item,
+        max_tics=max_tics,
+        stop_on_enemy=stop_on_enemy,
+        stop_on_item=stop_on_item,
+        capture_telemetry=capture_telemetry,
+        telemetry_stride=telemetry_stride,
     )
     screenshot_png = result.pop("screenshot_png", None)
     if screenshot_png is not None:
@@ -299,6 +320,8 @@ def strafe_and_shoot(
     direction: str = "auto",
     shots: int = 5,
     max_tics: int = 100,
+    capture_telemetry: bool = False,
+    telemetry_stride: int = 4,
 ):
     """Strafe laterally while firing at an enemy. Better than aim_and_shoot against hitscan enemies.
 
@@ -316,7 +339,12 @@ def strafe_and_shoot(
         damage_taken, stop_reason.
     """
     result = manager.strafe_and_shoot(
-        object_id, direction=direction, shots=shots, max_tics=max_tics,
+        object_id,
+        direction=direction,
+        shots=shots,
+        max_tics=max_tics,
+        capture_telemetry=capture_telemetry,
+        telemetry_stride=telemetry_stride,
     )
     screenshot_png = result.pop("screenshot_png", None)
     if screenshot_png is not None:
@@ -328,6 +356,8 @@ def strafe_and_shoot(
 def retreat(
     tics: int = 35,
     backpedal: bool = False,
+    capture_telemetry: bool = False,
+    telemetry_stride: int = 4,
 ):
     """Retreat from the current position. Turn and run or backpedal.
 
@@ -342,7 +372,12 @@ def retreat(
     Returns screenshot + state with action_summary containing:
         distance_moved, mode ("backpedal" or "turn_and_run"), stop_reason.
     """
-    result = manager.retreat(tics=tics, backpedal=backpedal)
+    result = manager.retreat(
+        tics=tics,
+        backpedal=backpedal,
+        capture_telemetry=capture_telemetry,
+        telemetry_stride=telemetry_stride,
+    )
     screenshot_png = result.pop("screenshot_png", None)
     if screenshot_png is not None:
         return [Image(data=screenshot_png, format="png"), result]

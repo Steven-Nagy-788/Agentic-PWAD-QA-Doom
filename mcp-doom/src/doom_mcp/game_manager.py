@@ -1,5 +1,6 @@
 """Core game manager wrapping ViZDoom's DoomGame."""
 
+import base64
 import contextlib
 import math
 import os
@@ -33,6 +34,7 @@ _NEARBY_RANGE = 1500.0  # units - items/ammo within this range are included
 _MONSTER_RANGE = 4000.0  # units - monsters within this range are included
 
 # Compound action constants
+_MAP_EXIT_REWARD = 100.0
 _WALL_CLOSE = 15.0        # depth buffer units (0-255 scale) - imminent collision
 _WALL_NEAR = 40.0         # depth buffer units - start turning
 _STUCK_WINDOW = 20        # tics to check for stuck
@@ -197,10 +199,10 @@ def _wad_map_start_info(wad_path: str, map_name: str) -> dict:
             if name != target:
                 continue
             if index + 1 >= len(directory) or directory[index + 1][0] != "THINGS":
-                return {"player_one": [], "deathmatch": []}
+                return {"player_starts": [], "player_one": [], "deathmatch": []}
             _, things_offset, things_size = directory[index + 1]
             if things_size < 10 or things_size % 10 != 0:
-                return {"player_one": [], "deathmatch": []}
+                return {"player_starts": [], "player_one": [], "deathmatch": []}
             wad_file.seek(things_offset)
             things = wad_file.read(things_size)
             player_starts = []
@@ -300,6 +302,9 @@ class GameManager:
         self._nav_memory = NavigationMemory()
         self._game_lock = threading.Lock()
         self._executor: AutonomousExecutor | None = None
+        self._telemetry_frames: list[dict] | None = None
+        self._telemetry_stride = 1
+        self._telemetry_tics = 0
 
     @property
     def is_running(self) -> bool:
@@ -330,6 +335,37 @@ class GameManager:
         finally:
             if self._executor is not None:
                 self._executor.resume()
+
+    @contextmanager
+    def _capture_telemetry(self, enabled: bool, stride: int = 4):
+        previous_frames = self._telemetry_frames
+        previous_stride = self._telemetry_stride
+        previous_tics = self._telemetry_tics
+        self._telemetry_frames = [] if enabled else None
+        self._telemetry_stride = max(1, int(stride or 1))
+        self._telemetry_tics = 0
+        try:
+            yield
+        finally:
+            self._telemetry_frames = previous_frames
+            self._telemetry_stride = previous_stride
+            self._telemetry_tics = previous_tics
+
+    def _begin_telemetry(self, enabled: bool, stride: int = 4) -> None:
+        self._telemetry_frames = [] if enabled else None
+        self._telemetry_stride = max(1, int(stride or 1))
+        self._telemetry_tics = 0
+
+    def _attach_telemetry(self, result: dict) -> dict:
+        if self._telemetry_frames is not None:
+            if not self._telemetry_frames and self._game is not None:
+                sample = self._telemetry_sample(self._game)
+                if sample is not None:
+                    self._telemetry_frames.append(sample)
+            result["telemetry_frames"] = list(self._telemetry_frames)
+        self._telemetry_frames = None
+        self._telemetry_tics = 0
+        return result
 
     @staticmethod
     def _resolve_wad_path(wad: str) -> str:
@@ -437,10 +473,12 @@ class GameManager:
     def _finished_state(self, game: vzd.DoomGame, reward: float | None = None) -> dict:
         """Return state dict for a finished episode."""
         dead = game.get_game_variable(vzd.GameVariable.DEAD)
+        level_completed = self._level_completed(game)
         result = {
             "episode_finished": True,
             "player_dead": bool(dead),
-            "level_completed": not bool(dead),
+            "level_completed": level_completed,
+            "episode_timeout": (not bool(dead)) and not level_completed,
             "total_reward": game.get_total_reward(),
             "game_variables": {},
         }
@@ -449,12 +487,18 @@ class GameManager:
         if self._current_map:
             result["map"] = self._current_map
             nxt = _next_map(self._current_map)
-            if nxt and not dead:
+            if nxt and level_completed:
                 result["next_map"] = nxt
                 result["hint"] = "Level completed! Call new_episode() to advance to next map."
             elif dead:
                 result["hint"] = "You died. Call new_episode() to retry this map."
+            else:
+                result["hint"] = "Episode ended before map completion, likely because the tick budget expired."
         return result
+
+    def _level_completed(self, game: vzd.DoomGame) -> bool:
+        dead = game.get_game_variable(vzd.GameVariable.DEAD)
+        return (not bool(dead)) and game.get_total_reward() >= _MAP_EXIT_REWARD
 
     def start(
         self,
@@ -602,7 +646,7 @@ class GameManager:
 
         # Set map exit reward so completing a level gives positive feedback
         if wad is not None:
-            game.set_map_exit_reward(100.0)
+            game.set_map_exit_reward(_MAP_EXIT_REWARD)
 
         # Redirect stdout to stderr during init to avoid breaking MCP protocol
         with contextlib.redirect_stdout(sys.stderr):
@@ -679,7 +723,7 @@ class GameManager:
             self._executor.pause()
 
         advanced = False
-        if self._current_map and not game.get_game_variable(vzd.GameVariable.DEAD):
+        if self._current_map and self._level_completed(game):
             nxt = _next_map(self._current_map)
             if nxt:
                 game.set_doom_map(nxt)
@@ -753,8 +797,38 @@ class GameManager:
             if not game.is_episode_finished():
                 noop = [0.0] * len(self._buttons)
                 game.make_action(noop, 1)      # flush: applies our action
-            return game.get_last_reward()
-        return game.make_action(action, tics)
+            reward = game.get_last_reward()
+            self._record_telemetry_tick(game, max(1, tics))
+            return reward
+        reward = game.make_action(action, tics)
+        self._record_telemetry_tick(game, max(1, tics))
+        return reward
+
+    def _record_telemetry_tick(self, game: vzd.DoomGame, tics: int = 1) -> None:
+        if self._telemetry_frames is None:
+            return
+        self._telemetry_tics += max(1, tics)
+        if self._telemetry_tics % self._telemetry_stride != 0 and not game.is_episode_finished():
+            return
+        sample = self._telemetry_sample(game)
+        if sample is not None:
+            self._telemetry_frames.append(sample)
+
+    def _telemetry_sample(self, game: vzd.DoomGame) -> dict | None:
+        state = game.get_state()
+        variables = extract_game_variables(game, self._variable_names)
+        sample = {
+            "tic": getattr(state, "tic", None),
+            "game_variables": variables,
+            "episode_finished": game.is_episode_finished(),
+            "level_completed": False,
+            "map_exit": False,
+        }
+        if state is not None and state.screen_buffer is not None:
+            sample["screenshot_png_b64"] = base64.b64encode(
+                screen_buffer_to_png(state.screen_buffer)
+            ).decode("ascii")
+        return sample
 
     def take_action(
         self,
@@ -891,11 +965,11 @@ class GameManager:
         if game.is_episode_finished():
             result = self._finished_state(game)
             result["action_summary"] = summary
-            return result
+            return self._attach_telemetry(result)
 
         result = self._extract_full_state(game, include_depth=True)
         result["action_summary"] = summary
-        return result
+        return self._attach_telemetry(result)
 
     def _get_position(self, game: vzd.DoomGame) -> tuple[float, float]:
         x = game.get_game_variable(vzd.GameVariable.POSITION_X)
@@ -919,6 +993,8 @@ class GameManager:
         object_id: int,
         shots: int = 3,
         max_tics: int = 100,
+        capture_telemetry: bool = False,
+        telemetry_stride: int = 4,
     ) -> dict:
         """Aim at an object and fire multiple shots. Runs a tight game loop internally.
 
@@ -932,6 +1008,7 @@ class GameManager:
             ammo_spent, target_name, stop_reason.
         """
         game = self._require_episode()
+        self._begin_telemetry(capture_telemetry, telemetry_stride)
 
         summary = {
             "shots_fired": 0,
@@ -1026,6 +1103,8 @@ class GameManager:
         max_tics: int = 140,
         use: bool = False,
         stop_on_enemy: bool = True,
+        capture_telemetry: bool = False,
+        telemetry_stride: int = 4,
     ) -> dict:
         """Move toward an object by ID. Runs a tight game loop internally.
 
@@ -1040,6 +1119,7 @@ class GameManager:
             target_name, used_object, threat_object, stop_reason.
         """
         game = self._require_episode()
+        self._begin_telemetry(capture_telemetry, telemetry_stride)
 
         summary = {
             "distance_moved": 0.0,
@@ -1176,6 +1256,8 @@ class GameManager:
         max_tics: int = 200,
         stop_on_enemy: bool = True,
         stop_on_item: bool = False,
+        capture_telemetry: bool = False,
+        telemetry_stride: int = 4,
     ) -> dict:
         """Explore the environment autonomously. Walks forward, avoids walls, scans for enemies/items.
 
@@ -1189,6 +1271,7 @@ class GameManager:
             enemies_seen, items_seen, stop_reason.
         """
         game = self._require_episode()
+        self._begin_telemetry(capture_telemetry, telemetry_stride)
 
         summary = {
             "distance_moved": 0.0,
@@ -1338,7 +1421,13 @@ class GameManager:
                 summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
                 return self._compound_result(game, summary, "max_tics")
 
-    def retreat(self, tics: int = 35, backpedal: bool = False) -> dict:
+    def retreat(
+        self,
+        tics: int = 35,
+        backpedal: bool = False,
+        capture_telemetry: bool = False,
+        telemetry_stride: int = 4,
+    ) -> dict:
         """Turn and run or backpedal away from current facing direction.
 
         Args:
@@ -1350,6 +1439,7 @@ class GameManager:
             Game state + action_summary with: distance_moved, mode, stop_reason.
         """
         game = self._require_episode()
+        self._begin_telemetry(capture_telemetry, telemetry_stride)
 
         mode = "backpedal" if backpedal else "turn_and_run"
         summary = {"distance_moved": 0.0, "mode": mode}
@@ -1411,6 +1501,8 @@ class GameManager:
         direction: str = "auto",
         shots: int = 5,
         max_tics: int = 100,
+        capture_telemetry: bool = False,
+        telemetry_stride: int = 4,
     ) -> dict:
         """Strafe laterally while firing at a target. Useful against hitscan enemies.
 
@@ -1425,6 +1517,7 @@ class GameManager:
             ammo_spent, target_name, strafe_direction, damage_taken, stop_reason.
         """
         game = self._require_episode()
+        self._begin_telemetry(capture_telemetry, telemetry_stride)
 
         summary = {
             "shots_fired": 0,

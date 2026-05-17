@@ -65,7 +65,7 @@ class Settings:
         self.max_run_ticks = int(os.getenv("MAX_RUN_TICKS", "35000"))
         self.default_run_ticks = int(os.getenv("DEFAULT_RUN_TICKS", "3000"))
         self.live_frame_fps = float(os.getenv("LIVE_FRAME_FPS", "2"))
-        self.recording_telemetry_stride = int(os.getenv("RECORDING_TELEMETRY_STRIDE", "1"))
+        self.recording_telemetry_stride = int(os.getenv("RECORDING_TELEMETRY_STRIDE", "4"))
         self.cors_origins = [
             origin.strip()
             for origin in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
