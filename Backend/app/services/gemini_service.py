@@ -42,7 +42,7 @@ class GeminiService:
             return {
                 "reasoning_summary": "Gemini API key is not configured; using fallback exploration action.",
                 "mcp_tool": "explore",
-                "mcp_params": {"max_tics": 35, "stop_on_enemy": False},
+                "mcp_params": {"max_tics": 200, "stop_on_enemy": True, "stop_on_item": True},
                 "observed_issue": None,
             }
         try:
@@ -64,7 +64,7 @@ class GeminiService:
             return {
                 "reasoning_summary": "Rate limited — fallback explore used.",
                 "mcp_tool": "explore",
-                "mcp_params": {"max_tics": 35, "stop_on_enemy": False},
+                "mcp_params": {"max_tics": 200, "stop_on_enemy": True, "stop_on_item": True},
                 "observed_issue": None,
             }
 

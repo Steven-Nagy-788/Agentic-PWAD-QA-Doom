@@ -80,38 +80,76 @@ class ReportService:
 
     @staticmethod
     def _report_fields(run: TestRun, report_json: dict, pdf_path: Path) -> dict:
+        def text_value(key: str) -> str | None:
+            return ReportService._coerce_text(report_json.get(key))
+
+        def json_value(key: str) -> Any:
+            return report_json.get(key)
+
         return {
             "generation_status": "complete",
             "generation_error": None,
-            "report_purpose": report_json.get("report_purpose"),
-            "intended_audience": report_json.get("intended_audience") or "Game developers and QA engineers",
-            "problem_and_escalation": report_json.get("problem_and_escalation"),
-            "test_items_summary": report_json.get("test_items_summary"),
-            "test_environment_summary": report_json.get("test_environment_summary"),
-            "hardware_spec": report_json.get("hardware_spec"),
-            "software_spec": report_json.get("software_spec"),
-            "variances_from_plan": report_json.get("variances_from_plan"),
-            "test_procedure_variances": report_json.get("test_procedure_variances"),
-            "test_case_variances": report_json.get("test_case_variances"),
-            "test_coverage_evaluation": report_json.get("test_coverage_evaluation"),
-            "objectives_planned": report_json.get("objectives_planned"),
-            "objectives_covered": report_json.get("objectives_covered"),
-            "objectives_omitted": report_json.get("objectives_omitted"),
-            "uncovered_attributes": report_json.get("uncovered_attributes"),
-            "test_process_changes": report_json.get("test_process_changes"),
-            "defect_summary_narrative": report_json.get("defect_summary_narrative"),
-            "defect_patterns": report_json.get("defect_patterns"),
-            "test_item_limitations": report_json.get("test_item_limitations"),
-            "dropped_features": report_json.get("dropped_features"),
-            "pass_fail_summary": report_json.get("pass_fail_summary"),
-            "risk_areas": report_json.get("risk_areas"),
-            "good_quality_areas": report_json.get("good_quality_areas"),
-            "major_activities_summary": report_json.get("major_activities_summary"),
-            "activity_variances": report_json.get("activity_variances"),
+            "report_purpose": text_value("report_purpose"),
+            "intended_audience": text_value("intended_audience") or "Game developers and QA engineers",
+            "problem_and_escalation": text_value("problem_and_escalation"),
+            "test_items_summary": text_value("test_items_summary"),
+            "test_environment_summary": text_value("test_environment_summary"),
+            "hardware_spec": ReportService._coerce_json_object(json_value("hardware_spec")),
+            "software_spec": ReportService._coerce_json_object(json_value("software_spec")),
+            "variances_from_plan": text_value("variances_from_plan"),
+            "test_procedure_variances": text_value("test_procedure_variances"),
+            "test_case_variances": text_value("test_case_variances"),
+            "test_coverage_evaluation": text_value("test_coverage_evaluation"),
+            "objectives_planned": ReportService._coerce_json_value(json_value("objectives_planned")),
+            "objectives_covered": ReportService._coerce_json_value(json_value("objectives_covered")),
+            "objectives_omitted": ReportService._coerce_json_value(json_value("objectives_omitted")),
+            "uncovered_attributes": text_value("uncovered_attributes"),
+            "test_process_changes": text_value("test_process_changes"),
+            "defect_summary_narrative": text_value("defect_summary_narrative"),
+            "defect_patterns": text_value("defect_patterns"),
+            "test_item_limitations": text_value("test_item_limitations"),
+            "dropped_features": text_value("dropped_features"),
+            "pass_fail_summary": ReportService._coerce_json_object(json_value("pass_fail_summary")),
+            "risk_areas": ReportService._coerce_json_value(json_value("risk_areas")),
+            "good_quality_areas": ReportService._coerce_json_value(json_value("good_quality_areas")),
+            "major_activities_summary": text_value("major_activities_summary"),
+            "activity_variances": text_value("activity_variances"),
             "elapsed_time_seconds": report_json.get("elapsed_time_seconds") or run.duration_seconds,
             "total_actions_taken": report_json.get("total_actions_taken") or run.total_actions_taken,
             "pdf_path": str(pdf_path),
         }
+
+    @staticmethod
+    def _coerce_text(value: Any) -> str | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return "\n".join(
+                f"- {ReportService._coerce_text(item) or ''}".strip()
+                for item in value
+                if item not in (None, "")
+            )
+        if isinstance(value, dict):
+            return json.dumps(value, default=str)
+        return str(value)
+
+    @staticmethod
+    def _coerce_json_object(value: Any) -> dict[str, Any] | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, dict):
+            return value
+        return {"value": value}
+
+    @staticmethod
+    def _coerce_json_value(value: Any) -> list[Any] | dict[str, Any] | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, (list, dict)):
+            return value
+        return [{"value": value}]
 
     @staticmethod
     def _build_metrics(

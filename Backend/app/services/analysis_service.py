@@ -73,19 +73,12 @@ class AnalysisService:
     async def analyze_map(self, wad_file: WadFile, map_name: str) -> StaticAnalysisResult:
         map_name = map_name.upper()
         existing = await self.repo.get_by_wad_and_map(wad_file.id, map_name)
-        if existing is not None and self._overview_path_is_current(existing.map_overview_png_path):
-            return existing
 
         wad = WAD(wad_file.stored_path)
         if map_name not in wad.maps:
             raise ValueError(f"Map {map_name} not found in WAD")
 
         editor = MapEditor(wad.maps[map_name])
-        if existing is not None:
-            existing.map_overview_png_path = str(self._render_overview(wad_file.id, map_name, editor))
-            await self.db.flush()
-            await self.db.refresh(existing)
-            return existing
 
         thing_counts = Counter(int(thing.type) for thing in editor.things)
         enemy_breakdown, total_monster_hp, hitscanner_count = self._enemy_breakdown(thing_counts)
@@ -102,13 +95,13 @@ class AnalysisService:
             map_height = None
 
         enemy_count = sum(item["count"] for item in enemy_breakdown.values())
-        hitscanner_percent = round((hitscanner_count / enemy_count) * 100, 2) if enemy_count else None
-        health_ratio = round(health_pts / total_monster_hp, 4) if total_monster_hp else None
-        ammo_ratio = round(ammo_score / total_monster_hp, 4) if total_monster_hp else None
+        hitscanner_percent = round((hitscanner_count / enemy_count) * 100, 2) if enemy_count else 0.0
+        health_ratio = round(health_pts / total_monster_hp, 4) if total_monster_hp else 0.0
+        ammo_ratio = round(ammo_score / total_monster_hp, 4) if total_monster_hp else 0.0
         estimated_difficulty = self._difficulty(enemy_count, hitscanner_percent, health_ratio, ammo_ratio)
         overview_path = self._render_overview(wad_file.id, map_name, editor)
 
-        analysis = StaticAnalysisResult(
+        analysis_fields = dict(
             wad_file_id=wad_file.id,
             map_name=map_name,
             thing_count_total=len(editor.things),
@@ -133,6 +126,9 @@ class AnalysisService:
             item_breakdown=item_breakdown,
             map_overview_png_path=str(overview_path),
         )
+        if existing is not None:
+            analysis_fields["id"] = existing.id
+        analysis = StaticAnalysisResult(**analysis_fields)
         return await self.repo.upsert(analysis)
 
     def _enemy_breakdown(self, counts: Counter[int]) -> tuple[dict[str, Any], int, int]:
@@ -176,6 +172,8 @@ class AnalysisService:
         health_ratio: float | None,
         ammo_ratio: float | None,
     ) -> str:
+        if enemy_count == 0:
+            return "easy"
         score = 0
         if enemy_count > 80:
             score += 2

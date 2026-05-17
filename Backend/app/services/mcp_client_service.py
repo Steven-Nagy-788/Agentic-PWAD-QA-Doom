@@ -82,6 +82,8 @@ def normalize_mcp_state(result: Any) -> tuple[dict[str, Any], bytes | None]:
                 screenshot = base64.b64decode(data)
         elif isinstance(item, dict):
             state = item
+        elif hasattr(item, "structured_content") and isinstance(item.structured_content, dict):
+            state = item.structured_content
         elif hasattr(item, "text"):
             text = item.text
             try:
@@ -91,6 +93,4 @@ def normalize_mcp_state(result: Any) -> tuple[dict[str, Any], bytes | None]:
                 screenshot = nested_screenshot or screenshot
             except Exception:
                 pass
-        elif hasattr(item, "structured_content") and isinstance(item.structured_content, dict):
-            state = item.structured_content
     return state, screenshot

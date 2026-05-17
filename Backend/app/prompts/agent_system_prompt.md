@@ -60,6 +60,7 @@ Each decision you receive a JSON object with this structure:
     "objects": [
       {{
         "id": "<object id to pass to move_to / aim_and_shoot>",
+        "name": "<Doom actor or item name, e.g. DoomImp, Shotgun, Medikit>",
         "type": "monster | item | weapon | key | decoration",
         "distance": <float — Doom units from player>,
         "angle_to_aim": <float — degrees to turn; positive=right, negative=left>,
@@ -186,6 +187,8 @@ Set observed_issue (never null) when you detect ANY of the following:
 
 Keep reasoning_summary to 1-2 sentences. It will appear verbatim in the QA
 report, so make it useful to a human reader reviewing the run.
+Do not repeat the same reasoning wording on consecutive decisions. Mention the
+specific object name, map feature, or exploration result that changed your plan.
 
 ═══════════════════════════════════════════════════════════
 RESPONSE FORMAT — STRICT

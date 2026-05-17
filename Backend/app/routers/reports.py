@@ -20,8 +20,15 @@ router = APIRouter(prefix="/runs", tags=["Reports"])
 async def get_report(run_id: UUID, db: AsyncSession = Depends(get_db)) -> ReportOut:
     report = await ReportRepository(db).get_by_run(run_id)
     if report is None:
-        report = await ReportService(db).generate(run_id)
-        await db.commit()
+        try:
+            report = await ReportService(db).generate(run_id)
+            await db.commit()
+        except ValueError as exc:
+            await db.rollback()
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        except Exception as exc:
+            await db.rollback()
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Report generation failed: {exc}") from exc
     return report
 
 
@@ -60,8 +67,15 @@ async def get_report_pdf(run_id: UUID, db: AsyncSession = Depends(get_db)) -> Fi
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
         if run.status not in {"completed", "cancelled", "failed"}:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Report PDF not found")
-        report = await ReportService(db).generate(run_id)
-        await db.commit()
+        try:
+            report = await ReportService(db).generate(run_id)
+            await db.commit()
+        except ValueError as exc:
+            await db.rollback()
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        except Exception as exc:
+            await db.rollback()
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Report PDF generation failed: {exc}") from exc
     path = Path(report.pdf_path)
     if not path.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Report PDF file is missing")

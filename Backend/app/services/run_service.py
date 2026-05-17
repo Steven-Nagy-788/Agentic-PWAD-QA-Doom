@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import json
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -212,7 +213,7 @@ async def agent_run_task(run_id: UUID) -> None:
                     }
                     decision = await gemini.decide(prompt, llm_input)
                     total_llm_calls += 1
-                    response = await _execute_tool(mcp, decision)
+                    response, mcp_call = await _execute_tool(mcp, decision)
                     response_state, response_png = normalize_mcp_state(response)
                     telemetry_frames = _pop_telemetry_frames(response_state)
                     if decision.get("mcp_tool") in COMPOUND_TELEMETRY_TOOLS and not telemetry_frames:
@@ -235,7 +236,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         state,
                         llm_input,
                         decision,
-                        _summary(response),
+                        mcp_call,
                     )
                     event_screenshot_b64 = None
                     if latest_event.event_type in {"kill", "death", "damage_taken"} and frame is not None:
@@ -314,29 +315,50 @@ async def agent_run_task(run_id: UUID) -> None:
             await db.commit()
             if run.status in {"completed", "cancelled", "failed"}:
                 await DefectService(db).detect_for_run(run)
-                await ReportService(db).generate(run.id)
-                await db.commit()
+                try:
+                    await ReportService(db).generate(run.id)
+                    await db.commit()
+                except Exception as exc:
+                    await db.rollback()
+                    await run_repo.update(run, error_message=(run.error_message or f"Report generation failed: {exc}"))
+                    await db.commit()
             await websocket_service.broadcast(run.id, {"type": "state", "status": run.status, "tick": run.max_ticks})
             RUN_TASKS.pop(run.id, None)
 
 
-async def _execute_tool(mcp: McpDoomClient, decision: dict[str, Any]) -> Any:
+async def _execute_tool(mcp: McpDoomClient, decision: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
     tool = decision.get("mcp_tool") or "explore"
     params = _normalize_mcp_params(tool, dict(decision.get("mcp_params") or {}))
     if tool in OBJECT_ID_TOOLS and "object_id" not in params:
         decision["tool_param_warning"] = f"{tool} requested without an object_id; fallback explore used."
         tool = "explore"
         params = {}
+    if tool == "explore":
+        params.setdefault("max_tics", 200)
+        params.setdefault("stop_on_enemy", True)
+        params.setdefault("stop_on_item", True)
+    elif tool in {"aim_and_shoot", "strafe_and_shoot"}:
+        params.setdefault("max_tics", 120)
+    elif tool == "move_to":
+        params.setdefault("max_tics", 180)
     if tool in COMPOUND_TELEMETRY_TOOLS:
         params.setdefault("capture_telemetry", True)
         params.setdefault("telemetry_stride", max(1, get_settings().recording_telemetry_stride))
     decision["mcp_tool"] = tool
     decision["mcp_params"] = params
+    call_tool_name = tool
+    call_params = dict(params)
     if tool == "step":
-        tool = "take_action"
+        call_tool_name = "take_action"
     if tool == "take_action" and "actions" not in params:
-        params = {"actions": params, "tics": 4}
-    return await mcp.call_tool(tool, params)
+        call_params = {"actions": params, "tics": 4}
+    response = await mcp.call_tool(call_tool_name, call_params)
+    return response, {
+        "service": "mcp-doom",
+        "tool": call_tool_name,
+        "input": _json_safe(call_params),
+        "output": _json_safe(_compact_mcp_output(response)),
+    }
 
 
 def _normalize_mcp_params(tool: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -447,19 +469,29 @@ async def _broadcast_state(
     )
 
 
+def _compact_mcp_output(value: Any) -> Any:
+    state, _ = normalize_mcp_state(value)
+    if not isinstance(state, dict):
+        return _summary(value)
+    compact = {key: val for key, val in state.items() if key not in {"telemetry_frames", "depth", "sectors"}}
+    if isinstance(compact.get("objects"), list):
+        compact["objects"] = compact["objects"][:12]
+    if "action_summary" in state:
+        compact["action_summary"] = state["action_summary"]
+    return compact
+
+
+def _json_safe(value: Any) -> Any:
+    try:
+        json.dumps(value, default=str)
+        return value
+    except TypeError:
+        return json.loads(json.dumps(value, default=str))
+
+
 def _summary(value: Any) -> str:
-    if isinstance(value, dict):
-        value = {key: val for key, val in value.items() if key != "telemetry_frames"}
-    elif isinstance(value, list):
-        compact = []
-        for item in value:
-            if isinstance(item, dict):
-                compact.append({key: val for key, val in item.items() if key != "telemetry_frames"})
-            else:
-                compact.append(item)
-        value = compact
-    text = str(value)
-    return text if len(text) <= 500 else text[:500] + "..."
+    text = json.dumps(_json_safe(value), default=str) if isinstance(value, (dict, list)) else str(value)
+    return text if len(text) <= 1000 else text[:1000] + "..."
 
 
 async def finalize_stopped_run(db: AsyncSession, run_id: UUID, outcome: str) -> TestRun:
@@ -496,7 +528,12 @@ async def finalize_stopped_run(db: AsyncSession, run_id: UUID, outcome: str) -> 
     await run_repo.update(run, **fields)
     await db.commit()
     await DefectService(db).detect_for_run(run)
-    await ReportService(db).generate(run.id)
-    await db.commit()
+    try:
+        await ReportService(db).generate(run.id)
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        await run_repo.update(run, error_message=(run.error_message or f"Report generation failed: {exc}"))
+        await db.commit()
     await db.refresh(run)
     return run

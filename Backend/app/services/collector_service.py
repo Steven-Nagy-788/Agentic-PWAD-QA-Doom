@@ -25,17 +25,23 @@ class CollectorService:
         state: dict[str, Any],
         llm_input: dict[str, Any],
         decision: dict[str, Any],
-        mcp_response_summary: str,
+        mcp_call: dict[str, Any],
     ) -> GameEvent:
         variables = normalize_variables(state)
         event_type = self.detect_event(variables)
         action_taken = {
             "mcp_tool": decision.get("mcp_tool"),
             "mcp_params": decision.get("mcp_params") or {},
-            "mcp_response_summary": mcp_response_summary,
+            "mcp_service": mcp_call.get("service", "mcp-doom"),
+            "mcp_input": mcp_call.get("input"),
+            "mcp_output": mcp_call.get("output"),
         }
+        if mcp_call.get("tool") and mcp_call["tool"] != decision.get("mcp_tool"):
+            action_taken["mcp_executed_tool"] = mcp_call["tool"]
         if decision.get("recording_fidelity_warning"):
             action_taken["recording_fidelity_warning"] = decision["recording_fidelity_warning"]
+        if decision.get("tool_param_warning"):
+            action_taken["tool_param_warning"] = decision["tool_param_warning"]
         event = GameEvent(
             run_id=run_id,
             tick_number=tick,

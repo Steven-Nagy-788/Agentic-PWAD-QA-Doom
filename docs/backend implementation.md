@@ -92,12 +92,13 @@ SCREENSHOT_STORAGE_DIR=/absolute/path/to/Backend/storage/screenshots
 ANALYSIS_STORAGE_DIR=/absolute/path/to/Backend/storage/analysis
 
 GEMINI_API_KEY=...
-LLM_MODEL=gemini-2.5-flash
+LLM_MODEL=gemini-2.5-flash-lite
 MCP_DOOM_SSE_URL=http://localhost:8001/sse
 
 MAX_RUN_TICKS=35000
 DEFAULT_RUN_TICKS=3000
 LIVE_FRAME_FPS=2
+RECORDING_TELEMETRY_STRIDE=4
 CORS_ORIGINS=http://localhost:5173
 ```
 
@@ -105,7 +106,9 @@ Notes:
 
 - `DATABASE_URL` uses `postgresql+asyncpg://`. A legacy `postgresql+psycopg://` value is normalized to `postgresql+asyncpg://` for safety, but psycopg is not required by this backend.
 - Relative storage paths are resolved relative to the `Backend/` directory.
-- `LLM_MODEL` is configurable. The current working default is `gemini-2.5-flash`.
+- `LLM_MODEL` is configurable. The code default is `gemini-2.5-flash-lite`; local `.env` can override it.
+- `LLM_THROTTLE_SECONDS` controls the delay between LLM decisions. Compound MCP tools can still advance many game tics inside one decision.
+- `RECORDING_TELEMETRY_STRIDE` controls how often compound MCP tools return internal movement samples for recordings and position trails.
 - There is no backend `FREEDOOM2_WAD_PATH`. The backend passes `freedoom1` or `freedoom2` as the `wad` argument to `mcp-doom`.
 - `MCP_DOOM_SSE_URL` points at the persistent MCP service, not a subprocess command.
 
@@ -274,7 +277,10 @@ Screenshots are currently captured for:
 
 Stores downsampled position samples for frontend path overlays.
 
-The collector inserts one row every 10 ticks:
+The collector inserts position rows from two sources:
+
+- one final decision position for each backend decision
+- telemetry frames returned by compound MCP tools during the internal ViZDoom action loop
 
 - `run_id`
 - `tick_number`
@@ -282,7 +288,7 @@ The collector inserts one row every 10 ticks:
 - `y`
 - `health`
 
-The full tick trace remains in `game_events`.
+The full decision trace remains in `game_events`. The denser movement path is in `agent_position_trail`.
 
 ### `test_reports`
 
@@ -310,7 +316,7 @@ Important columns:
 - `generation_status`
 - `generation_error`
 
-The current report service fills the core fields and produces a PDF with WeasyPrint.
+The report service fills the structured report fields and produces a PDF with WeasyPrint.
 
 ### `defects`
 
@@ -620,6 +626,7 @@ The current implementation computes dmon-style fallback metrics directly from Th
 
 The difficulty function is heuristic:
 
+- Zero-enemy maps are marked `easy`.
 - More than 80 enemies adds 2 points.
 - More than 30 enemies adds 1 point.
 - Hitscanner percentage above 40 adds 1 point.
@@ -633,7 +640,9 @@ Score mapping:
 - `2` or `3` -> `hard`
 - `4+` -> `slaughter`
 
-If a map has no monsters, ratios involving monster HP are `NULL`/`None`.
+If a map has no monsters, ratios involving monster HP are stored as `0.0` instead of `NULL`. This keeps API/report consumers from treating a valid monster-free map as missing analysis data.
+
+Static analysis is recomputed when `AnalysisService.analyze_map()` is called, even if an existing row and overview image already exist. The repository upsert updates the existing `(wad_file_id, map_name)` row. This avoids stale rows where only `map_overview_png_path` was refreshed and balance ratios stayed null.
 
 ### Overview PNG Rendering
 
@@ -738,7 +747,6 @@ Endpoints:
 
 ```http
 DELETE /runs/{run_id}
-POST /runs/{run_id}/cancel
 POST /runs/{run_id}/force-stop
 ```
 
@@ -830,6 +838,8 @@ The loop runs:
 for tick in range(run.max_ticks):
 ```
 
+Each backend loop is an agent decision, not necessarily one Doom tic. Compound MCP tools such as `explore`, `move_to`, and `aim_and_shoot` may advance dozens or hundreds of internal ViZDoom tics before returning one backend event.
+
 Each loop:
 
 1. Calls `mcp.get_state()`.
@@ -849,21 +859,33 @@ Each loop:
    ```
 
 6. Calls Gemini through `GeminiService.decide()`.
-7. Executes the selected MCP tool.
+7. Executes the selected MCP tool. Tool parameters are normalized and constrained before the call.
 8. Normalizes the MCP response.
-9. Collects/persists a `game_events` row.
-10. Optionally saves a screenshot for notable events.
-11. Writes a frame to the MP4 recorder.
-12. Broadcasts a WebSocket `state` message.
-13. Broadcasts a throttled WebSocket `frame` message if enough time has passed.
-14. Commits the DB work.
-15. Checks terminal conditions:
+9. Stores a compact MCP call record in `game_events.action_taken`, including:
+   - `mcp_service`
+   - requested `mcp_tool`
+   - actual `mcp_executed_tool` when it differs
+   - sanitized `mcp_input`
+   - compact `mcp_output`
+10. Collects/persists a `game_events` row.
+11. Optionally saves a screenshot for notable events.
+12. Writes a frame to the MP4 recorder.
+13. Broadcasts a WebSocket `state` message.
+14. Broadcasts a throttled WebSocket `frame` message if enough time has passed.
+15. Commits the DB work.
+16. Checks terminal conditions:
     - map exit
     - player death
     - max ticks reached
-16. Sleeps 1 second.
+17. Sleeps for `LLM_THROTTLE_SECONDS` if configured.
 
-The 1-second sleep is the main LLM throttle. In practice, MCP compound tools may internally advance many game tics per backend loop.
+Fallback and normalized defaults now prefer deeper exploration:
+
+- `explore`: `max_tics=200`, `stop_on_enemy=true`, `stop_on_item=true`
+- `aim_and_shoot`/`strafe_and_shoot`: `max_tics=120`
+- `move_to`: `max_tics=180`
+
+Object-id tools fall back to `explore` if Gemini omits a usable `object_id`. The warning is stored in `action_taken.tool_param_warning`.
 
 ### Terminal Conditions
 
@@ -904,6 +926,8 @@ In the `finally` block, the task:
 13. Broadcasts a terminal WebSocket state.
 14. Removes the task from `RUN_TASKS`.
 
+Report generation errors are caught during finalization and force-stop finalization. The run remains terminal and the error is written to `test_runs.error_message` instead of crashing the background task.
+
 ## MCP Client
 
 The MCP integration is in:
@@ -941,8 +965,8 @@ Exposed methods:
 
 - raw lists
 - content wrappers
-- text JSON
 - structured content
+- text JSON
 - image data with `mime_type`, `mimeType`, or `format`
 
 It returns:
@@ -982,10 +1006,11 @@ Allowed MCP tools:
 
 `decide(system_prompt, llm_input)`:
 
-- If no API key is configured, returns fallback `explore`.
+- If no API key is configured, returns fallback `explore` with a 200-tic compound exploration action.
 - Sends the rendered system prompt plus current state JSON.
 - Parses the model output as JSON.
-- On any Gemini/API/parsing exception, returns fallback `explore` with the error summarized in `reasoning_summary`.
+- On rate limit, waits briefly and retries once.
+- On any Gemini/API/parsing exception after retry, returns fallback `explore`.
 
 The fallback path is important because it lets long test runs continue even when Gemini is temporarily unavailable or rate-limited.
 
@@ -1048,6 +1073,7 @@ The prompt tells the model to act as a QA playtester and to:
 - preserve evidence
 - prefer compound MCP tools
 - report map design problems through `observed_issue`
+- include specific object names or map features in reasoning instead of repeating generic text
 
 Compound tools are preferred because raw single-tic actions are too slow when each LLM call is throttled.
 
@@ -1073,9 +1099,42 @@ Responsibilities:
 - normalize game variables
 - detect event type
 - insert `game_events`
-- insert `agent_position_trail` every 10 ticks
+- insert final decision positions and telemetry-derived position samples into `agent_position_trail`
 - insert agent-observed defects
 - attach notable screenshots
+
+`action_taken` JSONB stores accurate MCP service data for each event:
+
+```json
+{
+  "mcp_tool": "explore",
+  "mcp_params": {
+    "max_tics": 200,
+    "stop_on_enemy": true,
+    "stop_on_item": true,
+    "capture_telemetry": true,
+    "telemetry_stride": 4
+  },
+  "mcp_service": "mcp-doom",
+  "mcp_input": {
+    "max_tics": 200,
+    "stop_on_enemy": true,
+    "stop_on_item": true,
+    "capture_telemetry": true,
+    "telemetry_stride": 4
+  },
+  "mcp_output": {
+    "tic": 214,
+    "action_summary": {
+      "distance_moved": 532.2,
+      "direction_changes": 0,
+      "enemies_seen": [],
+      "items_seen": [],
+      "stop_reason": "max_tics"
+    }
+  }
+}
+```
 
 ### Variable Normalization
 
@@ -1324,9 +1383,11 @@ Includes:
 GET /runs/{run_id}/events?type=kill,death,damage_taken
 ```
 
-If `type` is omitted, it returns all events for the run.
+If `type` is omitted, it returns notable events only, where `event_type != 'normal'`.
 
 If `type` is present, it filters `game_events.event_type`.
+
+Use `/runs/{run_id}/trace` for the full ordered history, including normal events.
 
 ### Position Trail
 
@@ -1376,6 +1437,8 @@ Returns `ReportOut`.
 
 If no report exists yet, it generates one synchronously and commits it.
 
+If report generation raises `ValueError` because the run is missing, the endpoint returns `404`. Other report-generation exceptions return `500` with a clear error string after rolling back the DB session.
+
 ### Report PDF
 
 ```http
@@ -1393,6 +1456,8 @@ The endpoint validates:
 - report exists
 - `pdf_path` is set
 - file exists on disk
+
+If no report exists for a terminal run, the PDF endpoint generates it synchronously before returning the file.
 
 ## Defect Detection
 
@@ -1519,6 +1584,14 @@ Report generation logic:
 11. Insert `test_reports`.
 12. Update `test_runs.report_pdf_path`.
 
+Gemini report JSON is normalized before inserting into PostgreSQL:
+
+- `TEXT` columns accept strings, lists, dicts, and scalars. Lists are converted to bullet-style text and dicts to JSON strings.
+- JSONB object columns such as `hardware_spec`, `software_spec`, and `pass_fail_summary` are coerced to objects.
+- JSONB list/dict columns such as `objectives_*`, `risk_areas`, and `good_quality_areas` are kept as lists/dicts, or wrapped if Gemini returns a scalar.
+
+This prevents report endpoint failures when the model returns a list for a narrative field such as `test_process_changes`.
+
 Current Gemini report prompt asks for JSON fields:
 
 ```json
@@ -1583,9 +1656,9 @@ POST /runs
 GET /runs?limit=100
 GET /runs/{run_id}
 DELETE /runs/{run_id}
-POST /runs/{run_id}/cancel
 POST /runs/{run_id}/force-stop
 GET /runs/{run_id}/recording
+GET /runs/{run_id}/report/status
 ```
 
 ### Trace
@@ -1602,6 +1675,7 @@ WS /ws/runs/{run_id}
 
 ```http
 GET /runs/{run_id}/report
+GET /runs/{run_id}/report/status
 GET /runs/{run_id}/report/pdf
 ```
 
@@ -1917,11 +1991,10 @@ Future work:
 
 ### Report Completeness
 
-The database schema supports many report sections, but the current `ReportService` fills the core sections only.
+The database schema supports many report sections. `ReportService` now fills the report-template columns from Gemini JSON or fallback values and coerces model output types before DB insertion.
 
 Future work:
 
-- Populate every `test_reports` column from structured Gemini JSON.
 - Include all defects in the PDF with better formatting.
 - Add screenshots and map overview to the PDF.
 - Include selected reasoning quotes from notable ticks.
@@ -1948,6 +2021,19 @@ Future work:
 ### Testing
 
 Current validation has been done with direct curl/Python scripts against the local service.
+
+Current automated coverage:
+
+- `python -m compileall app` from `Backend/` passes.
+- `mcp-doom` test suite passes with the service venv after reinstalling the editable package to this checkout: `94 passed`.
+- Backend ASGI smoke checks pass for `/health`, `/wads/maps`, `/runs`, report metadata, report status, and report PDF.
+- A real short run against the local MCP SSE server completed and produced:
+  - `game_events.action_taken` with `mcp_service`, `mcp_input`, and compact `mcp_output`
+  - 67 position samples
+  - a 320x240 MP4 with 66 frames and 6.6 seconds duration
+  - a generated PDF report
+
+Environment note: the `mcp-doom/.venv` activation originally pointed to an editable `doom-mcp` package from another checkout. Reinstalling with `python -m pip install -e .` inside `mcp-doom/` corrected imports to this repository.
 
 Future work:
 
@@ -2073,7 +2159,7 @@ agent_run_task
         -> Gemini decision
         -> MCP tool call
         -> collect game event
-        -> write position trail every 10 ticks
+        -> write decision and telemetry-derived position trail samples
         -> save notable screenshot
         -> write MP4 frame
         -> broadcast state
