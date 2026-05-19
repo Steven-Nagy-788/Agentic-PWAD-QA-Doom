@@ -84,6 +84,8 @@ Start a new Doom game. Use `scenario` for built-in training scenarios, or `wad` 
 | `episode_timeout` | `int` | `null` | Max tics per episode |
 | `render_hud` | `bool` | `false` | Show HUD overlay |
 | `window_visible` | `bool` | `false` | Open a game window |
+| `async_player` | `bool` | `false` | Run the game continuously in real time and enable the autonomous executor |
+| `ticrate` | `int` | `null` | Async game speed in tics/sec; `35` is normal Doom speed |
 | `seed` | `int` | `null` | Random seed |
 
 ### `get_state`
@@ -131,6 +133,49 @@ Start a new episode. In campaign mode, automatically advances to the next map on
 ### `get_available_actions`
 
 Returns configured buttons with types (`delta` or `binary`), sign conventions, and usage examples.
+
+### `get_situation_report`
+
+Return a compact director-facing snapshot for games started with `async_player=true`.
+
+The response includes a screenshot plus:
+
+- `executor_state`
+- queued `objectives`, including objective age
+- current `strategy`
+- recent executor `events`
+- `game_variables`
+- nearby filtered `objects`
+- `exploration`
+- `executor_progress`, including position spread, stuck counters, recent stop reasons, and target hints
+
+Use this instead of `get_state` when the autonomous executor is active.
+
+### `set_objective`
+
+Queue a high-level objective for the autonomous executor.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `objective_type` | `string` | required | One of `explore`, `kill`, `move_to_pos`, `move_to_obj`, `collect`, `use_object`, `retreat`, `hold_position` |
+| `params` | `dict` | `null` | Objective parameters such as `object_id`, `x`, or `y` |
+| `priority` | `int` | `0` | Higher priority objectives run first |
+| `timeout_tics` | `int` | `0` | Auto-fail the objective after this many tics; `0` means no timeout |
+| `replace` | `bool` | `false` | Clear queued objectives before adding this objective |
+
+### `set_strategy`
+
+Tune autonomous executor behavior while an async game is running.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `aggression` | `float` | `0.0` avoids fights, `1.0` engages aggressively |
+| `health_retreat_threshold` | `int` | Always retreat below this HP |
+| `health_collect_threshold` | `int` | Seek health below this HP |
+| `ammo_switch_threshold` | `int` | Switch/seek weapons when ammo is low |
+| `engage_range` | `float` | Max distance for combat engagement |
+| `collect_range` | `float` | Max distance for item collection |
+| `prefer_cover` | `bool` | Favor cover during combat |
 
 ### `stop_game`
 
@@ -208,15 +253,16 @@ AI Agent <──MCP──> FastMCP Server <──Python API──> ViZDoom Engin
                         │
               ┌─────────┼─────────┐
               │         │         │
-          server.py  game_manager  state.py
-          (tools)    (lifecycle)   (extraction)
+          server.py  game_manager  executor.py
+          (tools)    (lifecycle)   (async player)
               │         │         │
-          actions.py  scenarios.py  objects.py
-          (buttons)   (configs)    (enemy DB)
+          actions.py  state.py     objects.py
+          (buttons)   (extraction) (enemy DB)
 ```
 
-- **`server.py`** -8 MCP tool definitions (thin wrappers)
+- **`server.py`** -MCP tool definitions (thin wrappers)
 - **`game_manager.py`** -game lifecycle, action execution, state management
+- **`executor.py`** -autonomous async-player movement, combat, pickups, objectives, and strategy
 - **`state.py`** -screenshot conversion, object enrichment, depth/sector extraction
 - **`actions.py`** -button name-to-enum mapping
 - **`scenarios.py`** -scenario registry

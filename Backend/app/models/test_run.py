@@ -5,12 +5,14 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, SmallInteger, String, Text, func, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 
 if TYPE_CHECKING:
+    from app.models.agent_decision import AgentDecision
     from app.models.agent_position_trail import AgentPositionTrail
     from app.models.defect import Defect
     from app.models.game_event import GameEvent
@@ -58,6 +60,10 @@ class TestRun(Base):
     duration_seconds: Mapped[int | None] = mapped_column(Integer)
     outcome: Mapped[str | None] = mapped_column(String(32))
     error_message: Mapped[str | None] = mapped_column(Text)
+    failure_category: Mapped[str | None] = mapped_column(String(32))
+    failure_stage: Mapped[str | None] = mapped_column(String(64))
+    failure_summary: Mapped[str | None] = mapped_column(Text)
+    failure_diagnostics: Mapped[dict | None] = mapped_column(JSONB)
     final_hp: Mapped[int | None] = mapped_column(SmallInteger)
     final_armor: Mapped[int | None] = mapped_column(SmallInteger)
     total_kills: Mapped[int | None] = mapped_column(SmallInteger)
@@ -78,6 +84,11 @@ class TestRun(Base):
     )
     game_events: Mapped[list[GameEvent]] = relationship(
         "GameEvent",
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+    agent_decisions: Mapped[list[AgentDecision]] = relationship(
+        "AgentDecision",
         back_populates="run",
         cascade="all, delete-orphan",
     )

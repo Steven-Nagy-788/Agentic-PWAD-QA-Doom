@@ -3,9 +3,20 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
+import warnings
 from typing import Any
 
 from app.core.config import get_settings
+
+
+def _suppress_fastmcp_authlib_warning() -> None:
+    try:
+        from authlib.deprecate import AuthlibDeprecationWarning
+    except ImportError:
+        warning_category = Warning
+    else:
+        warning_category = AuthlibDeprecationWarning
+    warnings.filterwarnings("ignore", category=warning_category)
 
 
 class McpDoomClient:
@@ -15,6 +26,7 @@ class McpDoomClient:
 
     async def __aenter__(self) -> "McpDoomClient":
         try:
+            _suppress_fastmcp_authlib_warning()
             from fastmcp import Client
         except ImportError as exc:
             raise RuntimeError("fastmcp is not installed in the backend environment") from exc
@@ -38,24 +50,53 @@ class McpDoomClient:
         map_name: str,
         difficulty: int,
         episode_timeout: int,
+        async_player: bool = False,
+        ticrate: int | None = None,
     ) -> Any:
-        return await self.call_tool(
-            "start_game",
-            {
-                "wad": wad,
-                "scenario_wad": scenario_wad,
-                "map_name": map_name,
-                "difficulty": difficulty,
-                "episode_timeout": episode_timeout,
-                "screen_resolution": "RES_320X240",
-                "render_hud": False,
-                "window_visible": False,
-            },
-        )
+        params: dict[str, Any] = {
+            "wad": wad,
+            "scenario_wad": scenario_wad,
+            "map_name": map_name,
+            "difficulty": difficulty,
+            "episode_timeout": episode_timeout,
+            "screen_resolution": "RES_640X480",
+            "render_hud": False,
+            "window_visible": False,
+            "async_player": async_player,
+        }
+        if ticrate is not None:
+            params["ticrate"] = ticrate
+        return await self.call_tool("start_game", params)
 
     async def get_state(self) -> tuple[dict[str, Any], bytes | None]:
         result = await self.call_tool("get_state", {"include_sectors": False, "include_depth": True})
         return normalize_mcp_state(result)
+
+    async def get_situation_report(self) -> tuple[dict[str, Any], bytes | None]:
+        result = await self.call_tool("get_situation_report", {})
+        return normalize_mcp_state(result)
+
+    async def set_objective(
+        self,
+        objective_type: str,
+        params: dict[str, Any] | None = None,
+        priority: int = 0,
+        timeout_tics: int = 0,
+        replace: bool = False,
+    ) -> Any:
+        return await self.call_tool(
+            "set_objective",
+            {
+                "objective_type": objective_type,
+                "params": params or {},
+                "priority": priority,
+                "timeout_tics": timeout_tics,
+                "replace": replace,
+            },
+        )
+
+    async def set_strategy(self, **kwargs: Any) -> Any:
+        return await self.call_tool("set_strategy", {key: value for key, value in kwargs.items() if value is not None})
 
     async def stop_game(self) -> None:
         with contextlib.suppress(Exception):

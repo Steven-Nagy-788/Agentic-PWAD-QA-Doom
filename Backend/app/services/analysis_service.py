@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import struct
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,10 @@ from app.repositories.analysis_repository import AnalysisRepository
 from app.services.analysis_constants import ENEMY_TYPES, ITEM_TYPES, KEY_TYPES, WEAPON_TYPES
 
 
+MAPINFO_LUMPS = {"MAPINFO", "UMAPINFO"}
+MAP_NAME_RE = re.compile(r"^(?:MAP\d{2}|E\dM\d)$", re.IGNORECASE)
+
+
 def detect_iwad_requirement(map_names: list[str]) -> str:
     if any(re.match(r"^E\dM\d$", name.upper()) for name in map_names):
         return "freedoom1"
@@ -28,6 +33,98 @@ def detect_map_names(wad_path: str) -> list[str]:
     wad = WAD(wad_path)
     names = [name.upper() for name in wad.maps.keys()]
     return sorted(names)
+
+
+def map_metadata_for_wad(wad_path: str, original_filename: str) -> dict[str, dict[str, str | None]]:
+    """Return UI-facing map title/display metadata keyed by map name."""
+    titles = _parse_map_titles(wad_path)
+    metadata: dict[str, dict[str, str | None]] = {}
+    fallback_prefix = Path(original_filename or Path(wad_path).name).stem or Path(wad_path).stem
+    for map_name in detect_map_names(wad_path):
+        title_info = titles.get(map_name.upper())
+        title = title_info[0] if title_info else None
+        source = title_info[1] if title_info else "fallback_filename"
+        display = f"{map_name} - {title}" if title else f"{fallback_prefix} - {map_name}"
+        metadata[map_name] = {
+            "map_title": title,
+            "map_display_name": display,
+            "map_title_source": source,
+        }
+    return metadata
+
+
+def _parse_map_titles(wad_path: str) -> dict[str, tuple[str, str]]:
+    titles: dict[str, tuple[str, str]] = {}
+    for lump_name, text in _read_text_lumps(wad_path).items():
+        titles.update(_parse_block_mapinfo_titles(text, lump_name))
+        titles.update({key: value for key, value in _parse_inline_mapinfo_titles(text, lump_name).items() if key not in titles})
+    return titles
+
+
+def _read_text_lumps(wad_path: str) -> dict[str, str]:
+    data = Path(wad_path).read_bytes()
+    if len(data) < 12:
+        return {}
+    magic, lump_count, directory_offset = struct.unpack_from("<4sii", data, 0)
+    if magic not in {b"IWAD", b"PWAD"} or lump_count < 0 or directory_offset < 0:
+        return {}
+
+    lumps: dict[str, str] = {}
+    for index in range(lump_count):
+        entry_offset = directory_offset + index * 16
+        if entry_offset + 16 > len(data):
+            break
+        lump_offset, lump_size, raw_name = struct.unpack_from("<ii8s", data, entry_offset)
+        name = raw_name.rstrip(b"\0").decode("ascii", errors="ignore").upper()
+        if name not in MAPINFO_LUMPS or lump_size <= 0:
+            continue
+        blob = data[lump_offset : lump_offset + lump_size]
+        lumps[name] = blob.decode("latin1", errors="replace")
+    return lumps
+
+
+def _parse_block_mapinfo_titles(text: str, source: str) -> dict[str, tuple[str, str]]:
+    titles: dict[str, tuple[str, str]] = {}
+    pattern = re.compile(r"\bmap\s+([A-Za-z0-9_]+)\s*\{(?P<body>.*?)\}", re.IGNORECASE | re.DOTALL)
+    for match in pattern.finditer(text):
+        map_name = match.group(1).upper()
+        if not MAP_NAME_RE.match(map_name):
+            continue
+        body = match.group("body")
+        title_match = re.search(
+            r"\b(?:levelname|label)\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([^\n\r]+))",
+            body,
+            re.IGNORECASE,
+        )
+        if not title_match:
+            continue
+        title = _clean_title(next(group for group in title_match.groups() if group is not None))
+        if title:
+            titles[map_name] = (title, source.lower())
+    return titles
+
+
+def _parse_inline_mapinfo_titles(text: str, source: str) -> dict[str, tuple[str, str]]:
+    titles: dict[str, tuple[str, str]] = {}
+    pattern = re.compile(
+        r"^\s*map\s+([A-Za-z0-9_]+)\s+(?:\"([^\"]+)\"|'([^']+)'|([^{}\n\r]+))",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    for match in pattern.finditer(text):
+        map_name = match.group(1).upper()
+        if not MAP_NAME_RE.match(map_name):
+            continue
+        title = _clean_title(next(group for group in match.groups()[1:] if group is not None))
+        if title:
+            titles[map_name] = (title, source.lower())
+    return titles
+
+
+def _clean_title(value: str) -> str | None:
+    title = value.strip().strip(",").strip()
+    if not title:
+        return None
+    return re.sub(r"\s+", " ", title)
 
 
 def player_one_start_count(wad_path: str, map_name: str) -> int:
@@ -55,6 +152,46 @@ def map_can_be_normalized_for_single_player(wad_path: str, map_name: str) -> boo
     return counts["player_one"] > 0 or counts["deathmatch"] > 0
 
 
+def thing_spawns_at_skill(thing: Any, difficulty: int) -> bool:
+    """Return whether a Doom-format thing appears in backend single-player mode."""
+    skill_flag = "medium"
+    if difficulty in {1, 2}:
+        skill_flag = "easy"
+    elif difficulty in {4, 5}:
+        skill_flag = "hard"
+    if not bool(getattr(thing, skill_flag, False)):
+        return False
+    if bool(getattr(thing, "multiplayer", False)):
+        return False
+    return True
+
+
+def selected_skill_spawn_summary(analysis: StaticAnalysisResult | None, difficulty: int) -> dict[str, Any]:
+    if analysis is None:
+        return {}
+    summaries = analysis.spawn_summary_by_skill or {}
+    summary = summaries.get(str(difficulty)) or summaries.get(int(difficulty)) if isinstance(summaries, dict) else None
+    if isinstance(summary, dict):
+        return summary
+    return {
+        "difficulty_level": difficulty,
+        "thing_count_total": analysis.thing_count_total,
+        "thing_count_enemies": analysis.thing_count_enemies,
+        "thing_count_items": analysis.thing_count_items,
+        "thing_count_keys": analysis.thing_count_keys,
+        "thing_count_weapons": analysis.thing_count_weapons,
+        "total_monster_hp": analysis.total_monster_hp or 0,
+        "total_health_pickup_pts": analysis.total_health_pickup_pts or 0,
+        "total_armor_pickup_pts": analysis.total_armor_pickup_pts or 0,
+        "hitscanner_percent": float(analysis.hitscanner_percent or 0),
+        "health_ratio": float(analysis.health_ratio or 0),
+        "ammo_ratio": float(analysis.ammo_ratio or 0),
+        "estimated_difficulty": analysis.estimated_difficulty or "unknown",
+        "enemy_breakdown": analysis.enemy_breakdown or {},
+        "item_breakdown": analysis.item_breakdown or {},
+    }
+
+
 class AnalysisService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -79,10 +216,12 @@ class AnalysisService:
             raise ValueError(f"Map {map_name} not found in WAD")
 
         editor = MapEditor(wad.maps[map_name])
+        metadata = map_metadata_for_wad(wad_file.stored_path, wad_file.original_filename).get(map_name, {})
 
         thing_counts = Counter(int(thing.type) for thing in editor.things)
         enemy_breakdown, total_monster_hp, hitscanner_count = self._enemy_breakdown(thing_counts)
         item_breakdown, health_pts, armor_pts, ammo_score = self._item_breakdown(thing_counts)
+        spawn_summary_by_skill = self._spawn_summary_by_skill(editor)
 
         vertices = editor.vertexes
         if vertices:
@@ -124,6 +263,10 @@ class AnalysisService:
             estimated_difficulty=estimated_difficulty,
             enemy_breakdown=enemy_breakdown,
             item_breakdown=item_breakdown,
+            map_title=metadata.get("map_title"),
+            map_display_name=metadata.get("map_display_name") or f"{wad_file.original_filename} - {map_name}",
+            map_title_source=metadata.get("map_title_source") or "fallback_filename",
+            spawn_summary_by_skill=spawn_summary_by_skill,
             map_overview_png_path=str(overview_path),
         )
         if existing is not None:
@@ -164,6 +307,39 @@ class AnalysisService:
             else:
                 ammo_score += total
         return breakdown, health_pts, armor_pts, ammo_score
+
+    def _spawn_summary_by_skill(self, editor: MapEditor) -> dict[str, Any]:
+        summaries: dict[str, Any] = {}
+        for difficulty in range(1, 6):
+            counts = Counter(
+                int(thing.type)
+                for thing in editor.things
+                if thing_spawns_at_skill(thing, difficulty)
+            )
+            enemy_breakdown, total_monster_hp, hitscanner_count = self._enemy_breakdown(counts)
+            item_breakdown, health_pts, armor_pts, ammo_score = self._item_breakdown(counts)
+            enemy_count = sum(item["count"] for item in enemy_breakdown.values())
+            hitscanner_percent = round((hitscanner_count / enemy_count) * 100, 2) if enemy_count else 0.0
+            health_ratio = round(health_pts / total_monster_hp, 4) if total_monster_hp else 0.0
+            ammo_ratio = round(ammo_score / total_monster_hp, 4) if total_monster_hp else 0.0
+            summaries[str(difficulty)] = {
+                "difficulty_level": difficulty,
+                "thing_count_total": sum(counts.values()),
+                "thing_count_enemies": enemy_count,
+                "thing_count_items": sum(count for thing_type, count in counts.items() if thing_type in ITEM_TYPES),
+                "thing_count_keys": sum(counts[key] for key in KEY_TYPES),
+                "thing_count_weapons": sum(counts[key] for key in WEAPON_TYPES),
+                "total_monster_hp": total_monster_hp,
+                "total_health_pickup_pts": health_pts,
+                "total_armor_pickup_pts": armor_pts,
+                "hitscanner_percent": hitscanner_percent,
+                "health_ratio": health_ratio,
+                "ammo_ratio": ammo_ratio,
+                "estimated_difficulty": self._difficulty(enemy_count, hitscanner_percent, health_ratio, ammo_ratio),
+                "enemy_breakdown": enemy_breakdown,
+                "item_breakdown": item_breakdown,
+            }
+        return summaries
 
     @staticmethod
     def _difficulty(

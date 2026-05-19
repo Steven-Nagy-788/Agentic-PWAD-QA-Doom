@@ -1,2180 +1,388 @@
 # Agentic PWAD QA Backend Implementation
 
-This document describes the backend implementation for the Agentic PWAD QA Doom project as it exists in the `Backend/` application. It is intentionally detailed and implementation-oriented. Its purpose is to make the backend understandable without having to rediscover the architecture from source code.
+This document describes the current backend and MCP integration for the Agentic PWAD QA Doom project.
 
-The backend is a FastAPI application that accepts Doom PWAD uploads, analyzes maps statically, detects the correct IWAD base, starts autonomous test runs through the persistent `mcp-doom` service, asks Gemini for QA-oriented decisions, stores every trace event in PostgreSQL, streams live state and gameplay frames over WebSocket, records MP4 video, detects defects, and generates PDF QA reports.
+The system accepts Doom PWAD uploads, performs static map analysis with `omgifol`, stores WAD metadata and analysis in PostgreSQL, launches autonomous ViZDoom runs through the persistent `mcp-doom` FastMCP SSE server, streams run state over WebSocket, records gameplay artifacts, detects defects, and generates PDF QA reports.
 
-## High-Level System
+## Runtime Architecture
 
-The backend lives in:
+The backend is a FastAPI application in `Backend/`. The adjacent `mcp-doom/` directory is a separate FastMCP service that wraps ViZDoom.
 
-```text
-Backend/
-├── app/
-│   ├── main.py
-│   ├── core/
-│   ├── models/
-│   ├── prompts/
-│   ├── repositories/
-│   ├── routers/
-│   ├── serializers/
-│   ├── services/
-│   └── utils/
-├── scripts/
-├── sql/
-│   └── schema.sql
-├── storage/
-│   ├── wads/
-│   ├── analysis/
-│   ├── screenshots/
-│   ├── recordings/
-│   └── reports/
-├── .env
-├── .env.example
-├── Makefile
-└── requirements.txt
-```
+Expected local runtime:
 
-The adjacent `mcp-doom/` directory is a separate service. The backend does not spawn it per run. The expected runtime model is:
+1. PostgreSQL is running and `Backend/sql/schema.sql` has been applied.
+2. `mcp-doom` is running on `MCP_DOOM_SSE_URL`, normally `http://localhost:8001/sse`.
+3. FastAPI runs from `Backend/`.
+4. The UI calls the HTTP API and subscribes to `/ws/runs/{run_id}` for live state.
 
-1. PostgreSQL is running.
-2. The database schema has been applied from `Backend/sql/schema.sql`.
-3. `mcp-doom` is already running as a persistent FastMCP SSE server.
-4. The backend runs as FastAPI/Uvicorn.
-5. The frontend calls the backend HTTP and WebSocket APIs.
-
-The backend is designed around a layered structure:
+Main backend layers:
 
 ```text
-HTTP/WebSocket routers
-    -> services
-        -> repositories
-            -> SQLAlchemy async ORM models
-                -> PostgreSQL
+routers -> services -> repositories -> SQLAlchemy async models -> PostgreSQL
 ```
 
-The major external integrations are:
+Key integrations:
 
-- PostgreSQL via SQLAlchemy async engine and `asyncpg`.
-- Gemini via `google-genai`.
-- `mcp-doom` via FastMCP `Client` over SSE.
-- WAD parsing via `omgifol`.
-- Map PNG rendering via Pillow.
-- MP4/video and JPEG frame encoding via `opencv-python-headless`, followed by H.264 transcode through `ffmpeg`/`ffmpeg-python`.
-- PDF generation via WeasyPrint.
-- HTML templating via Jinja2.
+- `omgifol` parses Doom-format WAD maps.
+- Pillow renders static map overview PNGs.
+- FastMCP client calls the Doom MCP server over SSE.
+- Gemini can drive the agent and report generation; deterministic fallbacks are used when Gemini is unavailable.
+- OpenCV and ffmpeg produce MP4 recordings.
+- WeasyPrint renders PDF reports.
 
-## Runtime Configuration
+The backend and MCP server install a targeted warning filter before importing FastMCP entry points that transitively load Authlib JWT support. This suppresses the known third-party `authlib.jose` deprecation warning while leaving normal application errors visible.
 
-Configuration is centralized in `app/core/config.py`.
+## Configuration
 
-The `Settings` class manually loads `Backend/.env` and reads environment variables from `os.environ`. This project is not using Pydantic settings for configuration. The settings object is cached with `@lru_cache` through `get_settings()`.
+Configuration is loaded in `app/core/config.py`. `Settings` manually reads `Backend/.env`, resolves relative storage paths under `Backend/`, and is cached through `get_settings()`.
 
 Important settings:
 
-```env
-APP_NAME=Doom Agentic Testing Backend
-APP_ENV=development
-DEBUG=false
+- `DATABASE_URL` or `POSTGRES_*` values for PostgreSQL.
+- `STORAGE_BASE`, `WAD_STORAGE_DIR`, `ANALYSIS_STORAGE_DIR`, `SCREENSHOT_STORAGE_DIR`, `RECORDING_STORAGE_DIR`, `REPORT_STORAGE_DIR`.
+- `GEMINI_API_KEY`, `LLM_MODEL`, `LLM_THROTTLE_SECONDS`, `GEMINI_RETRY_MAX_DELAY_SECONDS`.
+- `MCP_DOOM_SSE_URL`.
+- `DEFAULT_RUN_TICKS`, `MAX_RUN_TICKS`, `LIVE_FRAME_FPS`, `RECORDING_TELEMETRY_STRIDE`.
+- `CORS_ORIGINS`.
 
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_DB=doom_agentic_qa
-POSTGRES_USER=doom_agentic
-POSTGRES_PASSWORD=...
-DATABASE_URL=postgresql+asyncpg://...
+The backend passes `freedoom1` or `freedoom2` to MCP based on detected map names. It does not require an IWAD path in backend config.
 
-STORAGE_BASE=/absolute/path/to/Backend/storage
-WAD_STORAGE_DIR=/absolute/path/to/Backend/storage/wads
-REPORT_STORAGE_DIR=/absolute/path/to/Backend/storage/reports
-RECORDING_STORAGE_DIR=/absolute/path/to/Backend/storage/recordings
-SCREENSHOT_STORAGE_DIR=/absolute/path/to/Backend/storage/screenshots
-ANALYSIS_STORAGE_DIR=/absolute/path/to/Backend/storage/analysis
+## Database Schema
 
-GEMINI_API_KEY=...
-LLM_MODEL=gemini-2.5-flash-lite
-MCP_DOOM_SSE_URL=http://localhost:8001/sse
-
-MAX_RUN_TICKS=35000
-DEFAULT_RUN_TICKS=3000
-LIVE_FRAME_FPS=2
-RECORDING_TELEMETRY_STRIDE=4
-CORS_ORIGINS=http://localhost:5173
-```
-
-Notes:
-
-- `DATABASE_URL` uses `postgresql+asyncpg://`. A legacy `postgresql+psycopg://` value is normalized to `postgresql+asyncpg://` for safety, but psycopg is not required by this backend.
-- Relative storage paths are resolved relative to the `Backend/` directory.
-- `LLM_MODEL` is configurable. The code default is `gemini-2.5-flash-lite`; local `.env` can override it.
-- `LLM_THROTTLE_SECONDS` controls the delay between LLM decisions. Compound MCP tools can still advance many game tics inside one decision.
-- `RECORDING_TELEMETRY_STRIDE` controls how often compound MCP tools return internal movement samples for recordings and position trails.
-- There is no backend `FREEDOOM2_WAD_PATH`. The backend passes `freedoom1` or `freedoom2` as the `wad` argument to `mcp-doom`.
-- `MCP_DOOM_SSE_URL` points at the persistent MCP service, not a subprocess command.
-
-## Database Setup
-
-The database layer is in `app/core/database.py`.
-
-It creates:
-
-```python
-engine = create_async_engine(settings.database_url, pool_pre_ping=True)
-SessionLocal = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
-Base = declarative_base()
-```
-
-Every HTTP request that needs the database receives an `AsyncSession` through the `get_db()` dependency. The session is closed at the end of the request.
-
-The schema is defined in `sql/schema.sql`. The `Makefile` target `make db-schema` applies that SQL file using `psql`.
-
-The schema creates `pgcrypto` so PostgreSQL can use `gen_random_uuid()`.
-
-## Database Tables
+The schema is in `Backend/sql/schema.sql`. It is additive and can be re-applied with `make db-schema`.
 
 ### `wad_files`
 
-Stores metadata for uploaded WAD files. The binary is stored on disk.
+Stores uploaded WAD metadata and a path to the file on disk.
 
-Important columns:
+Important fields:
 
-- `id`: UUID primary key.
-- `original_filename`: file name from upload.
-- `stored_path`: absolute path to the stored `.wad` file.
-- `file_size_bytes`: upload size.
-- `sha256_hash`: unique content hash used for deduplication.
-- `uploaded_at`: upload timestamp.
-- `validation_status`: `valid_pwad`, `invalid`, etc.
-- `validation_error`: optional validation error.
-- `detected_maps`: PostgreSQL text array of map names, such as `E1M1` or `MAP01`.
-- `iwad_required`: `freedoom1` or `freedoom2`.
+- `original_filename`, `stored_path`, `file_size_bytes`, `sha256_hash`.
+- `validation_status`, `validation_error`.
+- `detected_maps`, such as `E1M1` or `MAP01`.
+- `iwad_required`, derived from map naming (`E#M#` -> `freedoom1`, `MAP##` -> `freedoom2`).
 
-The `iwad_required` value is derived from detected map names:
-
-- Any `E\dM\d` map uses `freedoom1`.
-- Any `MAP\d{2}` map uses `freedoom2`.
-- Unknown naming defaults to `freedoom2`.
+Uploads are deduplicated by SHA-256. IWAD files and UDMF maps are rejected.
 
 ### `static_analysis_results`
 
-Stores one static analysis row per `(wad_file_id, map_name)`.
+Stores one row per `(wad_file_id, map_name)`.
 
-Important columns:
+Raw map-wide fields remain backward-compatible:
 
-- Thing counts:
-  - `thing_count_total`
-  - `thing_count_enemies`
-  - `thing_count_items`
-  - `thing_count_keys`
-  - `thing_count_weapons`
-- Geometry counts:
-  - `linedef_count`
-  - `sector_count`
-  - `secret_sector_count`
-  - `vertex_count`
-- Map size:
-  - `map_width_units`
-  - `map_height_units`
-- Balance metrics:
-  - `total_monster_hp`
-  - `total_health_pickup_pts`
-  - `total_armor_pickup_pts`
-  - `hitscanner_percent`
-  - `health_ratio`
-  - `ammo_ratio`
-  - `estimated_difficulty`
-- JSONB breakdowns:
-  - `enemy_breakdown`
-  - `item_breakdown`
-- `map_overview_png_path`: absolute path to generated overview PNG.
+- Thing counts: `thing_count_total`, `thing_count_enemies`, `thing_count_items`, `thing_count_keys`, `thing_count_weapons`.
+- Geometry counts: `linedef_count`, `sector_count`, `secret_sector_count`, `vertex_count`.
+- Dimensions: `map_width_units`, `map_height_units`.
+- Balance: `total_monster_hp`, `total_health_pickup_pts`, `total_armor_pickup_pts`, `hitscanner_percent`, `health_ratio`, `ammo_ratio`, `estimated_difficulty`.
+- JSON: `enemy_breakdown`, `item_breakdown`.
+- `map_overview_png_path`.
 
-The table has a unique constraint on `(wad_file_id, map_name)`.
+Current UI/report fields:
+
+- `map_title`: optional title parsed from `MAPINFO` or `UMAPINFO`.
+- `map_display_name`: title-aware UI label. Falls back to `<original_filename stem> - <map_name>`.
+- `map_title_source`: `mapinfo`, `umapinfo`, or `fallback_filename`.
+- `spawn_summary_by_skill`: JSON keyed by Doom difficulty `1` through `5`.
+
+`spawn_summary_by_skill` preserves authored Doom skill flags. For each skill it reports spawnable enemy/item/resource counts, enemy and item breakdowns, ratios, and estimated difficulty for backend single-player mode. If a mapper places enemies only on medium skill, those enemies are not counted as spawned at skills 1, 2, 4, or 5.
 
 ### `test_runs`
 
 Stores one autonomous QA session.
 
-Important columns:
+Important fields:
 
-- `wad_file_id`: uploaded WAD under test.
-- `static_analysis_id`: analysis row for the selected map.
-- `map_name`: selected map.
-- `difficulty_level`: ViZDoom difficulty, checked between 1 and 5.
-- `iwad_used`: selected base IWAD string, usually `freedoom1` or `freedoom2`.
-- `llm_model`: model used for this run.
-- `max_ticks`: run cap, default `3000`, clamped by service code.
-- `status`: `pending`, `analyzing`, `running`, `completed`, `failed`, or `cancelled`.
-- `started_at`, `completed_at`, `duration_seconds`.
-- `outcome`: `map_completed`, `player_died`, `timeout`, `error`, or `cancelled`.
-- `error_message`: failure detail.
-- Final aggregate stats:
-  - `final_hp`
-  - `final_armor`
-  - `total_kills`
-  - `total_deaths`
-  - `secrets_found`
-  - `total_items_collected`
-  - `total_actions_taken`
-  - `total_llm_calls`
-- Output paths:
-  - `recording_mp4_path`
-  - `report_pdf_path`
+- `wad_file_id`, `static_analysis_id`, `map_name`.
+- `difficulty_level`, `iwad_used`, `llm_model`, `max_ticks`.
+- Lifecycle: `status`, `started_at`, `completed_at`, `duration_seconds`, `outcome`, `error_message`.
+- Failure reporting: `failure_category`, `failure_stage`, `failure_summary`, `failure_diagnostics`.
+- Final stats: `final_hp`, `final_armor`, `total_kills`, `total_deaths`, `secrets_found`, `total_items_collected`, `total_actions_taken`, `total_llm_calls`.
+- Artifacts: `recording_mp4_path`, `report_pdf_path`.
 
-The backend enforces only one active run at a time because ViZDoom is effectively single-instance in this architecture.
+Only one active run is allowed at a time.
 
 ### `game_events`
 
-Stores the tick-by-tick trace. This is the most important runtime table.
+Stores the compact ordered gameplay/event trace.
 
-Important columns:
+Each row includes player state, event classification, `agent_decision_id`, `llm_reasoning`, `llm_input_summary`, and `action_taken`.
 
-- `run_id`.
-- `tick_number`.
-- `recorded_at`.
-- Player state:
-  - `player_x`
-  - `player_y`
-  - `player_angle`
-  - `health`
-  - `armor`
-  - `ammo_bullets`
-  - `ammo_shells`
-  - `ammo_rockets`
-  - `ammo_cells`
-  - `kill_count`
-  - `item_count`
-  - `secret_count`
-  - `weapon_selected`
-- Agent decision:
-  - `action_taken` JSONB
-  - `llm_reasoning`
-  - `llm_input_summary`
-- Event classification:
-  - `event_type`
-  - `killed_enemy_type`
-  - `damage_received`
+`action_taken` stores:
 
-`game_events` has a unique constraint on `(run_id, tick_number)`. It also has a partial index on notable events where `event_type != 'normal'`.
+- `mcp_tool`: the tool requested by the agent decision.
+- `mcp_executed_tool`: the actual MCP tool called.
+- `mcp_params`.
+- `mcp_service`.
+- `mcp_input`.
+- compact `mcp_output`, including `action_summary` when provided by MCP.
+- warnings such as fallback parameter normalization or missing telemetry frames.
 
-### `notable_event_screenshots`
+Trace API serializers also expose top-level computed fields:
 
-Stores screenshots only for meaningful moments, not every tick.
+- `mcp_tool`
+- `mcp_executed_tool`
+- `mcp_params`
+- `mcp_action_summary`
+- `mcp_stop_reason`
 
-Screenshots are saved on disk. The table stores:
+### `agent_decisions`
 
-- `run_id`
-- `game_event_id`
-- `screenshot_path`
-- `captured_at`
+Stores the full LLM/MCP audit trail for lockstep control.
 
-Screenshots are currently captured for:
+Each row includes:
 
-- `kill`
-- `death`
-- `damage_taken`
+- Run sequence number.
+- Tick before and after the selected MCP tool.
+- Compact JSON input sent to the LLM.
+- Parsed LLM decision JSON and QA-facing `reasoning_summary`.
+- MCP tool name, input JSON, output JSON, stop reason, and timing.
+- Optional linked `game_event_id`.
 
-### `agent_position_trail`
+Use `/runs/{run_id}/decisions` for the full paginated decision trace. `/runs/{run_id}/trace` remains the backwards-compatible gameplay trace.
 
-Stores downsampled position samples for frontend path overlays.
+### Other Tables
 
-The collector inserts position rows from two sources:
-
-- one final decision position for each backend decision
-- telemetry frames returned by compound MCP tools during the internal ViZDoom action loop
-
-- `run_id`
-- `tick_number`
-- `x`
-- `y`
-- `health`
-
-The full decision trace remains in `game_events`. The denser movement path is in `agent_position_trail`.
-
-### `test_reports`
-
-Stores structured QA report metadata and the generated PDF path.
-
-Important columns:
-
-- `run_id`, unique.
-- Narrative report sections:
-  - `report_purpose`
-  - `test_items_summary`
-  - `test_environment_summary`
-  - `defect_summary_narrative`
-  - plus additional QA-template fields that are present in the schema and ORM.
-- JSON sections:
-  - `hardware_spec`
-  - `software_spec`
-  - `objectives_planned`
-  - `objectives_covered`
-  - `objectives_omitted`
-  - `pass_fail_summary`
-  - `risk_areas`
-  - `good_quality_areas`
-- `pdf_path`
-- `generation_status`
-- `generation_error`
-
-The report service fills the structured report fields and produces a PDF with WeasyPrint.
-
-### `defects`
-
-Stores algorithmic and agent-observed defects.
-
-Important columns:
-
-- `run_id`
-- `report_id`
-- `severity`: 1 critical, 2 major, 3 minor, 4 trivial.
-- `priority`: 1 high, 2 medium, 3 low.
-- `resolution_status`: default `open`.
-- `defect_type`
-- `title`
-- `description`
-- `reproduction_steps`
-- `detected_at_tick`
-- `position_x`
-- `position_y`
-- `screenshot_id`
-- `recommendation`
-
-Agent-observed issues from Gemini responses are stored as `defect_type='agent_observed'`.
-
-The table has a uniqueness constraint on `(run_id, defect_type, detected_at_tick)` so rerunning defect detection does not duplicate the same defect for the same run and tick.
-
-## Application Startup
-
-`app/main.py` creates the FastAPI application.
-
-It configures:
-
-- App title from settings.
-- Debug mode from settings.
-- CORS middleware.
-- Routers:
-  - WADs
-  - Analysis
-  - Runs
-  - Reports
-  - WebSocket trace
-
-Startup behavior:
-
-- Ensures these directories exist:
-  - `storage/`
-  - `storage/wads/`
-  - `storage/analysis/`
-  - `storage/reports/`
-  - `storage/recordings/`
-  - `storage/screenshots/`
-
-Health endpoints:
-
-- `GET /health`
-  - Returns `{"status": "ok"}`.
-- `GET /health/gemini`
-  - Calls `GeminiService.probe_model()`.
-  - Returns `status=ok` if the configured model works.
-  - Returns `status=error` with the model and error string if not.
-  - This endpoint intentionally avoids crashing the whole API when Gemini is unavailable.
-
-## WAD Upload Flow
-
-Endpoint:
-
-```http
-POST /wads/upload
-```
-
-Router:
-
-```text
-app/routers/wads.py
-```
-
-Service:
-
-```text
-app/services/wad_service.py
-```
-
-Repository:
-
-```text
-app/repositories/wad_repository.py
-```
-
-Serializer:
-
-```text
-app/serializers/wad_serializers.py
-```
-
-Upload logic:
-
-1. Read uploaded bytes.
-2. Validate binary header:
-   - If file is too small, reject.
-   - If first 4 bytes are `IWAD`, reject.
-   - If first 4 bytes are not `PWAD`, reject.
-   - If `TEXTMAP` appears in the binary, reject as UDMF unsupported.
-3. Compute SHA-256.
-4. Check `wad_files.sha256_hash`.
-5. If an identical WAD already exists, return the existing database row.
-6. Generate a UUID for the new WAD.
-7. Save it to `storage/wads/{uuid}.wad`.
-8. Parse map names with omgifol.
-9. Reject if no supported maps are detected.
-10. Detect `iwad_required`.
-11. Insert the `wad_files` row with:
-    - `validation_status='valid_pwad'`
-    - `detected_maps`
-    - `iwad_required`
-12. Immediately run static analysis for all detected maps.
-13. Commit the transaction.
-
-Deduplication is content-based, not filename-based. Uploading the same bytes again returns the existing WAD row.
-
-## Map List Endpoints
-
-There are two map-list endpoints.
-
-### All Maps
-
-```http
-GET /wads/maps?limit=100&offset=0
-GET /wads/maps?wad_file_id={wad_id}
-```
-
-Returns every detected map across all uploaded WADs.
-
-Query parameters:
-
-- `wad_file_id`: optional UUID. When supplied, returns maps only for that WAD.
-- `limit`: number of WAD records to scan when `wad_file_id` is not supplied. Default `100`, max `500`.
-- `offset`: WAD pagination offset when `wad_file_id` is not supplied. Default `0`.
-
-Pagination is applied at the WAD level, not the flattened map row level. This keeps maps from the same WAD together while preventing the endpoint from scanning the full upload history by default.
-
-Response item shape:
-
-```json
-{
-  "wad_file_id": "uuid",
-  "map_name": "E1M1",
-  "iwad_required": "freedoom1",
-  "analyzed": true,
-  "map_overview_png_url": "/wads/{wad_id}/map-png?map_name=E1M1"
-}
-```
-
-Implementation:
-
-- `WadRepository.list()`
-- `WadService.all_maps()`
-- `WadService._maps_for_wad()`
-
-### Maps For One WAD
-
-```http
-GET /wads/{wad_id}/maps
-```
-
-Returns detected maps only for one WAD.
+- `agent_position_trail`: downsampled movement samples from decision endpoints and MCP telemetry frames.
+- `notable_event_screenshots`: screenshot files for notable moments.
+- `defects`: detected findings, including `difficulty_spawn_mismatch` and `pwad_crash`; new rows include a stable `fingerprint`, first/last seen ticks, and occurrence count.
+- `test_reports`: structured report fields plus generated PDF path and status.
 
 ## Static Analysis
 
-Endpoint:
+`app/services/analysis_service.py` is responsible for WAD map detection, IWAD requirement detection, start validation helpers, map metadata extraction, spawn summaries, balance metrics, and overview PNG rendering.
 
-```http
-GET /wads/{wad_id}/analysis
-```
+Static analysis produces both raw THINGS counts and selected-skill spawn summaries. This is intentional:
 
-Service:
+- Raw counts tell authors what is present in the map data.
+- Spawn summaries tell QA and reports what actually appears at each Doom difficulty.
 
-```text
-app/services/analysis_service.py
-```
+The project currently preserves authored flags. It does not force enemies or items to spawn at a selected difficulty. If raw enemies/items are hidden by flags for a run difficulty, `DefectService` creates a `difficulty_spawn_mismatch` defect.
 
-Constants:
+Example observed behavior:
 
-```text
-app/services/analysis_constants.py
-```
+- `thelonghallways.wad` / `E1M1` raw enemies: `8`.
+- Difficulty 3 spawned enemies: `8`.
+- Difficulty 5 spawned enemies: `0`.
 
-Repository:
+## Run Execution
 
-```text
-app/repositories/analysis_repository.py
-```
+`RunService.create_run()` validates:
 
-Serializer:
+- No other run is active.
+- WAD exists.
+- `map_name` is present in `wad_files.detected_maps`.
+- Map has a Player 1 or deathmatch start.
+- Static analysis exists or can be generated.
+- `max_ticks` is clamped to configured limits.
 
-```text
-app/serializers/analysis_serializers.py
-```
+It then stores a pending run and starts `agent_run_task()`.
 
-Static analysis is run automatically during upload and can also be requested later. The service uses an upsert-style repository method, so rerunning analysis updates existing rows.
+New QA runs use lockstep LLM control by default. The backend starts MCP with `async_player=False`, which puts ViZDoom in `PLAYER` mode. In this mode the game does pause while the LLM chooses; gameplay advances only when the backend executes the chosen MCP tool.
 
-### Map Detection
+The run task:
 
-`detect_map_names(wad_path)` uses:
+1. Renders the lockstep QA prompt with selected-difficulty static analysis.
+2. Starts MCP `start_game` with `wad`, `scenario_wad`, `map_name`, `difficulty`, `episode_timeout`, and `async_player=False`.
+3. Calls `get_state`, plus non-advancing context helpers `get_threat_assessment` and `get_navigation_info`.
+4. Creates an `agent_decisions` row and broadcasts `llm_start`.
+5. Lets Gemini choose one tactical MCP tool. If Gemini is unavailable, rate-limited, or returns unusable JSON, deterministic fallback chooses visible combat, visible pickup collection, or exploration.
+6. Applies backend guards so combat tools only target currently visible monsters and repeated failed targets are avoided.
+7. Executes the selected tool, records MCP input/output, stop reason, decision timings, gameplay event, telemetry frames, notable screenshots, and MP4 frames.
+8. Broadcasts typed WebSocket messages: `llm_decision`, `mcp_call_start`, `mcp_call_result`, `state`, `frame`, `defect`, and `report_status`.
+9. Detects defects and generates a report when the run reaches completion, death, timeout, stuck stop, cancellation, or crash.
 
-```python
-wad = WAD(wad_path)
-names = [name.upper() for name in wad.maps.keys()]
-```
+Lockstep recovery is explicit:
 
-The returned map names are sorted.
+- Progress is tracked by coarse position cluster, kills, items, secrets, explored cells, and keys.
+- Repeated identical progress signatures trigger bounded `retreat` or `explore` recovery actions.
+- Repeated invisible combat targets are blacklisted for the run.
+- Repeated combat actions with shots but no hits/kills escalate recovery.
+- After the configured recovery limit, the run stops with outcome `stuck` instead of looping indefinitely.
 
-### IWAD Detection
+Combat and pickup behavior is LLM-selected and MCP-executed:
 
-`detect_iwad_requirement(map_names)` applies:
+- Normal backend QA runs use `get_state`, `explore`, `move_to`, `aim_and_shoot`, `strafe_and_shoot`, `retreat`, bounded `take_action`, `get_threat_assessment`, and `get_navigation_info`.
+- Combat tools only fire at visible targets. If a requested target is not visible, the backend falls back to exploration and records the guard decision.
+- Compound tools return telemetry frames so recordings and position trails show gameplay during the bounded tool execution, not only after each LLM decision.
 
-```text
-E\dM\d  -> freedoom1
-MAP\d{2} -> freedoom2
-fallback -> freedoom2
-```
+## PWAD Crash Reporting
 
-This is stored on `wad_files.iwad_required` and later copied to `test_runs.iwad_used`.
+Load, startup, MCP disconnect, preflight, and runtime initialization failures are user-facing QA outcomes instead of bare backend failures.
 
-### omgifol Parsing
+Crash-run contract:
 
-`AnalysisService.analyze_map()` loads the WAD and constructs:
+- Run detail has `status=failed`, `outcome=pwad_crash`, `failure_category=pwad_crash`, `failure_stage`, `failure_summary`, and `failure_diagnostics`.
+- A `pwad_crash` defect is created even when zero gameplay actions were recorded.
+- Report JSON and PDF are generated with crash evidence.
+- Trace, events, and position endpoints return empty-but-valid payloads when gameplay never initialized.
+- Recording returns a structured `404` response with `error=recording_not_available`, `failure_category`, and `failure_stage` when no video can exist.
+- Raw technical diagnostics stay in `failure_diagnostics` and report evidence; the product-facing summary is that the PWAD crashed or could not initialize under the configured test environment.
 
-```python
-editor = MapEditor(wad.maps[map_name])
-```
+## MCP Server
 
-It reads:
+`mcp-doom` exposes ViZDoom through FastMCP.
 
-- `editor.things`
-- `editor.vertexes`
-- `editor.linedefs`
-- `editor.sectors`
+Important tools used by the backend:
 
-The service counts Thing types with `Counter(int(thing.type) for thing in editor.things)`.
-
-### Thing Classification
-
-Thing classification comes from `analysis_constants.py`.
-
-The service uses:
-
-- `ENEMY_TYPES`
-- `ITEM_TYPES`
-- `KEY_TYPES`
-- `WEAPON_TYPES`
-
-Enemy breakdown stores:
-
-```json
-{
-  "IMP": {
-    "count": 5,
-    "hp": 60,
-    "total_hp": 300,
-    "hitscanner": false
-  }
-}
-```
-
-Item breakdown stores:
-
-```json
-{
-  "STIMPACK": {
-    "count": 3,
-    "value": 10,
-    "total": 30,
-    "category": "health"
-  }
-}
-```
-
-### Geometry Metrics
-
-The service stores:
-
-- total linedefs
-- total sectors
-- total vertices
-- secret sectors where `sector.type == 9`
-- map width from vertex bounding box
-- map height from vertex bounding box
-
-Width and height are Doom map units:
-
-```text
-map_width_units = max_x - min_x
-map_height_units = max_y - min_y
-```
-
-### Balance Metrics
-
-The current implementation computes dmon-style fallback metrics directly from Thing counts:
-
-- `total_monster_hp`
-- `total_health_pickup_pts`
-- `total_armor_pickup_pts`
-- `hitscanner_percent`
-- `health_ratio`
-- `ammo_ratio`
-- `estimated_difficulty`
-
-The difficulty function is heuristic:
-
-- Zero-enemy maps are marked `easy`.
-- More than 80 enemies adds 2 points.
-- More than 30 enemies adds 1 point.
-- Hitscanner percentage above 40 adds 1 point.
-- Health ratio below 0.15 adds 1 point.
-- Ammo ratio below 0.8 adds 1 point.
-
-Score mapping:
-
-- `0` -> `easy`
-- `1` -> `fair`
-- `2` or `3` -> `hard`
-- `4+` -> `slaughter`
-
-If a map has no monsters, ratios involving monster HP are stored as `0.0` instead of `NULL`. This keeps API/report consumers from treating a valid monster-free map as missing analysis data.
-
-Static analysis is recomputed when `AnalysisService.analyze_map()` is called, even if an existing row and overview image already exist. The repository upsert updates the existing `(wad_file_id, map_name)` row. This avoids stale rows where only `map_overview_png_path` was refreshed and balance ratios stayed null.
-
-### Overview PNG Rendering
-
-`AnalysisService._render_overview()` creates a 1024x1024 PNG using Pillow.
-
-It:
-
-1. Creates a black RGB image.
-2. Computes vertex bounding box.
-3. Scales the map into the image with 20 pixels of padding.
-4. Draws linedefs in gray.
-5. Attempts to draw secret linedefs in red if the linedef has a `secret` attribute.
-6. Saves the image to:
-
-```text
-storage/analysis/{wad_id}_{map_name}_overview.png
-```
-
-Map overview PNGs are stored separately from gameplay screenshots. Gameplay screenshots remain in `storage/screenshots/`, while static analysis output lives in `storage/analysis/`.
-
-Endpoint:
-
-```http
-GET /wads/{wad_id}/map-png?map_name=E1M1
-```
-
-Returns the PNG with `image/png`.
-
-## Run Creation
-
-Endpoint:
-
-```http
-POST /runs
-```
-
-Request body:
-
-```json
-{
-  "wad_file_id": "uuid",
-  "map_name": "E1M1",
-  "difficulty_level": 3,
-  "max_ticks": 3000
-}
-```
-
-Service:
-
-```text
-app/services/run_service.py
-```
-
-Run creation logic:
-
-1. Acquire a PostgreSQL advisory transaction lock:
-
-   ```sql
-   SELECT pg_advisory_xact_lock(42770001)
-   ```
-
-   This prevents concurrent requests from starting two ViZDoom sessions.
-
-2. Fail orphaned active `pending` runs that were created but never started.
-3. Query for active runs with status:
-   - `pending`
-   - `analyzing`
-   - `running`
-4. If an active run exists, return HTTP `409 Conflict`.
-5. Fetch the WAD.
-6. Validate that `map_name.upper()` is in `wad_files.detected_maps`.
-7. Fetch or create static analysis for that map.
-8. Clamp `max_ticks`:
-
-   ```python
-   max(1, min(requested_or_default, settings.max_run_ticks))
-   ```
-
-9. Create `test_runs` row with:
-   - selected WAD
-   - selected static analysis
-   - selected map
-   - difficulty level
-   - `iwad_used=wad.iwad_required`
-   - `llm_model=settings.llm_model`
-   - clamped `max_ticks`
-   - `status='pending'`
-10. Commit the row.
-11. Start an in-process async task:
-
-    ```python
-    RUN_TASKS[run.id] = asyncio.create_task(agent_run_task(run.id))
-    ```
-
-12. Return immediately to the frontend.
-
-The active-run guard was tested with simultaneous `/runs` requests. One request creates a run, and the other receives `409 Conflict`.
-
-## Run Cancellation And Force Stop
-
-Endpoints:
-
-```http
-DELETE /runs/{run_id}
-POST /runs/{run_id}/force-stop
-```
-
-All three call the same `RunService.cancel()` method.
-
-Cancel logic:
-
-1. Fetch the run.
-2. If no run exists, return `404`.
-3. If an in-memory task exists and is still running:
-   - cancel the task
-   - wait up to 30 seconds
-   - if timeout occurs, call MCP `stop_game`
-4. If there is no running task:
-   - if the run is already terminal and has a report, return it
-   - otherwise call MCP `stop_game`
-5. Call `finalize_stopped_run(..., outcome='cancelled')`.
-6. Refresh and return the run.
-
-`finalize_stopped_run()`:
-
-- Reads the latest `game_events` row.
-- Copies latest HP, armor, kills, secrets, and items into `test_runs`.
-- Counts actions and LLM calls from event rows.
-- Sets status to `cancelled`.
-- Sets outcome to `cancelled`.
-- Sets `completed_at`.
-- Computes `duration_seconds` if `started_at` is available.
-- Commits the run update.
-- Runs defect detection.
-- Generates a report.
-- Commits again.
-
-This means force-stopped runs still have computed data and reports.
-
-## Agent Run Task
-
-The core long-running function is:
-
-```text
-app/services/run_service.py::agent_run_task()
-```
-
-This function owns the autonomous run lifecycle.
-
-### Startup
-
-When the task starts:
-
-1. It opens a fresh `SessionLocal()` database session.
-2. Fetches the `TestRun`.
-3. Fetches the WAD row.
-4. Fetches the static analysis row.
-5. Renders the agent system prompt.
-6. Creates:
-   - `CollectorService`
-   - `RecordingService`
-   - `GeminiService`
-7. Opens `McpDoomClient()` as an async context manager.
-8. Calls MCP `start_game`.
-
-The MCP `start_game` call passes:
-
-```json
-{
-  "wad": "freedoom1 or freedoom2",
-  "scenario_wad": "/absolute/path/to/uploaded.wad",
-  "map_name": "E1M1",
-  "difficulty": 3,
-  "episode_timeout": 3000,
-  "screen_resolution": "RES_320X240",
-  "render_hud": false,
-  "window_visible": false
-}
-```
-
-After MCP starts the game, the backend updates:
-
-- `status='running'`
-- `started_at=now()`
-
-and commits.
-
-### Per-Tick Loop
-
-The loop runs:
-
-```python
-for tick in range(run.max_ticks):
-```
-
-Each backend loop is an agent decision, not necessarily one Doom tic. Compound MCP tools such as `explore`, `move_to`, and `aim_and_shoot` may advance dozens or hundreds of internal ViZDoom tics before returning one backend event.
-
-Each loop:
-
-1. Calls `mcp.get_state()`.
-2. Converts screenshot PNG bytes to a frame array.
-3. Normalizes game variables.
-4. Fetches the last 5 trace entries.
-5. Builds compact LLM input:
-
-   ```json
-   {
-     "tick": 0,
-     "game_variables": {},
-     "objects": [],
-     "episode_finished": false,
-     "recent_trace": []
-   }
-   ```
-
-6. Calls Gemini through `GeminiService.decide()`.
-7. Executes the selected MCP tool. Tool parameters are normalized and constrained before the call.
-8. Normalizes the MCP response.
-9. Stores a compact MCP call record in `game_events.action_taken`, including:
-   - `mcp_service`
-   - requested `mcp_tool`
-   - actual `mcp_executed_tool` when it differs
-   - sanitized `mcp_input`
-   - compact `mcp_output`
-10. Collects/persists a `game_events` row.
-11. Optionally saves a screenshot for notable events.
-12. Writes a frame to the MP4 recorder.
-13. Broadcasts a WebSocket `state` message.
-14. Broadcasts a throttled WebSocket `frame` message if enough time has passed.
-15. Commits the DB work.
-16. Checks terminal conditions:
-    - map exit
-    - player death
-    - max ticks reached
-17. Sleeps for `LLM_THROTTLE_SECONDS` if configured.
-
-Fallback and normalized defaults now prefer deeper exploration:
-
-- `explore`: `max_tics=200`, `stop_on_enemy=true`, `stop_on_item=true`
-- `aim_and_shoot`/`strafe_and_shoot`: `max_tics=120`
-- `move_to`: `max_tics=180`
-
-Object-id tools fall back to `explore` if Gemini omits a usable `object_id`. The warning is stored in `action_taken.tool_param_warning`.
-
-### Terminal Conditions
-
-The task stops when:
-
-- event type is `map_exit`
-- state has `level_completed`
-- state has `next_map`
-- health is `0` or below
-- tick reaches `max_ticks`
-- task is cancelled
-- an exception occurs
-
-Outcomes:
-
-- `map_completed`
-- `player_died`
-- `timeout`
-- `cancelled`
-- `error`
-
-### Finalization
-
-In the `finally` block, the task:
-
-1. Calls MCP `stop_game()`.
-2. Finalizes the MP4 writer.
-3. Stores `recording_mp4_path` if a video was written.
-4. Sets terminal status.
-5. Stores outcome and completion timestamp.
-6. Computes duration.
-7. Stores total actions and LLM calls.
-8. Copies final player stats from the last event.
-9. Commits.
-10. Runs defect detection for completed/cancelled runs.
-11. Generates a report.
-12. Commits.
-13. Broadcasts a terminal WebSocket state.
-14. Removes the task from `RUN_TASKS`.
-
-Report generation errors are caught during finalization and force-stop finalization. The run remains terminal and the error is written to `test_runs.error_message` instead of crashing the background task.
-
-## MCP Client
-
-The MCP integration is in:
-
-```text
-app/services/mcp_client_service.py
-```
-
-The client uses:
-
-```python
-from fastmcp import Client
-```
-
-It connects to:
-
-```python
-settings.mcp_doom_sse_url
-```
-
-Expected value:
-
-```text
-http://localhost:8001/sse
-```
-
-Exposed methods:
-
-- `call_tool(name, params)`
-- `start_game(wad, scenario_wad, map_name, difficulty, episode_timeout)`
-- `get_state()`
-- `stop_game()`
-
-`normalize_mcp_state()` handles the different shapes FastMCP can return:
-
-- raw lists
-- content wrappers
-- structured content
-- text JSON
-- image data with `mime_type`, `mimeType`, or `format`
-
-It returns:
-
-```python
-tuple[dict[str, Any], bytes | None]
-```
-
-where the `bytes` value is an optional screenshot image.
-
-## Gemini Service
-
-Gemini integration is in:
-
-```text
-app/services/gemini_service.py
-```
-
-Allowed MCP tools:
-
+- `start_game`
 - `get_state`
-- `explore`
-- `aim_and_shoot`
-- `move_to`
-- `strafe_and_shoot`
-- `retreat`
 - `get_threat_assessment`
 - `get_navigation_info`
+- `explore`
+- `move_to`
+- `aim_and_shoot`
+- `strafe_and_shoot`
+- `retreat`
 - `take_action`
+- `stop_game`
+- `list_wad_maps`
 
-`probe_model()`:
+Async-player tools still supported by MCP, but not used for backend QA runs:
 
-- Requires `GEMINI_API_KEY`.
-- Uses `google-genai`.
-- Sends a tiny prompt: `Return ok.`
-- Returns model and response.
+- `get_situation_report` returns screenshot, executor state, objective queue, strategy, recent events, game variables, filtered objects, exploration info, and `executor_progress`.
+- `set_objective` queues an objective and supports `replace=true` to clear stale objectives during recovery.
+- `set_strategy` adjusts aggression, retreat/collect thresholds, engagement range, collection range, and cover preference.
 
-`decide(system_prompt, llm_input)`:
+`executor_progress` includes objective age, recent progress counters, position spread, stuck phase/tics, stuck recovery count, last progress tic, and current target hints.
 
-- If no API key is configured, returns fallback `explore` with a 200-tic compound exploration action.
-- Sends the rendered system prompt plus current state JSON.
-- Parses the model output as JSON.
-- On rate limit, waits briefly and retries once.
-- On any Gemini/API/parsing exception after retry, returns fallback `explore`.
+Compound and async tools return `action_summary` where possible so trace endpoints can expose `mcp_action_summary` and `mcp_stop_reason`.
 
-The fallback path is important because it lets long test runs continue even when Gemini is temporarily unavailable or rate-limited.
+The MCP server normalizes custom PWAD starts in a temporary runtime copy when a map has duplicate player starts or only deathmatch starts. It does not rewrite enemy or item skill flags.
 
-`parse_decision(text)`:
+Combat handling only fires at visible targets. If a requested target is no longer visible, combat tools return an `action_summary.stop_reason` of `target_not_visible`. Object lists are sorted with visible objects first, then by distance, so callers and tests prefer actionable targets instead of wall-blocked monsters.
 
-- Removes Markdown code fences if present.
-- Extracts the first JSON object.
-- Parses it.
-- Validates `mcp_tool` against `ALLOWED_TOOLS`.
-- Defaults unknown tools to `explore`.
-- Ensures `mcp_params` is a dictionary.
-
-Expected Gemini output:
-
-```json
-{
-  "reasoning_summary": "brief explanation",
-  "mcp_tool": "explore",
-  "mcp_params": {},
-  "observed_issue": null
-}
-```
-
-## Agent Prompt
-
-The prompt file is:
-
-```text
-app/prompts/agent_system_prompt.md
-```
-
-It is rendered by:
-
-```text
-app/services/prompt_service.py
-```
-
-Template values:
-
-- `{map_name}`
-- `{iwad_used}`
-- `{difficulty_level}`
-- `{estimated_difficulty}`
-- `{thing_count_enemies}`
-- `{enemy_breakdown_summary}`
-- `{hitscanner_percent}`
-- `{health_ratio}`
-- `{ammo_ratio}`
-- `{secret_sector_count}`
-- `{map_width_units}`
-- `{map_height_units}`
-- `{total_health_pickup_pts}`
-
-The prompt tells the model to act as a QA playtester and to:
-
-- navigate the full map
-- engage enemies tactically
-- find secrets
-- stress-test geometry
-- preserve evidence
-- prefer compound MCP tools
-- report map design problems through `observed_issue`
-- include specific object names or map features in reasoning instead of repeating generic text
-
-Compound tools are preferred because raw single-tic actions are too slow when each LLM call is throttled.
-
-If Gemini sets `observed_issue`, `CollectorService` creates a `defects` row with:
-
-- `defect_type='agent_observed'`
-- severity `2`
-- priority `2`
-- title `Agent-observed issue`
-- description from the model
-- current tick and position
-
-## Collector Service
-
-Runtime event collection is in:
-
-```text
-app/services/collector_service.py
-```
-
-Responsibilities:
-
-- normalize game variables
-- detect event type
-- insert `game_events`
-- insert final decision positions and telemetry-derived position samples into `agent_position_trail`
-- insert agent-observed defects
-- attach notable screenshots
-
-`action_taken` JSONB stores accurate MCP service data for each event:
-
-```json
-{
-  "mcp_tool": "explore",
-  "mcp_params": {
-    "max_tics": 200,
-    "stop_on_enemy": true,
-    "stop_on_item": true,
-    "capture_telemetry": true,
-    "telemetry_stride": 4
-  },
-  "mcp_service": "mcp-doom",
-  "mcp_input": {
-    "max_tics": 200,
-    "stop_on_enemy": true,
-    "stop_on_item": true,
-    "capture_telemetry": true,
-    "telemetry_stride": 4
-  },
-  "mcp_output": {
-    "tic": 214,
-    "action_summary": {
-      "distance_moved": 532.2,
-      "direction_changes": 0,
-      "enemies_seen": [],
-      "items_seen": [],
-      "stop_reason": "max_tics"
-    }
-  }
-}
-```
-
-### Variable Normalization
-
-`normalize_variables(state)` accepts multiple key variants from MCP/ViZDoom:
-
-- Position:
-  - `POSITION_X`
-  - `position_x`
-  - `x`
-- Angle:
-  - `ANGLE`
-  - `angle`
-  - `player_angle`
-- Health:
-  - `HEALTH`
-  - `health`
-- Armor:
-  - `ARMOR`
-  - `armor`
-- Ammo:
-  - `AMMO0`, `ammo_bullets`, `bullets`
-  - `AMMO1`, `ammo_shells`, `shells`
-  - `AMMO2`, `ammo_rockets`, `rockets`
-  - `AMMO3`, `ammo_cells`, `cells`
-- Counts:
-  - `KILLCOUNT`, `kill_count`, `kills`
-  - `ITEMCOUNT`, `item_count`, `items`
-  - `SECRETCOUNT`, `secret_count`, `secrets`
-- Weapon:
-  - `SELECTED_WEAPON`
-  - `weapon_selected`
-
-It also derives:
-
-- `level_completed`
-- `map_exit`
-
-### Event Detection
-
-`detect_event(current)` returns:
-
-- `map_exit` if level completion/map exit is detected.
-- `death` if health is 0 or below.
-- `normal` for the first event if no previous state exists.
-- `kill` if kill count increased.
-- `secret_found` if secret count increased.
-- `item_pickup` if item count increased.
-- `damage_taken` if health decreased.
-- `stuck` if position remains almost unchanged for 30 consecutive backend ticks.
-- `normal` otherwise.
-
-Damage amount is stored in `damage_received`.
-
-## Recording Service
-
-Recording is in:
-
-```text
-app/services/recording_service.py
-```
-
-It uses OpenCV headless.
-
-The MP4 file path is:
-
-```text
-storage/recordings/{run_id}.mp4
-```
-
-OpenCV first writes an intermediate MPEG-4 Part 2 file:
-
-```text
-storage/recordings/{run_id}.source.mp4
-```
-
-On `finalize()`, the service transcodes that source file to browser-playable H.264:
-
-```text
-codec: h264 / libx264
-pixel format: yuv420p
-container: mp4
-movflags: +faststart
-```
-
-The final served file is always expected at:
-
-```text
-storage/recordings/{run_id}.mp4
-```
-
-If `ffmpeg-python` is installed, the service uses it. If not, it falls back to the `ffmpeg` command-line binary. If both transcoding paths fail, the source file is returned as a last-resort recording rather than deleting evidence.
-
-Important methods:
-
-- `start_from_frame(frame)`
-  - Creates a `cv2.VideoWriter`.
-  - Writes the intermediate source file with `mp4v`, because that codec is broadly available in OpenCV builds.
-  - Uses the actual frame dimensions.
-- `write_frame(frame)`
-  - Starts the writer lazily on the first frame.
-  - Converts RGB to BGR for OpenCV.
-  - Writes to MP4.
-- `save_screenshot(frame, event_id)`
-  - Saves PNG to `storage/screenshots/{event_id}.png`.
-- `finalize()`
-  - Releases the writer.
-  - Transcodes the intermediate source to H.264.
-  - Deletes the source file after successful transcode.
-  - Returns the browser-playable path.
-
-Helper functions:
-
-- `png_bytes_to_frame(png_bytes)`
-  - Decodes MCP screenshot PNG bytes into RGB numpy frame.
-- `jpeg_b64(frame, max_width=480)`
-  - Resizes wide frames.
-  - Encodes JPEG at quality 70.
-  - Returns base64 ASCII.
-
-## WebSocket Live Feed
-
-Router:
-
-```text
-app/routers/ws.py
-```
-
-Service:
-
-```text
-app/services/websocket_service.py
-```
-
-Endpoint:
-
-```text
-WS /ws/runs/{run_id}
-```
-
-Connection behavior:
-
-- Accepts the WebSocket.
-- Stores it in a `dict[str, set[WebSocket]]`.
-- Keeps the connection alive by waiting for client text messages.
-- Removes the connection on disconnect.
-
-Broadcast behavior:
-
-- `websocket_service.broadcast(run_id, payload)` sends JSON text to every connected client for that run.
-- Dead sockets are removed automatically.
-
-### State Message
-
-State messages are sent every backend loop.
-
-Shape:
-
-```json
-{
-  "type": "state",
-  "tick": 342,
-  "status": "running",
-  "health": 78,
-  "armor": 50,
-  "kills": 3,
-  "ammo": {
-    "bullets": 120,
-    "shells": 20,
-    "rockets": 0,
-    "cells": 0
-  },
-  "position": {
-    "x": -512.0,
-    "y": 1024.0,
-    "angle": 180
-  },
-  "event_type": "normal",
-  "llm_reasoning": "reasoning summary",
-  "action": {
-    "mcp_tool": "explore",
-    "mcp_params": {}
-  },
-  "screenshot_b64": null
-}
-```
-
-`screenshot_b64` is only populated for:
-
-- `kill`
-- `death`
-- `damage_taken`
-
-Normal ticks do not include screenshots.
-
-### Frame Message
-
-Frame messages are separate from state messages.
-
-Shape:
-
-```json
-{
-  "type": "frame",
-  "tick": 342,
-  "mime_type": "image/jpeg",
-  "frame_b64": "..."
-}
-```
-
-Frame messages are throttled by `LIVE_FRAME_FPS`. This lets the frontend show the agent playing live without streaming full PNG images every tick.
-
-## Trace APIs
-
-Trace endpoints are in:
-
-```text
-app/routers/runs.py
-```
-
-### Paginated Trace
-
-```http
-GET /runs/{run_id}/trace?page=1&page_size=100
-```
-
-Returns `game_events` ordered by `tick_number`.
-
-Response model:
-
-```text
-TraceEntryOut
-```
-
-Includes:
-
-- player state
-- event type
-- `llm_input_summary`
-- `llm_reasoning`
-- `action_taken`
-- damage/kill metadata
-
-### Filtered Events
-
-```http
-GET /runs/{run_id}/events?type=kill,death,damage_taken
-```
-
-If `type` is omitted, it returns notable events only, where `event_type != 'normal'`.
-
-If `type` is present, it filters `game_events.event_type`.
-
-Use `/runs/{run_id}/trace` for the full ordered history, including normal events.
-
-### Position Trail
-
-```http
-GET /runs/{run_id}/position-trail
-```
-
-Returns downsampled path points from `agent_position_trail`.
-
-### Defects
-
-```http
-GET /runs/{run_id}/defects
-```
-
-Returns all defects for a run ordered by severity.
-
-This endpoint is the frontend source for the dynamic defect table. The frontend should not parse the PDF to display defects.
-
-## Recording And Report APIs
-
-### Recording
-
-```http
-GET /runs/{run_id}/recording
-```
-
-Returns:
-
-```text
-video/mp4
-```
-
-The endpoint validates:
-
-- run exists
-- `recording_mp4_path` is set
-- file exists on disk
-
-### Report Metadata
-
-```http
-GET /runs/{run_id}/report
-```
-
-Returns `ReportOut`.
-
-If no report exists yet, it generates one synchronously and commits it.
-
-If report generation raises `ValueError` because the run is missing, the endpoint returns `404`. Other report-generation exceptions return `500` with a clear error string after rolling back the DB session.
-
-### Report PDF
-
-```http
-GET /runs/{run_id}/report/pdf
-```
-
-Returns:
-
-```text
-application/pdf
-```
-
-The endpoint validates:
-
-- report exists
-- `pdf_path` is set
-- file exists on disk
-
-If no report exists for a terminal run, the PDF endpoint generates it synchronously before returning the file.
+The backend and MCP server suppress the current FastMCP/Authlib JWT deprecation warning at import time. This is a local compatibility filter for FastMCP 2.14.x and Authlib before Authlib 2.0; it can be removed once FastMCP migrates away from `authlib.jose`.
 
 ## Defect Detection
 
-Service:
+`DefectService` combines static-analysis checks with run telemetry checks.
 
-```text
-app/services/defect_service.py
-```
+Current defect sources include:
 
-`detect_for_run(run)` loads all events for a run and applies rule-based checks.
+- `pwad_crash` when map load, startup, preflight, MCP disconnect, or runtime initialization fails.
+- `difficulty_spawn_mismatch` when raw THINGS exist but skill or multiplayer flags hide them at the selected difficulty.
+- `softlock_navigation` when a run times out or stops after repeated stuck events or negligible end-of-run movement.
+- `ammo_starvation`, `health_deficit`, `repeated_death_location`, and `unreachable_secret`.
+- Playthrough-observed issue strings captured from decisions.
 
-Current rules:
+Observed defects are normalized and de-duplicated. New inserts compute a stable fingerprint and update `occurrence_count` / `last_seen_tick` on repeat instead of creating duplicate rows with slightly different naming. Existing rows are still de-duplicated on read for `/runs/{run_id}/defects` and report generation.
 
-### Repeated Death Location
+## Reports
 
-Detection:
+`ReportService` gathers run, analysis, event, decision, position, defect, and artifact data.
 
-- Group `death` events into approximate 50-unit coordinate buckets.
-- If more than one death occurs in the same bucket, create a defect.
+Reports are generated from Gemini JSON when available, merged with deterministic fallback defaults. If Gemini is unavailable or returns invalid data, the fallback report is used.
 
-Defect:
+Report generation is difficulty-aware:
 
-- `defect_type='repeated_death_location'`
-- severity 2
-- priority 1
+- Combat coverage uses `spawned_enemy_count` for the selected run difficulty.
+- Raw enemy counts are still shown as map data.
+- Hidden raw enemies/items are called out as skill-flag issues.
+- Resource ratios come from `selected_skill_summary`.
 
-### Ammo Starvation
+Report voice is normalized before storage and rendering. Obvious blame phrases such as "the agent failed" or "the agent was unable" are rewritten to describe coverage and runtime behavior, for example "the automated playthrough did not reach combat coverage".
 
-Detection:
+Crash reports are first-class QA evidence. They include WAD, map, selected difficulty, failure stage, raw runtime diagnostic, static-analysis availability, endpoint expectations, and why video or trace data may be unavailable by design.
 
-- If bullets + shells + rockets + cells equals 0 for more than 60 consecutive events.
+Report generation uses a PostgreSQL advisory lock per run so concurrent `/report`, `/report/pdf`, and background generation requests do not race each other. `/report/status` returns `generating` for recent terminal runs while the background report is still being created.
 
-Defect:
+Report JSON lists are normalized before storage and PDF rendering, so both string lists and object lists render without blank bullets.
 
-- `defect_type='ammo_starvation'`
-- severity 2
-- priority 2
+PDF rendering uses WeasyPrint with:
 
-### Health Deficit
+- Explicit A4 page margins.
+- Repeating table headers.
+- Page-break avoidance for important blocks.
+- Wrapped table cells.
+- Pass/fail badges only for verdict keys.
+- Rationale text rendered separately.
+- Empty sections skipped.
+- De-duplicated defect rows and a display cap so repeated findings cannot expand a PDF into dozens of pages.
+- A decision trace table showing LLM/MCP sequence, ticks, tool, stop reason, and QA-facing reasoning summary.
 
-Detection:
+Report API responses exclude `None` report fields.
 
-- If health remains below 10 HP for more than 30 consecutive events.
+## HTTP and WebSocket API
 
-Defect:
+Health:
 
-- `defect_type='health_deficit'`
-- severity 3
-- priority 3
+- `GET /health`
+- `GET /health/gemini`
 
-### Softlock Navigation
+WADs and analysis:
 
-Detection:
+- `POST /wads/upload`
+- `GET /wads/maps`
+- `GET /wads/maps?wad_file_id={id}`
+- `GET /wads/{wad_id}`
+- `GET /wads/{wad_id}/maps`
+- `GET /wads/{wad_id}/analysis`
+- `GET /wads/{wad_id}/map-png?map_name=E1M1`
 
-- Run outcome is `timeout`.
-- At least 120 events exist.
-- Movement over the final 120 events is less than 20 total units.
+Map payloads include display metadata, analysis status, overview URL, raw counts, and `spawn_summary_by_skill`.
 
-Defect:
+Runs:
 
-- `defect_type='softlock_navigation'`
-- severity 1
-- priority 1
+- `POST /runs`
+- `GET /runs`
+- `GET /runs/{run_id}`
+- `DELETE /runs/{run_id}`
+- `POST /runs/{run_id}/force-stop`
+- `GET /runs/{run_id}/recording`
 
-### Unreachable Secrets
+Run payloads expose `failure_category`, `failure_stage`, `failure_summary`, and `failure_diagnostics` when the result is a crash or runtime startup failure. `recording` streams MP4 when available; for `pwad_crash` before gameplay initialization, it returns a structured no-recording response.
 
-Detection:
+Trace and findings:
 
-- Static analysis found one or more secret sectors.
-- Runtime `secret_count` never increased above 0.
+- `GET /runs/{run_id}/trace`
+- `GET /runs/{run_id}/decisions`
+- `GET /runs/{run_id}/events`
+- `GET /runs/{run_id}/events?type=normal,map_exit`
+- `GET /runs/{run_id}/position-trail`
+- `GET /runs/{run_id}/defects`
 
-Defect:
+Reports:
 
-- `defect_type='unreachable_secret'`
-- severity 3
-- priority 3
+- `GET /runs/{run_id}/report/status`
+- `GET /runs/{run_id}/report`
+- `GET /runs/{run_id}/report/pdf`
 
-### Agent-Observed Issues
+Report JSON omits meaningless null/empty sections while preserving explicit crash evidence and failure diagnostics.
 
-These are not detected in `DefectService`. They are inserted directly by `CollectorService` whenever Gemini returns a non-null `observed_issue`.
+WebSocket:
 
-Defect:
+- `/ws/runs/{run_id}`
 
-- `defect_type='agent_observed'`
-- severity 2
-- priority 2
+Live WebSocket messages are typed. Current message types include `llm_start`, `llm_decision`, `mcp_call_start`, `mcp_call_result`, `state`, `frame`, `defect`, `report_status`, and status updates. State messages include run status, health, armor, ammo, position, event type, QA-facing LLM reasoning, chosen MCP action, and optional notable screenshot.
 
-### Defect Deduplication
-
-The database enforces:
-
-```sql
-UNIQUE (run_id, defect_type, detected_at_tick)
-```
-
-The repository uses PostgreSQL `ON CONFLICT DO NOTHING` for defect inserts. If defect detection runs more than once for the same completed or force-stopped run, the same rule at the same tick is not duplicated.
-
-## Report Generation
-
-Service:
-
-```text
-app/services/report_service.py
-```
-
-Prompt:
-
-```text
-app/prompts/report_generation_prompt.md
-```
-
-Report generation logic:
-
-1. Check if a report already exists for the run.
-2. Fetch the run.
-3. Fetch static analysis.
-4. Fetch defects.
-5. Fetch all game events ordered by tick.
-6. Select notable events where `event_type != 'normal'`, capped at the first 20.
-7. Include first 5 ticks and last 5 ticks in the payload.
-8. Call Gemini with a compact JSON summary, or fall back if Gemini is unavailable.
-9. Render a simple HTML report through Jinja2.
-10. Generate PDF through WeasyPrint.
-11. Insert `test_reports`.
-12. Update `test_runs.report_pdf_path`.
-
-Gemini report JSON is normalized before inserting into PostgreSQL:
-
-- `TEXT` columns accept strings, lists, dicts, and scalars. Lists are converted to bullet-style text and dicts to JSON strings.
-- JSONB object columns such as `hardware_spec`, `software_spec`, and `pass_fail_summary` are coerced to objects.
-- JSONB list/dict columns such as `objectives_*`, `risk_areas`, and `good_quality_areas` are kept as lists/dicts, or wrapped if Gemini returns a scalar.
-
-This prevents report endpoint failures when the model returns a list for a narrative field such as `test_process_changes`.
-
-Current Gemini report prompt asks for JSON fields:
-
-```json
-{
-  "report_purpose": "...",
-  "test_items_summary": "...",
-  "test_environment_summary": "...",
-  "defect_summary_narrative": "...",
-  "pass_fail_summary": {
-    "map_navigation": "PASS or FAIL",
-    "combat_engagement": "PASS or FAIL",
-    "resource_balance": "PASS or FAIL",
-    "secret_coverage": "PASS or FAIL"
-  }
-}
-```
-
-If Gemini fails, the fallback report includes:
-
-- generic purpose
-- map tested
-- IWAD and model
-- defect count
-- map completion pass/fail
-
-The generated PDF is saved to:
-
-```text
-storage/reports/{run_id}.pdf
-```
-
-## API Surface
-
-### Health
-
-```http
-GET /health
-GET /health/gemini
-```
-
-### WADs
-
-```http
-POST /wads/upload
-GET /wads/maps?limit=100&offset=0
-GET /wads/maps?wad_file_id={wad_id}
-GET /wads/{wad_id}
-GET /wads/{wad_id}/maps
-GET /wads/{wad_id}/map-png?map_name=E1M1
-```
-
-### Analysis
-
-```http
-GET /wads/{wad_id}/analysis
-```
-
-### Runs
-
-```http
-POST /runs
-GET /runs?limit=100
-GET /runs/{run_id}
-DELETE /runs/{run_id}
-POST /runs/{run_id}/force-stop
-GET /runs/{run_id}/recording
-GET /runs/{run_id}/report/status
-```
-
-### Trace
-
-```http
-GET /runs/{run_id}/trace?page=1&page_size=100
-GET /runs/{run_id}/events?type=kill,death,damage_taken
-GET /runs/{run_id}/position-trail
-GET /runs/{run_id}/defects
-WS /ws/runs/{run_id}
-```
-
-### Reports
-
-```http
-GET /runs/{run_id}/report
-GET /runs/{run_id}/report/status
-GET /runs/{run_id}/report/pdf
-```
-
-## Serializers
-
-Serializers are Pydantic models in `app/serializers/`.
-
-### `WadFileOut`
-
-Includes:
-
-- id
-- original filename
-- stored path
-- file size
-- SHA-256 hash
-- validation status/error
-- detected maps
-- required IWAD
-- upload timestamp
-
-### `WadMapOut`
-
-Includes:
-
-- WAD ID
-- map name
-- required IWAD
-- whether analysis exists
-- overview PNG URL
-
-### `StaticAnalysisOut`
-
-Includes all static analysis columns plus `map_overview_png_url`.
-
-### `RunCreate`
-
-Input model for `POST /runs`.
-
-Fields:
-
-- `wad_file_id`
-- `map_name`
-- `difficulty_level`, default 3, range 1 to 5
-- `max_ticks`, optional, minimum 1
-
-### `RunOut`
-
-Output model for run listing/detail/create/cancel.
-
-Includes configuration, lifecycle state, outcome, aggregate stats, file paths, and timestamps.
-
-### `TraceEntryOut`
-
-Output model for game event trace rows.
-
-Includes player variables, event type, LLM trace fields, action JSON, and damage metadata.
-
-### `PositionTrailOut`
-
-Output model for downsampled path rows.
-
-### `ReportOut`
-
-Output model for report metadata.
-
-## Repositories
-
-Repositories are thin database access wrappers. They intentionally keep business rules in services.
-
-### `WadRepository`
-
-Methods:
-
-- `get_by_id`
-- `get_by_hash`
-- `list`
-- `create`
-
-### `AnalysisRepository`
-
-Methods:
-
-- `get_by_wad_and_map`
-- `list_by_wad`
-- `upsert`
-
-### `RunRepository`
-
-Methods:
-
-- `create`
-- `update`
-- `get_by_id`
-- `list`
-- `get_active`
-
-`get_active` returns the newest run with status `pending`, `analyzing`, or `running`.
-
-Run lifecycle changes are made through `RunRepository.update()`. This includes setting `running`, terminal status/outcome, aggregate stats, recording path, and report path.
-
-### `GameEventRepository`
-
-Methods:
-
-- `create_event`
-- `create_position`
-- `create_screenshot`
-- `list_trace`
-- `list_events`
-- `list_position_trail`
-
-### `DefectRepository`
-
-Methods:
-
-- `create`
-- `list_by_run`
-
-### `ReportRepository`
-
-Methods:
-
-- `get_by_run`
-- `create`
-- `update`
-
-`ReportRepository.update()` exists for report lifecycle/status changes. The current report generation path creates the final report row after the PDF is rendered, but the update method is available for explicit `generating`/`failed` state handling.
-
-## Makefile
-
-The backend `Makefile` provides:
-
-```text
-make help
-make venv
-make install
-make storage-dirs
-make db-init
-make db-schema
-make run
-make clean
-```
-
-Important behavior:
-
-- `make install` creates `.venv`, upgrades pip, installs requirements, and creates storage directories.
-- `make db-init` runs `scripts/init_db.sh`.
-- `make db-schema` applies `sql/schema.sql` using values from `.env`.
-- `make run` starts Uvicorn with reload on port 8000.
-
-## Dependencies
-
-Important Python dependencies in `requirements.txt`:
-
-- `fastapi`
-- `uvicorn`
-- `SQLAlchemy`
-- `asyncpg`
-- `python-multipart`
-- `omgifol`
-- `pillow`
-- `opencv-python-headless`
-- `numpy`
-- `google-genai`
-- `fastmcp`
-- `ffmpeg-python`
-- `weasyprint`
-- `Jinja2`
-- `alembic`
-
-OpenCV uses the headless package so the backend does not require GUI libraries.
-Only `asyncpg` is required as the PostgreSQL driver. Sync psycopg drivers are not used.
-The H.264 transcode path also requires the system `ffmpeg` binary to be installed.
-
-## Expected Runtime Commands
-
-### Start PostgreSQL Schema
-
-```bash
-cd Backend
-make db-schema
-```
-
-### Start `mcp-doom`
-
-From the `mcp-doom/` directory, the expected pattern is:
-
-```bash
-fastmcp run src/doom_mcp/server.py --transport sse --host 0.0.0.0 --port 8001 --path /sse
-```
-
-The backend expects the SSE URL:
-
-```env
-MCP_DOOM_SSE_URL=http://localhost:8001/sse
-```
-
-### Start Backend
-
-```bash
-cd Backend
-.venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-or:
-
-```bash
-make run
-```
-
-## Tested Behavior
-
-The backend has been tested with:
-
-```text
-/home/steven/Downloads/MYHOME.wad
-```
-
-Observed behavior:
-
-- Upload/dedup works.
-- Map detection found `E1M1`.
-- IWAD detection selected `freedoom1`.
-- Static analysis row was generated.
-- Overview PNG was generated.
-- `GET /wads/maps` returns the map.
-- Invalid map run requests return `400`.
-- Gemini health check succeeds when the configured model/key are available.
-- Concurrent `/runs` requests produce one `201` and one `409`.
-- `max_ticks=999999` clamps to `35000`.
-- Run creation starts an async task and returns immediately.
-- MCP `start_game` works with `wad=freedoom1` and `scenario_wad=<uploaded path>`.
-- Game events include `llm_input_summary`, `llm_reasoning`, and `action_taken`.
-- WebSocket emits:
-  - `state`
-  - throttled `frame`
-  - terminal state
-- MP4 recording endpoint returns `video/mp4`.
-- MP4 recordings are transcoded to H.264/yuv420p for browser playback.
-- Report PDF endpoint returns `application/pdf`.
-- Force-stop/cancel returns a cancelled run, computes stats, and generates a report.
-
-Known runtime note:
-
-- Gemini can return `429 RESOURCE_EXHAUSTED` if the API quota/rate limit is hit. The backend catches this and uses fallback `explore` actions so the run can continue.
-
-## Design Decisions
-
-### One Active Run
-
-Only one active run is allowed because the ViZDoom/MCP runtime is treated as one active game instance.
-
-The backend enforces this in application code and with a PostgreSQL advisory transaction lock. The lock prevents a race where two clients call `/runs` at the same time.
-
-### Persistent MCP Service
-
-The backend connects to `mcp-doom` as a service over SSE. It does not launch or own the MCP server process.
-
-This avoids:
-
-- slow per-run startup
-- fragile subprocess management
-- confusing ownership of ViZDoom state
-
-### Store Full Trace, Not Full Images
-
-The database stores every tick's structured state and LLM decision. It does not store every screenshot.
-
-Reasons:
-
-- Thousands of PNG files per run would be wasteful.
-- MP4 is better for playback.
-- Notable screenshots are enough for defect evidence.
-- WebSocket live frames are compressed JPEG and throttled.
-
-### WebSocket Is Live-Only
-
-The WebSocket is a live push channel. It broadcasts messages while `agent_run_task` is running. It is not the source of truth for historical or already-completed runs.
-
-Frontend contract:
-
-- Use `WS /ws/runs/{run_id}` only for an active live run.
-- If the page loads after a run already completed, fetch run state through REST:
-  - `GET /runs/{run_id}`
-  - `GET /runs/{run_id}/trace`
-  - `GET /runs/{run_id}/position-trail`
-  - `GET /runs/{run_id}/defects`
-  - `GET /runs/{run_id}/recording`
-  - `GET /runs/{run_id}/report`
-- Do not rely on a completed run's terminal WebSocket broadcast being replayed to late subscribers.
-
-### Prompt File Is Editable
-
-The system prompt is Markdown in `app/prompts/agent_system_prompt.md`, not hardcoded into Python. This makes it easy to tune the QA behavior without changing service code.
-
-### Report Prompt Is Compact
-
-The report service does not dump all ticks into Gemini. It uses compact run metadata and counts, with room to expand to notable events and selected tick samples.
-
-## Current Limitations And Future Improvements
-
-### Static Analysis
-
-Current analysis uses omgifol and local fallback metrics. It does not currently shell out to or import the real `dmon` project. The field names and calculations are dmon-style, but the implementation is local.
-
-Future work:
-
-- Integrate actual dmon if available.
-- Store raw dmon output.
-- Improve ammo ratio calculations by weapon/ammo type.
-- Improve enemy classification coverage.
-
-### Report Completeness
-
-The database schema supports many report sections. `ReportService` now fills the report-template columns from Gemini JSON or fallback values and coerces model output types before DB insertion.
-
-Future work:
-
-- Include all defects in the PDF with better formatting.
-- Add screenshots and map overview to the PDF.
-- Include selected reasoning quotes from notable ticks.
-
-### LLM Conversation Memory
-
-The current loop sends the system prompt and current compact state every call, with the last 5 trace entries in `recent_trace`. There is no long conversation object persisted through Gemini.
-
-Future work:
-
-- Maintain a bounded conversation history in memory.
-- Summarize long runs every N ticks.
-- Add explicit tactical mode state such as `exploring`, `fighting`, `recovering`, or `stuck`.
-
-### WebSocket Lifecycle
-
-The WebSocket route waits for client messages to keep the connection open. Broadcasts are pushed from the run task. The channel is intentionally live-only; REST endpoints are the historical source of truth for completed runs.
-
-Future work:
-
-- Send periodic ping/status messages.
-- Close sockets automatically after terminal run state.
-
-### Testing
-
-Current validation has been done with direct curl/Python scripts against the local service.
-
-Current automated coverage:
-
-- `python -m compileall app` from `Backend/` passes.
-- `mcp-doom` test suite passes with the service venv after reinstalling the editable package to this checkout: `94 passed`.
-- Backend ASGI smoke checks pass for `/health`, `/wads/maps`, `/runs`, report metadata, report status, and report PDF.
-- A real short run against the local MCP SSE server completed and produced:
-  - `game_events.action_taken` with `mcp_service`, `mcp_input`, and compact `mcp_output`
-  - 67 position samples
-  - a 320x240 MP4 with 66 frames and 6.6 seconds duration
-  - a generated PDF report
-
-Environment note: the `mcp-doom/.venv` activation originally pointed to an editable `doom-mcp` package from another checkout. Reinstalling with `python -m pip install -e .` inside `mcp-doom/` corrected imports to this repository.
-
-Future work:
-
-- Add automated pytest integration tests.
-- Add a fake MCP client for deterministic backend tests.
-- Add a fake Gemini service for parser and loop testing.
-- Add upload tests with tiny synthetic WAD fixtures.
-
-## Troubleshooting
-
-### `GET /health/gemini` returns model not found
-
-Cause:
-
-- `LLM_MODEL` is wrong or unavailable for the configured Gemini API version/key.
-
-Fix:
-
-- Use a currently available model such as `gemini-2.5-flash`.
-- Restart the backend after changing `.env`.
-
-### `/runs` returns `409 Conflict`
-
-Cause:
-
-- Another run is `pending`, `analyzing`, or `running`.
-
-Fix:
-
-- Wait for it to finish.
-- Or call:
-
-```http
-POST /runs/{run_id}/force-stop
-```
-
-### `/runs/{id}/recording` returns `404`
-
-Possible causes:
-
-- Run has not produced a frame yet.
-- Run failed before video writer started.
-- `recording_mp4_path` is missing.
-- File was deleted from disk.
-
-### `/runs/{id}/report/pdf` returns `404`
-
-Possible causes:
-
-- Report generation has not run.
-- `pdf_path` is missing.
-- File was deleted from disk.
-
-Try:
-
-```http
-GET /runs/{id}/report
-```
-
-which generates report metadata if missing.
-
-### WebSocket has no frames
-
-Possible causes:
-
-- No frontend/client connected before the run completed.
-- MCP did not return screenshot bytes.
-- Run completed too fast.
-- `LIVE_FRAME_FPS` is set too low.
-
-### Gemini rate limit
-
-Symptom:
-
-- Trace rows contain reasoning like `Gemini call failed... 429 RESOURCE_EXHAUSTED`.
-
-Behavior:
-
-- Backend falls back to `explore`.
-- Run continues.
-
-Fix:
-
-- Reduce run frequency.
-- Use a key/project with more quota.
-- Add stronger backoff logic in `GeminiService`.
-
-## End-To-End Data Flow
-
-Full happy path:
-
-```text
-POST /wads/upload
-    -> validate PWAD
-    -> SHA-256 dedupe
-    -> save storage/wads/{uuid}.wad
-    -> omgifol detects maps
-    -> detect iwad_required
-    -> insert wad_files
-    -> analyze all maps
-    -> insert static_analysis_results
-    -> render overview PNG
-
-GET /wads/maps?limit=100&offset=0
-    -> frontend chooses map
-
-POST /runs
-    -> advisory lock
-    -> ensure no active run
-    -> validate map name
-    -> clamp max_ticks
-    -> create test_runs pending
-    -> create asyncio task
-    -> return run_id
-
-agent_run_task
-    -> connect MCP SSE
-    -> start_game(wad, scenario_wad, map_name, difficulty)
-    -> status running
-    -> render system prompt
-    -> loop:
-        -> get_state
-        -> Gemini decision
-        -> MCP tool call
-        -> collect game event
-        -> write decision and telemetry-derived position trail samples
-        -> save notable screenshot
-        -> write MP4 frame
-        -> broadcast state
-        -> broadcast throttled frame
-    -> stop_game
-    -> finalize MP4
-    -> aggregate run stats
-    -> defect detection
-    -> report generation
-    -> terminal WebSocket state
-
-Frontend after run
-    -> GET /runs/{id}
-    -> GET /runs/{id}/trace
-    -> GET /runs/{id}/position-trail
-    -> GET /runs/{id}/recording
-    -> GET /runs/{id}/report/pdf
-```
+## Verification Status
+
+The current implementation has been checked with:
+
+- Backend compile check: `PYTHONPATH=. .venv/bin/python -m compileall -q app` from `Backend/`.
+- Backend test suite: `PYTHONPATH=. .venv/bin/pytest -q -p no:cacheprovider tests` from `Backend/` (`22 passed`).
+- MCP full suite: `PYTHONPATH=src .venv/bin/pytest -q -p no:cacheprovider tests` from `mcp-doom/` (`98 passed`).
+- Local `make db-schema` applied the additive `agent_decisions`, `game_events.agent_decision_id`, and defect fingerprint schema.
+- Lockstep smoke run `a58b4675-6f24-421f-81da-dac08e1297eb`: one LLM/MCP decision, one gameplay event, generated report JSON/PDF, and a 640x480 10 FPS MP4 with 61 frames.
+- Live endpoint check for run `7365a61c-4b01-4a0f-9b9b-91fb4194c638`: health, run detail, trace, defects, report status, PDF download, recording download, and stuck events.
+- Video/report review for run `7365a61c-4b01-4a0f-9b9b-91fb4194c638`: recording is a valid 81.3 second MP4; regenerated PDF is 3 pages, reports outcome `stuck`, and contains 2 de-duplicated defects instead of hundreds of repeated agent-observed rows.
+- Endpoint sweep covering health, WADs, maps, analysis, map PNG, run validation, run creation, run detail/list, trace, events, position trail, defects, recording, reports, PDF, cancel/force-stop, and WebSocket connection.
+
+Representative manual product matrix:
+
+| WAD / map | Difficulty | Run | Observed result |
+|-----------|------------|-----|-----------------|
+| `thelonghallways.wad` / `E1M1` | 3 | `b38da41d-e657-403c-a7c8-2590e4a438c0` | Lockstep fallback run produced decisions, events, recording, report, and selected-difficulty static context. |
+| `thelonghallways.wad` / `E1M1` | 5 | `16af65cd-4744-4636-9842-8f2f87e1af1c` | Selected skill spawned zero enemies and produced `difficulty_spawn_mismatch`. |
+| `DRKWRLD1.WAD` / `E1M1` | 3 | `9eca31ea-5502-40ff-a9eb-ce18e01890ba` | PWAD initialized under lockstep mode and produced decisions, trace, video, and report. |
+| `LOWMEM.wad` / `E1M1` | 3 | `2817ac53-0bdb-41b4-8ecf-8e76cc6149b7` | Runtime initialization failed as `pwad_crash`; structured report/PDF were generated and no recording was expected. |
+| `LOWMEM.wad` / `E1M2` | 3 | `8b0d81d1-0a65-42ef-b88e-cf6c94d98fd6` | Multi-map listing, analysis, lockstep run, trace, recording, JSON report, and PDF were available. |
+| `deathmatch.wad` / `MAP01` | 3 | `c77fe3da-8dc6-4324-8c15-6c0a7826b385` | Doom II style map naming and lockstep report payloads were validated. |
+| `MYHOME.wad` / `E1M1` | 3 | `a3bb1790-b982-4ccb-8110-4f7ef3d1d9ad` | Short lockstep run produced valid decision trace, JSON report, PDF, and MP4 recording. |
+| MCP unavailable startup failure | 3 | `a3ba9534-b0a6-4d6e-804b-c14050aee345` | `status=failed`, `outcome=pwad_crash`, `failure_category=pwad_crash`, zero actions, structured empty trace/position endpoints, `pwad_crash` defect, JSON report, PDF, and structured no-recording response. |
+
+Current operational limitations:
+
+- The backend still allows only one active run at a time.
+- Short `max_ticks` test runs often end as `timeout`; that is expected for endpoint verification and not a map-completion verdict.
+- `LOWMEM.wad` / `E1M1` currently reproduces the `pwad_crash` path during lockstep startup, while `LOWMEM.wad` / `E1M2` runs normally.

@@ -144,10 +144,12 @@ class AutonomousExecutor:
         self._position_history: list[tuple[float, float]] = []
         self._stuck_phase = 0
         self._stuck_tics = 0
+        self._stuck_recovery_count = 0
         self._strafe_tic_counter = 0
         self._strafe_sign = 1.0
         self._current_target_id: int | None = None
         self._turn_bias = 0.0
+        self._last_progress_tic = 0
 
         # Thread control
         self._paused = threading.Event()
@@ -194,6 +196,7 @@ class AutonomousExecutor:
         self._position_history.clear()
         self._stuck_phase = 0
         self._stuck_tics = 0
+        self._stuck_recovery_count = 0
         self._strafe_tic_counter = 0
         self._current_target_id = None
         self._turn_bias = 0.0
@@ -201,19 +204,26 @@ class AutonomousExecutor:
         self._prev_health = 100.0
         self._prev_ammo = 0.0
         self._prev_killcount = 0.0
+        self._last_progress_tic = 0
 
     # ------------------------------------------------------------------
     # Objective management
     # ------------------------------------------------------------------
 
-    def push_objective(self, objective: Objective) -> None:
+    def push_objective(self, objective: Objective, replace: bool = False) -> None:
         with self._director_lock:
+            if replace:
+                self._objectives.clear()
             self._objectives.append(objective)
             self._objectives.sort(key=lambda o: o.priority, reverse=True)
+        if replace:
+            self._log_event(0, "objectives_cleared", "Objective queue replaced by director")
+        self._log_event(0, "objective_set", f"{objective.type.value} priority={objective.priority}")
 
     def clear_objectives(self) -> None:
         with self._director_lock:
             self._objectives.clear()
+        self._log_event(0, "objectives_cleared", "Objective queue cleared")
 
     def get_objectives(self) -> list[dict]:
         with self._director_lock:
@@ -224,6 +234,7 @@ class AutonomousExecutor:
                     "priority": o.priority,
                     "timeout_tics": o.timeout_tics,
                     "tics_active": o.tics_active,
+                    "age_tics": o.tics_active,
                 }
                 for o in self._objectives
             ]
@@ -237,10 +248,14 @@ class AutonomousExecutor:
     # ------------------------------------------------------------------
 
     def set_strategy(self, **kwargs: Any) -> None:
+        changed: list[str] = []
         with self._director_lock:
             for key, value in kwargs.items():
                 if hasattr(self._strategy, key):
                     setattr(self._strategy, key, value)
+                    changed.append(key)
+        if changed:
+            self._log_event(0, "strategy_updated", ", ".join(sorted(changed)))
 
     def get_strategy(self) -> dict:
         with self._director_lock:
@@ -254,6 +269,26 @@ class AutonomousExecutor:
                 "collect_range": s.collect_range,
                 "prefer_cover": s.prefer_cover,
             }
+
+    def get_progress(self) -> dict:
+        if self._position_history:
+            xs = [p[0] for p in self._position_history]
+            ys = [p[1] for p in self._position_history]
+            spread = math.hypot(max(xs) - min(xs), max(ys) - min(ys))
+            recent_position = {"x": self._position_history[-1][0], "y": self._position_history[-1][1]}
+        else:
+            spread = 0.0
+            recent_position = None
+        return {
+            "position_history_count": len(self._position_history),
+            "position_spread": round(spread, 1),
+            "stuck_phase": self._stuck_phase,
+            "stuck_tics": self._stuck_tics,
+            "stuck_recovery_count": self._stuck_recovery_count,
+            "last_progress_tic": self._last_progress_tic,
+            "current_target_id": self._current_target_id,
+            "recent_position": recent_position,
+        }
 
     # ------------------------------------------------------------------
     # Event log
@@ -404,6 +439,11 @@ class AutonomousExecutor:
         # Health critical -> RETREATING (always)
         if snap.health <= strategy.health_retreat_threshold:
             self._state = ExecutorState.RETREATING
+        # Missing ammo/health/key resources should not be blocked by a distant
+        # visible monster; collect the critical pickup and let close threats
+        # interrupt through normal combat if they become immediate.
+        elif self._has_critical_pickup(snap, strategy):
+            self._state = ExecutorState.COLLECTING
         # Nearby visible threats + aggression check
         elif snap.threats and snap.threats[0]["distance"] <= strategy.engage_range:
             # Always fight if aggression >= threshold or threat is very close
@@ -417,14 +457,16 @@ class AutonomousExecutor:
             objective = self._get_current_objective()
             if objective is not None:
                 # Tick the objective
+                expired: Objective | None = None
                 with self._director_lock:
                     if self._objectives:
                         self._objectives[0].tics_active += 1
                         # Timeout check
                         if objective.timeout_tics > 0 and self._objectives[0].tics_active >= objective.timeout_tics:
                             expired = self._objectives.pop(0)
-                            self._log_event(snap.tic, "objective_failed", f"Timeout: {expired.type.value}")
                             objective = self._objectives[0] if self._objectives else None
+                if expired is not None:
+                    self._log_event(snap.tic, "objective_failed", f"Timeout: {expired.type.value}")
 
                 if objective is not None:
                     state_map = {
@@ -449,17 +491,39 @@ class AutonomousExecutor:
     def _default_state(self, snap: _TickSnapshot, strategy: Strategy) -> ExecutorState:
         # Health low + health items nearby -> COLLECTING
         if snap.health <= strategy.health_collect_threshold:
-            health_items = [i for i in snap.items if i["category"] == "health"]
+            health_items = [
+                i for i in snap.items
+                if i["category"] == "health" and i["distance"] <= strategy.collect_range
+            ]
             if health_items:
                 return ExecutorState.COLLECTING
 
         # Ammo low + ammo nearby -> COLLECTING
         if snap.ammo <= strategy.ammo_switch_threshold:
-            ammo_items = [i for i in snap.items if i["category"] == "ammo"]
+            ammo_items = [
+                i for i in snap.items
+                if i["category"] in {"ammo", "weapon"} and i["distance"] <= strategy.collect_range
+            ]
             if ammo_items:
                 return ExecutorState.COLLECTING
 
+        key_items = [i for i in snap.items if i["category"] == "key" and i["distance"] <= strategy.collect_range]
+        if key_items:
+            return ExecutorState.COLLECTING
+
         return ExecutorState.EXPLORING
+
+    def _has_critical_pickup(self, snap: _TickSnapshot, strategy: Strategy) -> bool:
+        for item in snap.items:
+            if item["distance"] > strategy.collect_range:
+                continue
+            if snap.ammo <= strategy.ammo_switch_threshold and item["category"] in {"ammo", "weapon"}:
+                return True
+            if snap.health <= strategy.health_collect_threshold and item["category"] == "health":
+                return True
+            if item["category"] == "key":
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # Action computation
@@ -595,14 +659,29 @@ class AutonomousExecutor:
         if not snap.items:
             return self._explore_action(snap)
 
-        # Prioritize health if low, otherwise nearest
+        # Prioritize critical resources before incidental pickups.
         target_item = None
-        if snap.health <= strategy.health_collect_threshold:
-            health_items = [i for i in snap.items if i["category"] == "health"]
+        candidates = [item for item in snap.items if item["distance"] <= strategy.collect_range]
+        if not candidates:
+            candidates = snap.items
+
+        if snap.ammo <= strategy.ammo_switch_threshold:
+            weapon_items = [i for i in candidates if i["category"] == "weapon"]
+            ammo_items = [i for i in candidates if i["category"] == "ammo"]
+            if weapon_items:
+                target_item = min(weapon_items, key=lambda i: i["distance"])
+            elif ammo_items:
+                target_item = min(ammo_items, key=lambda i: i["distance"])
+        if target_item is None and snap.health <= strategy.health_collect_threshold:
+            health_items = [i for i in candidates if i["category"] == "health"]
             if health_items:
                 target_item = min(health_items, key=lambda i: i["distance"])
         if target_item is None:
-            target_item = min(snap.items, key=lambda i: i["distance"])
+            key_items = [i for i in candidates if i["category"] == "key"]
+            if key_items:
+                target_item = min(key_items, key=lambda i: i["distance"])
+        if target_item is None:
+            target_item = min(candidates, key=lambda i: i["distance"])
 
         angle = target_item["angle_to_aim"]
         clamped = max(-_MAX_TURN_SPEED, min(_MAX_TURN_SPEED, angle))
@@ -664,10 +743,12 @@ class AutonomousExecutor:
                         target_y = obj["position_y"]
                         # Check arrival
                         if obj["distance"] < _ARRIVE_DISTANCE:
+                            completed: Objective | None = None
                             with self._director_lock:
                                 if self._objectives:
                                     completed = self._objectives.pop(0)
-                                    self._log_event(snap.tic, "objective_complete", f"{completed.type.value}")
+                            if completed is not None:
+                                self._log_event(snap.tic, "objective_complete", f"{completed.type.value}")
                             return self._build_action([])
                         break
 
@@ -683,10 +764,12 @@ class AutonomousExecutor:
 
         dist = math.hypot(dx, dy)
         if dist < _ARRIVE_DISTANCE:
+            completed: Objective | None = None
             with self._director_lock:
                 if self._objectives:
                     completed = self._objectives.pop(0)
-                    self._log_event(snap.tic, "objective_complete", f"{completed.type.value}")
+            if completed is not None:
+                self._log_event(snap.tic, "objective_complete", f"{completed.type.value}")
             return self._build_action([])
 
         clamped = max(-_MAX_TURN_SPEED, min(_MAX_TURN_SPEED, angle))
@@ -731,6 +814,7 @@ class AutonomousExecutor:
         if self._stuck_tics >= _STUCK_PHASE_TICS:
             self._stuck_phase += 1
             self._stuck_tics = 0
+            self._stuck_recovery_count += 1
             self._position_history.clear()
             self._log_event(snap.tic, "stuck", f"Recovery phase {phase}")
 
@@ -774,7 +858,7 @@ class AutonomousExecutor:
         items = []
         for obj in objects:
             info = get_object_info(obj["name"])
-            if info["type"] not in ("item", "ammo", "weapon"):
+            if info["type"] not in ("item", "ammo", "weapon", "key"):
                 continue
             if not obj.get("is_visible", False):
                 continue
@@ -789,6 +873,8 @@ class AutonomousExecutor:
                 category = "ammo"
             elif info["type"] == "weapon":
                 category = "weapon"
+            elif info["type"] == "key":
+                category = "key"
             else:
                 category = "other"
 
@@ -812,6 +898,8 @@ class AutonomousExecutor:
             damage = self._prev_health - snap.health
             self._log_event(snap.tic, "damage_taken", f"{damage:.0f} damage")
         self._prev_health = snap.health
+        if snap.ammo != self._prev_ammo:
+            self._last_progress_tic = snap.tic
         self._prev_ammo = snap.ammo
 
         # Reset stuck if we moved

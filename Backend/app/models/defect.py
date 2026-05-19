@@ -22,8 +22,10 @@ class Defect(Base):
         CheckConstraint("severity BETWEEN 1 AND 4"),
         CheckConstraint("priority BETWEEN 1 AND 3"),
         UniqueConstraint("run_id", "defect_type", "detected_at_tick", name="uq_defects_run_type_tick"),
+        UniqueConstraint("run_id", "fingerprint", name="uq_defects_run_fingerprint"),
         Index("idx_defects_run_id", "run_id"),
         Index("idx_defects_severity", "run_id", "severity"),
+        Index("idx_defects_fingerprint", "run_id", "fingerprint"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -48,6 +50,7 @@ class Defect(Base):
         server_default=text("'open'"),
     )
     defect_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    fingerprint: Mapped[str | None] = mapped_column(String(128))
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     reproduction_steps: Mapped[str | None] = mapped_column(Text)
@@ -59,6 +62,9 @@ class Defect(Base):
         ForeignKey("notable_event_screenshots.id", ondelete="SET NULL"),
     )
     recommendation: Mapped[str | None] = mapped_column(Text)
+    first_seen_tick: Mapped[int | None] = mapped_column(Integer)
+    last_seen_tick: Mapped[int | None] = mapped_column(Integer)
+    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     run: Mapped[TestRun] = relationship(

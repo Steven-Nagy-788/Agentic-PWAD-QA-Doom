@@ -16,12 +16,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
-from app.models import GameEvent, StaticAnalysisResult, TestRun
+from app.models import AgentDecision, GameEvent, StaticAnalysisResult, TestRun
+from app.repositories.agent_decision_repository import AgentDecisionRepository
 from app.repositories.analysis_repository import AnalysisRepository
+from app.repositories.defect_repository import DefectRepository
 from app.repositories.run_repository import RunRepository
 from app.repositories.wad_repository import WadRepository
 from app.serializers.run_serializers import RunCreate
-from app.services.analysis_service import AnalysisService, player_start_counts
+from app.services.analysis_service import AnalysisService, player_start_counts, selected_skill_spawn_summary
 from app.services.collector_service import CollectorService, normalize_variables
 from app.services.defect_service import DefectService
 from app.services.gemini_service import GeminiService
@@ -35,6 +37,13 @@ from app.services.websocket_service import websocket_service
 RUN_TASKS: dict[UUID, asyncio.Task] = {}
 COMPOUND_TELEMETRY_TOOLS = {"explore", "move_to", "aim_and_shoot", "strafe_and_shoot", "retreat"}
 OBJECT_ID_TOOLS = {"aim_and_shoot", "strafe_and_shoot", "move_to"}
+COMBAT_TOOLS = {"aim_and_shoot", "strafe_and_shoot"}
+STUCK_RUN_ABORT_THRESHOLD = 5
+WASTED_COMBAT_ABORT_THRESHOLD = 3
+DIRECTOR_POLL_SECONDS = 1.25
+DIRECTOR_STUCK_POLL_THRESHOLD = 5
+DIRECTOR_STUCK_RECOVERY_LIMIT = 4
+PWAD_CRASH_CATEGORY = "pwad_crash"
 OBJECT_ID_ALIASES: dict[str, tuple[str, ...]] = {
     "aim_and_shoot": ("object_id", "enemy_id", "target_id", "monster_id"),
     "strafe_and_shoot": ("object_id", "enemy_id", "target_id", "monster_id"),
@@ -185,6 +194,9 @@ async def agent_run_task(run_id: UUID) -> None:
         outcome = "timeout"
         latest_event = None
         mcp_client: McpDoomClient | None = None
+        runtime_stage = "startup"
+        failure_fields: dict[str, Any] = {}
+        last_record_frame: Any = None
 
         try:
             async with McpDoomClient() as mcp:
@@ -195,75 +207,221 @@ async def agent_run_task(run_id: UUID) -> None:
                     map_name=run.map_name,
                     difficulty=run.difficulty_level,
                     episode_timeout=run.max_ticks,
+                    async_player=False,
                 )
                 await run_repo.update(run, status="running", started_at=datetime.now(UTC))
                 await db.commit()
+                runtime_stage = "gameplay"
 
-                for tick in range(run.max_ticks):
+                lockstep_state: dict[str, Any] = {
+                    "last_signature": None,
+                    "no_progress_polls": 0,
+                    "recovery_count": 0,
+                    "last_tick": -1,
+                    "invisible_target_failures": {},
+                    "wasted_combat_count": 0,
+                }
+                decision_repo = AgentDecisionRepository(db)
+                sequence_number = 0
+
+                while True:
                     state, screenshot_png = await mcp.get_state()
+                    tick = _unique_lockstep_tick(state, lockstep_state)
                     frame = png_bytes_to_frame(screenshot_png)
-                    variables = normalize_variables(state)
+                    if frame is not None:
+                        last_record_frame = frame
+                        recorder.write_frame(frame)
                     recent = await _recent_trace(db, run.id)
+                    threat_assessment = await _safe_context_tool(mcp, "get_threat_assessment")
+                    navigation_info = await _safe_context_tool(mcp, "get_navigation_info")
                     llm_input = {
                         "tick": tick,
-                        "game_variables": variables,
-                        "objects": state.get("objects", [])[:20],
-                        "episode_finished": state.get("episode_finished", False),
+                        **_compact_state_for_llm(state),
+                        "threat_assessment": threat_assessment,
+                        "navigation_info": navigation_info,
                         "recent_trace": recent,
+                        "lockstep_state": _lockstep_state_snapshot(lockstep_state),
                     }
+
+                    if _situation_finished(state):
+                        decision = {
+                            "reasoning_summary": "Runtime reported the episode finished; recording final situation.",
+                            "mcp_tool": "get_state",
+                            "mcp_params": {},
+                        }
+                        mcp_call = _state_report_call(state)
+                        decision_row = await decision_repo.create(
+                            AgentDecision(
+                                run_id=run.id,
+                                sequence_number=sequence_number,
+                                tick_before=tick,
+                                tick_after=tick,
+                                status="complete",
+                                llm_input_summary=_json_safe(llm_input),
+                                llm_decision=_json_safe(decision),
+                                reasoning_summary=decision["reasoning_summary"],
+                                mcp_tool="get_state",
+                                mcp_input={},
+                                mcp_output=_json_safe(mcp_call["output"]),
+                                mcp_stop_reason=_mcp_action_summary(mcp_call).get("stop_reason"),
+                            )
+                        )
+                        sequence_number += 1
+                        latest_event = await collector.collect(
+                            run.id,
+                            tick,
+                            state,
+                            llm_input,
+                            decision,
+                            mcp_call,
+                            agent_decision_id=decision_row.id,
+                        )
+                        await decision_repo.update(decision_row, game_event_id=latest_event.id)
+                        await _broadcast_state(run, latest_event, decision)
+                        await db.commit()
+                        if latest_event.event_type == "map_exit" or state.get("level_completed") or state.get("next_map"):
+                            outcome = "map_completed"
+                        elif latest_event.health <= 0 or state.get("dead"):
+                            outcome = "player_died"
+                        elif state.get("episode_timeout"):
+                            outcome = "timeout"
+                        break
+
+                    await websocket_service.broadcast(
+                        run.id,
+                        {"type": "llm_start", "sequence_number": sequence_number, "tick": tick},
+                    )
+                    decision_row = await decision_repo.create(
+                        AgentDecision(
+                            run_id=run.id,
+                            sequence_number=sequence_number,
+                            tick_before=tick,
+                            status="started",
+                            llm_input_summary=_json_safe(llm_input),
+                        )
+                    )
+                    sequence_number += 1
+
+                    llm_started = time.monotonic()
                     decision = await gemini.decide(prompt, llm_input)
                     total_llm_calls += 1
-                    response, mcp_call = await _execute_tool(mcp, decision)
-                    response_state, response_png = normalize_mcp_state(response)
-                    telemetry_frames = _pop_telemetry_frames(response_state)
-                    if decision.get("mcp_tool") in COMPOUND_TELEMETRY_TOOLS and not telemetry_frames:
-                        decision["recording_fidelity_warning"] = (
-                            "MCP tool did not return telemetry_frames; recording contains final decision frames only."
-                        )
-                    if response_state:
-                        if not response_state.get("game_variables") and state.get("game_variables"):
-                            response_state["game_variables"] = state["game_variables"]
-                        state = response_state
-                    if response_png:
-                        response_frame = png_bytes_to_frame(response_png)
-                        if response_frame is not None:
-                            frame = response_frame
-                    await _record_telemetry_frames(run.id, tick, telemetry_frames, collector, recorder)
+                    llm_duration_ms = (time.monotonic() - llm_started) * 1000
+                    decision = _apply_lockstep_recovery(decision, state, navigation_info, lockstep_state)
+                    decision = _guard_lockstep_decision(decision, state, lockstep_state)
+                    await decision_repo.update(
+                        decision_row,
+                        status="llm_complete",
+                        llm_decision=_json_safe(decision),
+                        reasoning_summary=decision.get("reasoning_summary"),
+                        llm_duration_ms=llm_duration_ms,
+                    )
+                    await websocket_service.broadcast(
+                        run.id,
+                        {
+                            "type": "llm_decision",
+                            "sequence_number": decision_row.sequence_number,
+                            "tick": tick,
+                            "reasoning_summary": decision.get("reasoning_summary"),
+                            "mcp_tool": decision.get("mcp_tool"),
+                            "mcp_params": decision.get("mcp_params") or {},
+                        },
+                    )
+
+                    await websocket_service.broadcast(
+                        run.id,
+                        {
+                            "type": "mcp_call_start",
+                            "sequence_number": decision_row.sequence_number,
+                            "tick": tick,
+                            "mcp_tool": decision.get("mcp_tool"),
+                            "mcp_params": decision.get("mcp_params") or {},
+                        },
+                    )
+                    mcp_started = time.monotonic()
+                    response, mcp_call = await _execute_tool(mcp, decision, state)
+                    mcp_duration_ms = (time.monotonic() - mcp_started) * 1000
                     total_actions += 1
+
+                    result_state, result_screenshot_png = normalize_mcp_state(response)
+                    telemetry_frames = _pop_telemetry_frames(result_state)
+                    await _record_telemetry_frames(run.id, tick, telemetry_frames, collector, recorder)
+                    frame = png_bytes_to_frame(result_screenshot_png)
+                    if frame is None:
+                        frame = png_bytes_to_frame(screenshot_png)
+                    if frame is not None:
+                        last_record_frame = frame
+                        recorder.write_frame(frame)
+                    record_frame = frame if frame is not None else last_record_frame
+                    if not isinstance(result_state, dict) or "game_variables" not in result_state:
+                        result_state = state
+                    result_tick = _unique_lockstep_tick(result_state, lockstep_state)
+                    _update_lockstep_after_action(decision, mcp_call, lockstep_state)
+
                     latest_event = await collector.collect(
                         run.id,
-                        tick,
-                        state,
+                        result_tick,
+                        result_state,
                         llm_input,
                         decision,
                         mcp_call,
+                        agent_decision_id=decision_row.id,
+                    )
+                    summary = _mcp_action_summary(mcp_call)
+                    await decision_repo.update(
+                        decision_row,
+                        status="complete",
+                        tick_after=result_tick,
+                        game_event_id=latest_event.id,
+                        mcp_tool=mcp_call.get("tool") or decision.get("mcp_tool"),
+                        mcp_input=_json_safe(mcp_call.get("input") or {}),
+                        mcp_output=_json_safe(mcp_call.get("output") or {}),
+                        mcp_stop_reason=str(summary.get("stop_reason")) if summary.get("stop_reason") is not None else None,
+                        mcp_duration_ms=mcp_duration_ms,
+                    )
+                    await websocket_service.broadcast(
+                        run.id,
+                        {
+                            "type": "mcp_call_result",
+                            "sequence_number": decision_row.sequence_number,
+                            "tick": result_tick,
+                            "mcp_tool": mcp_call.get("tool") or decision.get("mcp_tool"),
+                            "mcp_stop_reason": summary.get("stop_reason"),
+                            "mcp_output": _json_safe(mcp_call.get("output") or {}),
+                        },
                     )
                     event_screenshot_b64 = None
-                    if latest_event.event_type in {"kill", "death", "damage_taken"} and frame is not None:
-                        screenshot_path = recorder.save_screenshot(frame, latest_event.id)
+                    if latest_event.event_type in {"kill", "death", "damage_taken", "stuck"} and record_frame is not None:
+                        screenshot_path = recorder.save_screenshot(record_frame, latest_event.id)
                         await collector.attach_screenshot(run.id, latest_event, str(screenshot_path))
-                        event_screenshot_b64 = jpeg_b64(frame)
-                    recorder.write_frame(frame)
+                        event_screenshot_b64 = jpeg_b64(record_frame)
                     await _broadcast_state(run, latest_event, decision, event_screenshot_b64)
                     now = time.monotonic()
-                    if frame is not None and now - last_frame_at >= 1 / max(get_settings().live_frame_fps, 0.1):
-                        encoded = jpeg_b64(frame)
+                    if record_frame is not None and now - last_frame_at >= 1 / max(get_settings().live_frame_fps, 0.1):
+                        encoded = jpeg_b64(record_frame)
                         if encoded:
                             await websocket_service.broadcast(
                                 run.id,
-                                {"type": "frame", "tick": tick, "mime_type": "image/jpeg", "frame_b64": encoded},
+                                {"type": "frame", "tick": result_tick, "mime_type": "image/jpeg", "frame_b64": encoded},
                             )
                         last_frame_at = now
                     await db.commit()
-                    if latest_event.event_type == "map_exit" or state.get("level_completed") or state.get("next_map"):
+
+                    if latest_event.event_type == "map_exit" or result_state.get("level_completed") or result_state.get("next_map"):
                         outcome = "map_completed"
                         break
-                    if latest_event.health <= 0:
+                    if latest_event.health <= 0 or result_state.get("dead"):
                         outcome = "player_died"
                         break
-                    if state.get("episode_finished") or state.get("episode_timeout"):
+                    if _lockstep_should_stop_as_stuck(lockstep_state):
+                        outcome = "stuck"
+                        break
+                    if result_state.get("episode_finished") or result_state.get("episode_timeout"):
                         outcome = "timeout"
                         break
+                    if result_tick >= run.max_ticks:
+                        outcome = "timeout"
+                        break
+
                     throttle_seconds = max(0.0, get_settings().llm_throttle_seconds)
                     if throttle_seconds:
                         await websocket_service.broadcast(
@@ -271,10 +429,10 @@ async def agent_run_task(run_id: UUID) -> None:
                             {
                                 "type": "status",
                                 "status": run.status,
-                                "phase": "llm_throttle",
-                                "message": f"Waiting {throttle_seconds:g}s before next LLM call.",
+                                "phase": "lockstep_throttle",
+                                "message": f"Game is paused in PLAYER mode for {throttle_seconds:g}s before the next LLM decision.",
                                 "sleep_seconds": throttle_seconds,
-                                "tick": tick,
+                                "tick": result_tick,
                             },
                         )
                         await asyncio.sleep(throttle_seconds)
@@ -282,8 +440,9 @@ async def agent_run_task(run_id: UUID) -> None:
             outcome = "cancelled"
             await run_repo.update(run, status="cancelled")
         except Exception as exc:
-            outcome = "error"
-            await run_repo.update(run, status="failed", error_message=str(exc))
+            failure_fields = _pwad_crash_fields(exc, runtime_stage)
+            outcome = PWAD_CRASH_CATEGORY
+            await run_repo.update(run, status="failed", outcome=outcome, error_message=str(exc), **failure_fields)
         finally:
             if mcp_client is not None:
                 await mcp_client.stop_game()
@@ -295,6 +454,7 @@ async def agent_run_task(run_id: UUID) -> None:
                 "total_actions_taken": total_actions,
                 "total_llm_calls": total_llm_calls,
             }
+            final_fields.update(failure_fields)
             if recording_path:
                 final_fields["recording_mp4_path"] = str(recording_path)
             if run.status not in {"failed", "cancelled"}:
@@ -315,22 +475,542 @@ async def agent_run_task(run_id: UUID) -> None:
             await db.commit()
             if run.status in {"completed", "cancelled", "failed"}:
                 await DefectService(db).detect_for_run(run)
+                await db.commit()
+                for defect in await DefectRepository(db).list_by_run(run.id):
+                    await websocket_service.broadcast(
+                        run.id,
+                        {
+                            "type": "defect",
+                            "defect_type": defect.defect_type,
+                            "fingerprint": defect.fingerprint,
+                            "title": defect.title,
+                            "severity": defect.severity,
+                            "detected_at_tick": defect.detected_at_tick,
+                        },
+                    )
                 try:
+                    await websocket_service.broadcast(run.id, {"type": "report_status", "status": "generating"})
                     await ReportService(db).generate(run.id)
                     await db.commit()
+                    await websocket_service.broadcast(run.id, {"type": "report_status", "status": "complete"})
                 except Exception as exc:
                     await db.rollback()
-                    await run_repo.update(run, error_message=(run.error_message or f"Report generation failed: {exc}"))
-                    await db.commit()
+                    await websocket_service.broadcast(
+                        run.id,
+                        {"type": "report_status", "status": "error", "error": str(exc)},
+                    )
+                    refreshed_run = await db.get(TestRun, run.id)
+                    if refreshed_run is not None:
+                        await run_repo.update(
+                            refreshed_run,
+                            error_message=(refreshed_run.error_message or f"Report generation failed: {exc}"),
+                        )
+                        await db.commit()
             await websocket_service.broadcast(run.id, {"type": "state", "status": run.status, "tick": run.max_ticks})
             RUN_TASKS.pop(run.id, None)
 
 
-async def _execute_tool(mcp: McpDoomClient, decision: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+async def _safe_context_tool(mcp: McpDoomClient, tool_name: str) -> dict[str, Any]:
+    try:
+        result = await mcp.call_tool(tool_name, {})
+        state, _ = normalize_mcp_state(result)
+        return _json_safe(state) if isinstance(state, dict) else {"result": _summary(result)}
+    except Exception as exc:
+        return {"error": str(exc), "tool": tool_name}
+
+
+def _compact_state_for_llm(state: dict[str, Any]) -> dict[str, Any]:
+    compact = {key: value for key, value in state.items() if key not in {"screenshot_png", "sectors"}}
+    if isinstance(compact.get("objects"), list):
+        objects = []
+        for obj in compact["objects"][:30]:
+            if not isinstance(obj, dict):
+                continue
+            objects.append(
+                {
+                    key: obj.get(key)
+                    for key in (
+                        "id",
+                        "name",
+                        "type",
+                        "threat",
+                        "attack_type",
+                        "distance",
+                        "angle_to_aim",
+                        "is_visible",
+                        "screen_x",
+                        "screen_y",
+                    )
+                    if key in obj
+                }
+            )
+        compact["objects"] = objects
+    return _json_safe(compact)
+
+
+def _lockstep_state_snapshot(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "no_progress_polls": int(state.get("no_progress_polls") or 0),
+        "recovery_count": int(state.get("recovery_count") or 0),
+        "wasted_combat_count": int(state.get("wasted_combat_count") or 0),
+        "invisible_target_failures": dict(state.get("invisible_target_failures") or {}),
+    }
+
+
+def _apply_lockstep_recovery(
+    decision: dict[str, Any],
+    state: dict[str, Any],
+    navigation_info: dict[str, Any],
+    lockstep_state: dict[str, Any],
+) -> dict[str, Any]:
+    signature = _lockstep_progress_signature(state, navigation_info)
+    if signature != lockstep_state.get("last_signature"):
+        lockstep_state["last_signature"] = signature
+        lockstep_state["no_progress_polls"] = 0
+        lockstep_state["should_stop_stuck"] = False
+        return decision
+
+    lockstep_state["no_progress_polls"] = int(lockstep_state.get("no_progress_polls") or 0) + 1
+    if int(lockstep_state["no_progress_polls"]) < STUCK_RUN_ABORT_THRESHOLD:
+        return decision
+
+    recovery_count = int(lockstep_state.get("recovery_count") or 0) + 1
+    lockstep_state["recovery_count"] = recovery_count
+    lockstep_state["no_progress_polls"] = 0
+    if recovery_count >= DIRECTOR_STUCK_RECOVERY_LIMIT:
+        lockstep_state["should_stop_stuck"] = True
+    if recovery_count % 2:
+        return {
+            "reasoning_summary": (
+                "Progress has not changed across repeated lockstep decisions, so I am retreating to break the loop "
+                "before continuing coverage."
+            ),
+            "mcp_tool": "retreat",
+            "mcp_params": {"tics": 35, "backpedal": False},
+            "event_type_override": "stuck",
+            "observed_issue": None,
+        }
+    return {
+        "reasoning_summary": (
+            "The previous recovery did not create measurable progress, so I am exploring from the new angle with "
+            "enemy and item stops enabled."
+        ),
+        "mcp_tool": "explore",
+        "mcp_params": {"max_tics": 120, "stop_on_enemy": True, "stop_on_item": True},
+        "event_type_override": "stuck",
+        "observed_issue": None,
+    }
+
+
+def _guard_lockstep_decision(
+    decision: dict[str, Any],
+    state: dict[str, Any],
+    lockstep_state: dict[str, Any],
+) -> dict[str, Any]:
+    tool = decision.get("mcp_tool") or "explore"
+    params = _normalize_mcp_params(tool, dict(decision.get("mcp_params") or {}))
+    invisible_failures = lockstep_state.get("invisible_target_failures") or {}
+    object_id = params.get("object_id")
+    if tool in COMBAT_TOOLS:
+        if object_id is not None and str(object_id) in invisible_failures:
+            return {
+                "reasoning_summary": (
+                    f"Target {object_id} was recently rejected as not visible, so I am exploring instead of firing "
+                    "through geometry."
+                ),
+                "mcp_tool": "explore",
+                "mcp_params": {"max_tics": 80, "stop_on_enemy": True, "stop_on_item": True},
+                "observed_issue": None,
+            }
+        if not _combat_target_is_visible(state, object_id):
+            return {
+                "reasoning_summary": (
+                    f"The requested combat target {object_id} is not a visible monster in the current state, so I am "
+                    "switching to exploration rather than shooting through a wall."
+                ),
+                "mcp_tool": "explore",
+                "mcp_params": {"max_tics": 80, "stop_on_enemy": True, "stop_on_item": True},
+                "observed_issue": None,
+            }
+    decision["mcp_tool"] = tool
+    decision["mcp_params"] = params
+    return decision
+
+
+def _update_lockstep_after_action(
+    decision: dict[str, Any],
+    mcp_call: dict[str, Any],
+    lockstep_state: dict[str, Any],
+) -> None:
+    summary = _mcp_action_summary(mcp_call)
+    if summary.get("stop_reason") == "target_not_visible":
+        params = decision.get("mcp_params") if isinstance(decision.get("mcp_params"), dict) else {}
+        object_id = params.get("object_id")
+        if object_id is not None:
+            failures = dict(lockstep_state.get("invisible_target_failures") or {})
+            failures[str(object_id)] = int(failures.get(str(object_id), 0)) + 1
+            lockstep_state["invisible_target_failures"] = failures
+    if _is_wasted_combat_decision(decision, mcp_call):
+        lockstep_state["wasted_combat_count"] = int(lockstep_state.get("wasted_combat_count") or 0) + 1
+    else:
+        lockstep_state["wasted_combat_count"] = 0
+    if int(lockstep_state.get("wasted_combat_count") or 0) >= WASTED_COMBAT_ABORT_THRESHOLD:
+        lockstep_state["no_progress_polls"] = STUCK_RUN_ABORT_THRESHOLD
+
+
+def _lockstep_should_stop_as_stuck(lockstep_state: dict[str, Any]) -> bool:
+    return bool(lockstep_state.get("should_stop_stuck"))
+
+
+def _unique_lockstep_tick(state: dict[str, Any], lockstep_state: dict[str, Any]) -> int:
+    previous = lockstep_state.get("last_tick")
+    last_tick = int(previous) if previous is not None else -1
+    raw_tick = _bounded_int(state.get("tic"), default=last_tick + 1, lower=0)
+    tick = max(raw_tick, last_tick + 1)
+    lockstep_state["last_tick"] = tick
+    return tick
+
+
+def _lockstep_progress_signature(state: dict[str, Any], navigation_info: dict[str, Any]) -> tuple[Any, ...]:
+    variables = normalize_variables(state)
+    x = float(variables.get("x") or 0)
+    y = float(variables.get("y") or 0)
+    return (
+        round(x / 128),
+        round(y / 128),
+        int(variables.get("kill_count") or 0),
+        int(variables.get("item_count") or 0),
+        int(variables.get("secret_count") or 0),
+        int(navigation_info.get("cells_explored") or 0),
+        len(navigation_info.get("keys_found") or []),
+    )
+
+
+def _state_report_call(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "service": "mcp-doom",
+        "tool": "get_state",
+        "input": {},
+        "output": _json_safe(
+            {
+                **_compact_state_for_llm(state),
+                "action_summary": {
+                    "stop_reason": "episode_finished" if state.get("episode_finished") else "state_report",
+                    "executor_control": False,
+                    "lockstep_control": True,
+                },
+            }
+        ),
+    }
+
+
+def _initial_strategy_decision(analysis: StaticAnalysisResult, run: TestRun) -> dict[str, Any]:
+    skill_summary = selected_skill_spawn_summary(analysis, run.difficulty_level)
+    spawned_enemies = int(skill_summary.get("thing_count_enemies") or 0)
+    return {
+        "reasoning_summary": (
+            "Initializing async gameplay strategy from selected-difficulty static analysis."
+        ),
+        "mcp_tool": "set_strategy",
+        "mcp_params": {
+            "aggression": 0.8 if spawned_enemies else 0.35,
+            "health_retreat_threshold": 25,
+            "health_collect_threshold": 65,
+            "ammo_switch_threshold": 3,
+            "engage_range": 1400 if spawned_enemies else 700,
+            "collect_range": 1100,
+            "prefer_cover": bool(spawned_enemies),
+        },
+    }
+
+
+def _initial_objective_decision(analysis: StaticAnalysisResult, run: TestRun) -> dict[str, Any]:
+    skill_summary = selected_skill_spawn_summary(analysis, run.difficulty_level)
+    spawned_enemies = int(skill_summary.get("thing_count_enemies") or 0)
+    return {
+        "reasoning_summary": (
+            "Starting the async executor with broad exploration; combat and pickup handling continue autonomously."
+        ),
+        "mcp_tool": "set_objective",
+        "mcp_params": {
+            "objective_type": "explore",
+            "priority": 40 if spawned_enemies else 25,
+            "timeout_tics": 420,
+            "replace": True,
+        },
+    }
+
+
+async def _execute_director_tool(
+    mcp: McpDoomClient,
+    decision: dict[str, Any],
+) -> tuple[Any, dict[str, Any]]:
+    tool = decision.get("mcp_tool") or "get_situation_report"
+    params = dict(decision.get("mcp_params") or {})
+    if tool == "set_objective":
+        params = _normalize_director_objective_params(params)
+        response = await mcp.set_objective(**params)
+        stop_reason = "objective_set"
+    elif tool == "set_strategy":
+        params = _normalize_director_strategy_params(params)
+        if not params:
+            tool = "get_situation_report"
+            response = await mcp.call_tool("get_situation_report", {})
+            stop_reason = "strategy_unchanged"
+        else:
+            response = await mcp.set_strategy(**params)
+            stop_reason = "strategy_updated"
+    else:
+        tool = "get_situation_report"
+        params = {}
+        response = await mcp.call_tool("get_situation_report", {})
+        stop_reason = "situation_report"
+
+    output = _compact_mcp_output(response)
+    if not isinstance(output, dict):
+        output = {"result": output}
+    output.setdefault(
+        "action_summary",
+        {
+            "stop_reason": stop_reason,
+            "director_tool": tool,
+            "objective_type": params.get("objective_type"),
+            "executor_control": True,
+        },
+    )
+    decision["mcp_tool"] = tool
+    decision["mcp_params"] = params
+    return response, {
+        "service": "mcp-doom",
+        "tool": tool,
+        "input": _json_safe(params),
+        "output": _json_safe(output),
+    }
+
+
+def _normalize_director_objective_params(params: dict[str, Any]) -> dict[str, Any]:
+    valid = {"explore", "kill", "move_to_pos", "move_to_obj", "collect", "use_object", "retreat", "hold_position"}
+    objective_type = str(params.get("objective_type") or params.get("type") or "explore")
+    if objective_type not in valid:
+        objective_type = "explore"
+    objective_params = params.get("params") if isinstance(params.get("params"), dict) else {}
+    if "object_id" in params and "object_id" not in objective_params:
+        with contextlib.suppress(TypeError, ValueError):
+            objective_params["object_id"] = int(params["object_id"])
+    for coord in ("x", "y"):
+        if coord in params and coord not in objective_params:
+            with contextlib.suppress(TypeError, ValueError):
+                objective_params[coord] = float(params[coord])
+    return {
+        "objective_type": objective_type,
+        "params": objective_params,
+        "priority": _bounded_int(params.get("priority"), default=25, lower=0, upper=200),
+        "timeout_tics": _bounded_int(params.get("timeout_tics"), default=350, lower=0, upper=2000),
+        "replace": bool(params.get("replace", False)),
+    }
+
+
+def _normalize_director_strategy_params(params: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "aggression",
+        "health_retreat_threshold",
+        "health_collect_threshold",
+        "ammo_switch_threshold",
+        "engage_range",
+        "collect_range",
+        "prefer_cover",
+    }
+    normalized = {key: params[key] for key in allowed if key in params}
+    if "aggression" in normalized:
+        normalized["aggression"] = max(0.0, min(1.0, _bounded_float(normalized["aggression"], 0.5)))
+    for key in ("health_retreat_threshold", "health_collect_threshold", "ammo_switch_threshold"):
+        if key in normalized:
+            normalized[key] = _bounded_int(normalized[key], default=0, lower=0, upper=200)
+    for key in ("engage_range", "collect_range"):
+        if key in normalized:
+            normalized[key] = max(1.0, min(5000.0, _bounded_float(normalized[key], 1000.0)))
+    if "prefer_cover" in normalized:
+        normalized["prefer_cover"] = bool(normalized["prefer_cover"])
+    return normalized
+
+
+def _apply_director_recovery(
+    decision: dict[str, Any],
+    situation: dict[str, Any],
+    director_state: dict[str, Any],
+) -> dict[str, Any]:
+    signature = _director_progress_signature(situation)
+    if signature != director_state.get("last_signature"):
+        director_state["last_signature"] = signature
+        director_state["no_progress_polls"] = 0
+        director_state["should_stop_stuck"] = False
+    else:
+        director_state["no_progress_polls"] = int(director_state.get("no_progress_polls") or 0) + 1
+
+    progress = situation.get("executor_progress") if isinstance(situation.get("executor_progress"), dict) else {}
+    stuck_recovery_count = int(progress.get("stuck_recovery_count") or 0)
+    if stuck_recovery_count > int(director_state.get("last_stuck_recovery_count") or 0):
+        director_state["no_progress_polls"] = max(
+            int(director_state.get("no_progress_polls") or 0),
+            DIRECTOR_STUCK_POLL_THRESHOLD,
+        )
+    director_state["last_stuck_recovery_count"] = stuck_recovery_count
+
+    if int(director_state.get("no_progress_polls") or 0) >= DIRECTOR_STUCK_POLL_THRESHOLD:
+        recovery_count = int(director_state.get("recovery_count") or 0) + 1
+        director_state["recovery_count"] = recovery_count
+        director_state["no_progress_polls"] = 0
+        if recovery_count >= DIRECTOR_STUCK_RECOVERY_LIMIT:
+            director_state["should_stop_stuck"] = True
+        objective = "retreat" if recovery_count % 2 else "explore"
+        return {
+            "reasoning_summary": (
+                f"Coverage progress stalled for repeated director polls; replacing the queue with {objective} recovery."
+            ),
+            "mcp_tool": "set_objective",
+            "mcp_params": {
+                "objective_type": objective,
+                "priority": 120,
+                "timeout_tics": 210,
+                "replace": True,
+            },
+            "event_type_override": "stuck",
+            "observed_issue": None,
+        }
+
+    objectives = situation.get("objectives") if isinstance(situation.get("objectives"), list) else []
+    if not objectives and decision.get("mcp_tool") == "get_situation_report":
+        return {
+            "reasoning_summary": "Executor had no queued objective, so directing exploration coverage.",
+            "mcp_tool": "set_objective",
+            "mcp_params": {
+                "objective_type": "explore",
+                "priority": 45,
+                "timeout_tics": 350,
+                "replace": False,
+            },
+            "observed_issue": None,
+        }
+    return decision
+
+
+def _director_progress_signature(situation: dict[str, Any]) -> tuple[Any, ...]:
+    variables = normalize_variables(situation)
+    exploration = situation.get("exploration") if isinstance(situation.get("exploration"), dict) else {}
+    x = float(variables.get("x") or 0)
+    y = float(variables.get("y") or 0)
+    return (
+        round(x / 128),
+        round(y / 128),
+        int(variables.get("kill_count") or 0),
+        int(variables.get("item_count") or 0),
+        int(variables.get("secret_count") or 0),
+        int(exploration.get("cells_explored") or 0),
+        len(exploration.get("keys_found") or []),
+    )
+
+
+def _director_should_stop_as_stuck(director_state: dict[str, Any]) -> bool:
+    return bool(director_state.get("should_stop_stuck"))
+
+
+def _unique_director_tick(situation: dict[str, Any], director_state: dict[str, Any]) -> int:
+    previous = director_state.get("last_tick")
+    last_tick = int(previous) if previous is not None else -1
+    raw_tick = _bounded_int(situation.get("tic"), default=last_tick + 1, lower=0)
+    tick = max(raw_tick, last_tick + 1)
+    director_state["last_tick"] = tick
+    return tick
+
+
+def _situation_finished(situation: dict[str, Any]) -> bool:
+    return bool(
+        situation.get("episode_finished")
+        or situation.get("episode_timeout")
+        or situation.get("level_completed")
+        or situation.get("next_map")
+        or situation.get("dead")
+    )
+
+
+def _situation_report_call(situation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "service": "mcp-doom",
+        "tool": "get_situation_report",
+        "input": {},
+        "output": _json_safe(
+            {
+                **_compact_situation(situation),
+                "action_summary": {
+                    "stop_reason": "episode_finished" if situation.get("episode_finished") else "situation_report",
+                    "director_tool": "get_situation_report",
+                    "executor_control": True,
+                },
+            }
+        ),
+    }
+
+
+def _compact_situation(situation: dict[str, Any]) -> dict[str, Any]:
+    compact = {key: value for key, value in situation.items() if key not in {"screenshot_png", "depth", "sectors"}}
+    if isinstance(compact.get("objects"), list):
+        compact["objects"] = compact["objects"][:20]
+    if isinstance(compact.get("events"), list):
+        compact["events"] = compact["events"][-20:]
+    return _json_safe(compact)
+
+
+def _pwad_crash_fields(exc: Exception, stage: str) -> dict[str, Any]:
+    raw_error = str(exc)
+    summary = "PWAD crashed or failed to initialize under the configured ViZDoom/Freedoom test environment."
+    if stage == "gameplay":
+        summary = "PWAD runtime crashed or disconnected during the automated playthrough."
+    return {
+        "failure_category": PWAD_CRASH_CATEGORY,
+        "failure_stage": stage,
+        "failure_summary": summary,
+        "failure_diagnostics": {
+            "raw_error": raw_error,
+            "exception_type": exc.__class__.__name__,
+            "user_facing_outcome": PWAD_CRASH_CATEGORY,
+        },
+    }
+
+
+def _bounded_int(value: Any, default: int, lower: int = 0, upper: int | None = None) -> int:
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError):
+        parsed = default
+    parsed = max(lower, parsed)
+    if upper is not None:
+        parsed = min(upper, parsed)
+    return parsed
+
+
+def _bounded_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+async def _execute_tool(
+    mcp: McpDoomClient,
+    decision: dict[str, Any],
+    state: dict[str, Any] | None = None,
+) -> tuple[Any, dict[str, Any]]:
     tool = decision.get("mcp_tool") or "explore"
     params = _normalize_mcp_params(tool, dict(decision.get("mcp_params") or {}))
     if tool in OBJECT_ID_TOOLS and "object_id" not in params:
         decision["tool_param_warning"] = f"{tool} requested without an object_id; fallback explore used."
+        tool = "explore"
+        params = {}
+    if tool in COMBAT_TOOLS and not _combat_target_is_visible(state, params.get("object_id")):
+        decision["tool_param_warning"] = (
+            f"{tool} target {params.get('object_id')} is not a visible monster in the current state; "
+            "fallback explore used."
+        )
         tool = "explore"
         params = {}
     if tool == "explore":
@@ -382,6 +1062,51 @@ def _normalize_mcp_params(tool: str, params: dict[str, Any]) -> dict[str, Any]:
     return params
 
 
+def _combat_target_is_visible(state: dict[str, Any] | None, object_id: Any) -> bool:
+    if object_id is None or not isinstance(state, dict):
+        return False
+    for obj in state.get("objects") or []:
+        if not isinstance(obj, dict):
+            continue
+        if obj.get("id") == object_id and obj.get("type") == "monster":
+            return bool(obj.get("is_visible"))
+    return False
+
+
+def _is_stuck_decision(event: Any, mcp_call: dict[str, Any]) -> bool:
+    if getattr(event, "event_type", None) == "stuck":
+        return True
+    summary = _mcp_action_summary(mcp_call)
+    return summary.get("stop_reason") == "stuck"
+
+
+def _is_wasted_combat_decision(decision: dict[str, Any], mcp_call: dict[str, Any]) -> bool:
+    if decision.get("mcp_tool") not in COMBAT_TOOLS:
+        return False
+    summary = _mcp_action_summary(mcp_call)
+    stop_reason = summary.get("stop_reason")
+    if stop_reason == "target_not_visible":
+        return True
+    shots = _int_like(summary.get("shots_fired"))
+    hits = _int_like(summary.get("hits_landed"))
+    kills = _int_like(summary.get("kills"))
+    return shots > 0 and hits == 0 and kills == 0
+
+
+def _int_like(value: Any) -> int:
+    with contextlib.suppress(TypeError, ValueError):
+        return int(float(value))
+    return 0
+
+
+def _mcp_action_summary(mcp_call: dict[str, Any]) -> dict[str, Any]:
+    output = mcp_call.get("output")
+    if not isinstance(output, dict):
+        return {}
+    summary = output.get("action_summary")
+    return summary if isinstance(summary, dict) else {}
+
+
 def _pop_telemetry_frames(state: dict[str, Any]) -> list[dict[str, Any]]:
     frames = state.pop("telemetry_frames", None) if isinstance(state, dict) else None
     if not isinstance(frames, list):
@@ -415,6 +1140,24 @@ async def _record_telemetry_frames(
             continue
         frame = png_bytes_to_frame(png_bytes)
         recorder.write_frame(frame)
+
+
+def _write_realtime_frame(
+    recorder: RecordingService,
+    frame: Any,
+    last_record_frame_at: float | None,
+) -> float | None:
+    if frame is None:
+        return last_record_frame_at
+    now = time.monotonic()
+    if last_record_frame_at is None:
+        recorder.write_frame(frame)
+        return now
+    elapsed = max(0.0, now - last_record_frame_at)
+    repeats = max(1, min(60, int(round(elapsed * recorder.fps))))
+    for _ in range(repeats):
+        recorder.write_frame(frame)
+    return now
 
 
 async def _recent_trace(db: AsyncSession, run_id: UUID) -> list[dict[str, Any]]:
@@ -528,12 +1271,18 @@ async def finalize_stopped_run(db: AsyncSession, run_id: UUID, outcome: str) -> 
     await run_repo.update(run, **fields)
     await db.commit()
     await DefectService(db).detect_for_run(run)
+    await db.commit()
     try:
         await ReportService(db).generate(run.id)
         await db.commit()
     except Exception as exc:
         await db.rollback()
-        await run_repo.update(run, error_message=(run.error_message or f"Report generation failed: {exc}"))
-        await db.commit()
+        refreshed_run = await db.get(TestRun, run.id)
+        if refreshed_run is not None:
+            await run_repo.update(
+                refreshed_run,
+                error_message=(refreshed_run.error_message or f"Report generation failed: {exc}"),
+            )
+            await db.commit()
     await db.refresh(run)
     return run

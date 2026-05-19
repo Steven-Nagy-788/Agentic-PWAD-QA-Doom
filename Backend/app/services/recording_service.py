@@ -19,6 +19,8 @@ class RecordingService:
         self.source_path = self.settings.recording_storage_dir / f"{run_id}.source.mp4"
         self.writer: cv2.VideoWriter | None = None
         self.frames_written = 0
+        self.min_frames = max(10, int(round(self.fps)))
+        self._last_frame: np.ndarray | None = None
 
     def start_from_frame(self, frame: np.ndarray) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -32,6 +34,7 @@ class RecordingService:
         if self.writer is None:
             self.start_from_frame(frame)
         assert self.writer is not None
+        self._last_frame = frame
         self.writer.write(self._bgr(frame))
         self.frames_written += 1
 
@@ -43,6 +46,10 @@ class RecordingService:
 
     def finalize(self) -> Path | None:
         if self.writer is not None:
+            if self._last_frame is not None and 0 < self.frames_written < self.min_frames:
+                for _ in range(self.min_frames - self.frames_written):
+                    self.writer.write(self._bgr(self._last_frame))
+                    self.frames_written += 1
             self.writer.release()
             self.writer = None
             return self._transcode_h264()

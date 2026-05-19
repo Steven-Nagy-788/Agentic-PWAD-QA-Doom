@@ -16,6 +16,7 @@ class DefectOut(BaseModel):
     priority: int
     resolution_status: str
     defect_type: str
+    fingerprint: str | None = None
     title: str
     description: str
     reproduction_steps: str | None = None
@@ -24,4 +25,7 @@ class DefectOut(BaseModel):
     position_y: float | None = None
     screenshot_id: UUID | None = None
     recommendation: str | None = None
+    first_seen_tick: int | None = None
+    last_seen_tick: int | None = None
+    occurrence_count: int
     created_at: datetime

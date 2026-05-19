@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from uuid import UUID
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
@@ -16,7 +17,7 @@ from app.services.report_service import ReportService
 router = APIRouter(prefix="/runs", tags=["Reports"])
 
 
-@router.get("/{run_id}/report", response_model=ReportOut)
+@router.get("/{run_id}/report", response_model=ReportOut, response_model_exclude_none=True)
 async def get_report(run_id: UUID, db: AsyncSession = Depends(get_db)) -> ReportOut:
     report = await ReportRepository(db).get_by_run(run_id)
     if report is None:
@@ -40,7 +41,12 @@ async def get_report_status(run_id: UUID, db: AsyncSession = Depends(get_db)) ->
     report = await ReportRepository(db).get_by_run(run_id)
     if report is None:
         terminal = run.status in {"completed", "cancelled", "failed"}
-        return ReportStatusOut(status="missing" if terminal else "generating")
+        recently_completed = bool(
+            terminal
+            and run.completed_at
+            and (datetime.now(UTC) - run.completed_at).total_seconds() < 120
+        )
+        return ReportStatusOut(status="generating" if (not terminal or recently_completed) else "missing")
     pdf_available = bool(report.pdf_path and Path(report.pdf_path).exists())
     status_value = report.generation_status
     if status_value == "complete" and not pdf_available:

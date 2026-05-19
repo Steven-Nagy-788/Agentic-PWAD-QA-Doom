@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from uuid import UUID
 
@@ -9,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import AgentPositionTrail, Defect, GameEvent, NotableEventScreenshot
 from app.repositories.defect_repository import DefectRepository
 from app.repositories.game_event_repository import GameEventRepository
+
+
+STUCK_DECISION_THRESHOLD = 5
 
 
 class CollectorService:
@@ -26,18 +30,27 @@ class CollectorService:
         llm_input: dict[str, Any],
         decision: dict[str, Any],
         mcp_call: dict[str, Any],
+        agent_decision_id: UUID | None = None,
     ) -> GameEvent:
         variables = normalize_variables(state)
-        event_type = self.detect_event(variables)
+        detected_event_type = self.detect_event(variables)
+        event_type = detected_event_type
+        if detected_event_type == "normal" and decision.get("event_type_override"):
+            event_type = str(decision["event_type_override"])
+        mcp_output = mcp_call.get("output")
+        action_summary = mcp_output.get("action_summary") if isinstance(mcp_output, dict) else None
         action_taken = {
             "mcp_tool": decision.get("mcp_tool"),
+            "mcp_executed_tool": mcp_call.get("tool") or decision.get("mcp_tool"),
             "mcp_params": decision.get("mcp_params") or {},
             "mcp_service": mcp_call.get("service", "mcp-doom"),
             "mcp_input": mcp_call.get("input"),
-            "mcp_output": mcp_call.get("output"),
+            "mcp_output": mcp_output,
         }
-        if mcp_call.get("tool") and mcp_call["tool"] != decision.get("mcp_tool"):
-            action_taken["mcp_executed_tool"] = mcp_call["tool"]
+        if isinstance(action_summary, dict):
+            action_taken["mcp_action_summary"] = action_summary
+            if action_summary.get("stop_reason") is not None:
+                action_taken["mcp_stop_reason"] = str(action_summary["stop_reason"])
         if decision.get("recording_fidelity_warning"):
             action_taken["recording_fidelity_warning"] = decision["recording_fidelity_warning"]
         if decision.get("tool_param_warning"):
@@ -58,6 +71,7 @@ class CollectorService:
             item_count=int(variables["item_count"]),
             secret_count=int(variables["secret_count"]),
             weapon_selected=int(variables["weapon_selected"]),
+            agent_decision_id=agent_decision_id,
             event_type=event_type,
             damage_received=variables.get("damage_received"),
             llm_input_summary=json.dumps(llm_input, default=str)[:12000],
@@ -76,19 +90,22 @@ class CollectorService:
         )
         issue = decision.get("observed_issue")
         if issue:
-            await DefectRepository(self.db).create(
-                Defect(
-                    run_id=run_id,
-                    severity=2,
-                    priority=2,
-                    defect_type="agent_observed",
-                    title="Agent-observed issue",
-                    description=str(issue),
-                    detected_at_tick=tick,
-                    position_x=event.player_x,
-                    position_y=event.player_y,
+            defect_repo = DefectRepository(self.db)
+            defect_type, title = normalize_observed_issue(issue)
+            if not await defect_repo.exists_by_type_title(run_id, defect_type, title):
+                await defect_repo.create(
+                    Defect(
+                        run_id=run_id,
+                        severity=2,
+                        priority=2,
+                        defect_type=defect_type,
+                        title=title,
+                        description=str(issue),
+                        detected_at_tick=tick,
+                        position_x=event.player_x,
+                        position_y=event.player_y,
+                    )
                 )
-            )
         self._previous = variables
         return event
 
@@ -126,9 +143,12 @@ class CollectorService:
         if current["health"] < previous["health"]:
             current["damage_received"] = previous["health"] - current["health"]
             return "damage_taken"
+        if _changed_resources_or_score(current, previous):
+            self._stuck_count = 0
+            return "normal"
         if abs(current["x"] - previous["x"]) < 1 and abs(current["y"] - previous["y"]) < 1:
             self._stuck_count += 1
-            if self._stuck_count >= 30:
+            if self._stuck_count >= STUCK_DECISION_THRESHOLD:
                 return "stuck"
         else:
             self._stuck_count = 0
@@ -161,4 +181,32 @@ def normalize_variables(state: dict[str, Any]) -> dict[str, Any]:
     }
     normalized["level_completed"] = bool(state.get("level_completed") or state.get("next_map"))
     normalized["map_exit"] = bool(state.get("map_exit"))
+    normalized["ammo_total"] = (
+        normalized["ammo_bullets"]
+        + normalized["ammo_shells"]
+        + normalized["ammo_rockets"]
+        + normalized["ammo_cells"]
+    )
     return normalized
+
+
+def _changed_resources_or_score(current: dict[str, Any], previous: dict[str, Any]) -> bool:
+    watched_keys = (
+        "ammo_total",
+        "armor",
+        "weapon_selected",
+        "kill_count",
+        "item_count",
+        "secret_count",
+    )
+    return any(current.get(key) != previous.get(key) for key in watched_keys)
+
+
+def normalize_observed_issue(issue: Any) -> tuple[str, str]:
+    text = str(issue)
+    match = re.match(r"\s*\[([^\]]+)\]", text)
+    category = (match.group(1) if match else "agent observed").strip().lower()
+    slug = re.sub(r"[^a-z0-9]+", "_", category).strip("_") or "issue"
+    defect_type = f"agent_observed_{slug}"[:64]
+    title = f"Automated playthrough observed {category.replace('_', ' ')} issue"
+    return defect_type, title[:255]

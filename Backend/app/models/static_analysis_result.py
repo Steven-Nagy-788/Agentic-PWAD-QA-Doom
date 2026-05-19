@@ -62,6 +62,14 @@ class StaticAnalysisResult(Base):
         nullable=False,
         server_default=text("'{}'::jsonb"),
     )
+    map_title: Mapped[str | None] = mapped_column(Text)
+    map_display_name: Mapped[str | None] = mapped_column(Text)
+    map_title_source: Mapped[str | None] = mapped_column(String(32))
+    spawn_summary_by_skill: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+    )
     map_overview_png_path: Mapped[str | None] = mapped_column(Text)
     analyzed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 

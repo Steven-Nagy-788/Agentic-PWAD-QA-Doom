@@ -11,6 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
 if TYPE_CHECKING:
+    from app.models.agent_decision import AgentDecision
     from app.models.notable_event_screenshot import NotableEventScreenshot
     from app.models.test_run import TestRun
 
@@ -50,6 +51,10 @@ class GameEvent(Base):
     item_count: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     secret_count: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     weapon_selected: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    agent_decision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_decisions.id", ondelete="SET NULL"),
+    )
     action_taken: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     llm_reasoning: Mapped[str | None] = mapped_column(Text)
     llm_input_summary: Mapped[str | None] = mapped_column(Text)
@@ -58,6 +63,7 @@ class GameEvent(Base):
     damage_received: Mapped[int | None] = mapped_column(SmallInteger)
 
     run: Mapped[TestRun] = relationship("TestRun", back_populates="game_events")
+    agent_decision: Mapped[AgentDecision | None] = relationship("AgentDecision", foreign_keys=[agent_decision_id])
     screenshots: Mapped[list[NotableEventScreenshot]] = relationship(
         "NotableEventScreenshot",
         back_populates="game_event",

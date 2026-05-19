@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class StaticAnalysisOut(BaseModel):
@@ -15,7 +15,9 @@ class StaticAnalysisOut(BaseModel):
                 "id": "68e08fe5-0a88-4f9b-80ee-5f38fb2ac001",
                 "wad_file_id": "9d1bf2ec-7f42-4fcb-a8a9-6b4f4fced001",
                 "map_name": "MAP01",
+                "map_display_name": "custom_map - MAP01",
                 "thing_count_enemies": 12,
+                "spawn_summary_by_skill": {"3": {"thing_count_enemies": 12}},
                 "secret_sector_count": 2,
                 "estimated_difficulty": "fair",
                 "map_overview_png_url": "/wads/9d1bf2ec-7f42-4fcb-a8a9-6b4f4fced001/map-png?map_name=MAP01",
@@ -26,6 +28,9 @@ class StaticAnalysisOut(BaseModel):
     id: UUID
     wad_file_id: UUID
     map_name: str
+    map_title: str | None = None
+    map_display_name: str | None = None
+    map_title_source: str | None = None
     thing_count_total: int
     thing_count_enemies: int
     thing_count_items: int
@@ -46,6 +51,7 @@ class StaticAnalysisOut(BaseModel):
     estimated_difficulty: str | None = None
     enemy_breakdown: dict[str, Any]
     item_breakdown: dict[str, Any]
+    spawn_summary_by_skill: dict[str, Any] = Field(default_factory=dict)
     map_overview_png_path: str | None = None
     map_overview_png_url: str | None = None
     analyzed_at: datetime

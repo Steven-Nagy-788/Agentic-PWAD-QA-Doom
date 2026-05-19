@@ -1,6 +1,20 @@
 """MCP server exposing ViZDoom as tools for AI agents."""
 
 import atexit
+import warnings
+
+
+def _suppress_fastmcp_authlib_warning() -> None:
+    try:
+        from authlib.deprecate import AuthlibDeprecationWarning
+    except ImportError:
+        warning_category = Warning
+    else:
+        warning_category = AuthlibDeprecationWarning
+    warnings.filterwarnings("ignore", category=warning_category)
+
+
+_suppress_fastmcp_authlib_warning()
 
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Image
@@ -198,6 +212,12 @@ def get_available_actions() -> dict:
 
 
 @mcp.tool
+def list_wad_maps(wad_path: str) -> dict:
+    """List map markers (MAP01, E1M1, etc.) found inside a WAD file."""
+    return manager.list_wad_maps(wad_path)
+
+
+@mcp.tool
 def aim_and_shoot(
     object_id: int,
     shots: int = 3,
@@ -213,14 +233,14 @@ def aim_and_shoot(
     Typical workflow: get_state -> find enemy -> aim_and_shoot(object_id) -> assess result.
 
     Args:
-        object_id: Numeric ID of the target (from the objects list in game state).
+        object_id: Numeric ID of a visible monster target from the current objects list.
         shots: Number of shots to fire (default 3). Stops early if target dies.
         max_tics: Maximum game tics before giving up (default 100).
 
     Returns screenshot + state with action_summary containing:
         shots_fired, hits_landed, kills, ammo_spent, target_name, stop_reason.
-    Stop reasons: shots_complete, target_killed, target_lost, player_died,
-        out_of_ammo, episode_finished, max_tics.
+    Stop reasons: shots_complete, target_killed, target_lost, target_not_visible,
+        player_died, out_of_ammo, episode_finished, max_tics.
     """
     result = manager.aim_and_shoot(
         object_id,
@@ -251,7 +271,7 @@ def move_to(
     Typical workflow: get_state -> find object -> move_to(object_id) -> assess result.
 
     Args:
-        object_id: Numeric ID of the target (from the objects list in game state).
+        object_id: Numeric ID of a visible monster target from the current objects list.
         max_tics: Maximum game tics before giving up (default 140).
         use: Press USE when arriving (for switches/doors). Default false.
         stop_on_enemy: Stop if a visible monster appears nearby. Default true.
@@ -337,6 +357,8 @@ def strafe_and_shoot(
     Returns screenshot + state with action_summary containing:
         shots_fired, hits_landed, kills, ammo_spent, target_name, strafe_direction,
         damage_taken, stop_reason.
+    Stop reasons: shots_complete, target_killed, target_lost, target_not_visible,
+        player_died, out_of_ammo, episode_finished, max_tics.
     """
     result = manager.strafe_and_shoot(
         object_id,
@@ -386,14 +408,15 @@ def retreat(
 
 @mcp.tool
 def get_threat_assessment() -> dict:
-    """Analyze all visible threats and return prioritized tactical intelligence.
+    """Analyze known threats and return prioritized tactical intelligence.
 
     No game tics are consumed. Call freely between actions to assess the situation.
 
     Returns:
         threat_level: Overall threat - "none", "low", "medium", "high", or "critical".
         threats: Sorted list of enemies with id, name, distance, angle_to_aim,
-            attack_type, priority_rank, priority_score.
+            attack_type, is_visible, priority_rank, priority_score. Only visible
+            threats should be passed to combat tools.
         incoming_projectiles: Active projectiles to dodge.
         tactical_advice: String list with prioritized recommendations.
         player_health, player_armor, selected_weapon_ammo.
@@ -453,6 +476,7 @@ def set_objective(
     params: dict | None = None,
     priority: int = 0,
     timeout_tics: int = 0,
+    replace: bool = False,
 ) -> dict:
     """Set an objective for the autonomous executor.
 
@@ -475,6 +499,7 @@ def set_objective(
         params: Parameters for the objective.
         priority: Higher = executed first. Default 0.
         timeout_tics: Auto-fail after this many tics. 0 = no timeout.
+        replace: Clear queued objectives before adding this one.
 
     Returns the updated objective queue.
     """
@@ -483,6 +508,7 @@ def set_objective(
         params=params,
         priority=priority,
         timeout_tics=timeout_tics,
+        replace=replace,
     )
 
 

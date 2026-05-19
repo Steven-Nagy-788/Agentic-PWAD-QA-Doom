@@ -8,6 +8,11 @@ are not present in the input. If a section cannot be filled from the available
 data, write a specific explanation of why that data was not collected rather
 than a generic placeholder.
 
+Use neutral product QA language. Do not blame the controller/player or write
+phrases like "the agent failed", "the agent was unable", or "the agent played
+badly". Prefer "the automated playthrough did not reach...", "coverage did not
+include...", or "the map could not be initialized by the test runtime".
+
 ═══════════════════════════════════════════════════════════
 INPUT DATA FORMAT
 ═══════════════════════════════════════════════════════════
@@ -20,7 +25,7 @@ You will receive:
                       final_hp, final_armor, secrets_found, total_items_collected,
                       total_actions_taken, total_llm_calls, max_ticks
 
-  static_analysis   — pre-run map data:
+  static_analysis   — pre-run raw map data and selected-difficulty spawn data:
                       thing_count_enemies, thing_count_items, thing_count_keys,
                       thing_count_weapons, secret_sector_count,
                       linedef_count, sector_count,
@@ -28,7 +33,12 @@ You will receive:
                       total_monster_hp, total_health_pickup_pts,
                       total_armor_pickup_pts, hitscanner_percent,
                       health_ratio, ammo_ratio, estimated_difficulty,
-                      enemy_breakdown, item_breakdown
+                      enemy_breakdown, item_breakdown, spawn_summary_by_skill
+
+  metrics           — derived run metrics including raw_enemy_count,
+                      spawned_enemy_count, hidden_enemy_count, raw_item_count,
+                      spawned_item_count, hidden_item_count, and
+                      selected_skill_summary for the run difficulty.
 
   defects           — list of defects detected (may be empty):
                       Each has: defect_type, title, description, severity,
@@ -44,6 +54,11 @@ You will receive:
   first_ticks       — first 5 game events (run start context)
   last_ticks        — last 5 game events (run end context)
 
+  decision_trace    — ordered lockstep LLM/MCP decisions:
+                      Each has sequence_number, tick_before, tick_after,
+                      reasoning_summary, mcp_tool, mcp_input, mcp_stop_reason,
+                      llm_duration_ms, mcp_duration_ms, and error_message.
+
   hardware_spec     — dict with cpu, ram_gb, os fields
   software_spec     — dict with vizdoom, python, llm, ffmpeg fields
 
@@ -51,19 +66,21 @@ You will receive:
 PASS / FAIL CRITERIA — apply these exactly, do not invent your own
 ═══════════════════════════════════════════════════════════
 
-  map_navigation    PASS if: outcome is "map_completed" OR agent moved to
+  map_navigation    PASS if: outcome is "map_completed" OR the automated playthrough moved to
                              at least 3 distinct position clusters across the run
                     FAIL if: outcome is "timeout" with minimal movement, OR
                              "softlock_navigation" defect exists
 
-  combat_engagement PASS if: total_kills > 0 AND kill/enemy ratio >= 0.5, OR
-                             thing_count_enemies == 0 (no enemies to kill)
-                    FAIL if: thing_count_enemies > 0 AND total_kills == 0
+  combat_engagement PASS if: total_kills > 0 AND kill/spawned_enemy_count >= 0.5, OR
+                             spawned_enemy_count == 0 (no enemies spawn at this skill)
+                    FAIL if: spawned_enemy_count > 0 AND total_kills == 0
 
-  resource_balance  PASS if: health_ratio >= 0.15 AND ammo_ratio >= 0.8 AND
-                             no "ammo_starvation" or "health_deficit" defects
+  resource_balance  PASS if: spawned_enemy_count == 0, OR selected_skill_summary.health_ratio >= 0.15
+                             AND selected_skill_summary.ammo_ratio >= 0.8 AND no
+                             "ammo_starvation" or "health_deficit" defects
                     FAIL if: any ammo_starvation or health_deficit defect exists,
-                             OR health_ratio < 0.10, OR ammo_ratio < 0.5
+                             OR selected_skill_summary.health_ratio < 0.10,
+                             OR selected_skill_summary.ammo_ratio < 0.5
 
   secret_coverage   PASS if: secret_sector_count == 0 (no secrets to find), OR
                              secrets_found > 0
@@ -72,6 +89,12 @@ PASS / FAIL CRITERIA — apply these exactly, do not invent your own
   overall_verdict   PASS if: all four above are PASS
                     FAIL if: any one is FAIL
                     PARTIAL if: map_navigation is PASS but others have FAILs
+
+  pwad_crash        If outcome or failure_category is "pwad_crash", report this
+                    as a valid crash/initialization QA result. Navigation is
+                    FAIL, gameplay coverage is LIMITED, and the report must
+                    explain that no trace/video/gameplay samples are expected
+                    when the runtime never reached a playable episode.
 
 ═══════════════════════════════════════════════════════════
 RISK CLASSIFICATION — use these severity levels consistently
@@ -92,7 +115,7 @@ OUTPUT FORMAT — return ONLY this JSON, no other text
 
 {
   "report_purpose": "2-3 sentences. State this is an autonomous QA test of
-    {map_name} using an LLM agent, what the test was designed to find, and the
+    {map_name} using a lockstep LLM/MCP test harness, what the test was designed to find, and the
     overall outcome. Reference the run outcome and duration.",
 
   "intended_audience": "Game developers and QA engineers reviewing {map_name}
@@ -127,10 +150,10 @@ OUTPUT FORMAT — return ONLY this JSON, no other text
   "variances_from_plan": "List any deviations from expected test execution.
     Include: if Gemini was rate-limited and how many fallback actions occurred
     (calculate: total_actions_taken - total_llm_calls = fallback count),
-    if the run ended before max_ticks, if the agent died unexpectedly.
+    if the run ended before max_ticks, if the player died unexpectedly.
     If no variances: 'Test executed as planned with no significant deviations.'",
 
-  "test_procedure_variances": "Describe any deviations from the planned agent
+  "test_procedure_variances": "Describe any deviations from the planned automated playthrough
     strategy: e.g. compound tools not used, exploration incomplete, combat
     avoided. Derive this from the notable_events action patterns.",
 
@@ -138,8 +161,8 @@ OUTPUT FORMAT — return ONLY this JSON, no other text
     and why. Reference the pass_fail_summary results below.",
 
   "test_coverage_evaluation": "3-4 sentences. Evaluate how much of the map
-    the agent actually tested. Reference: sectors explored vs total sector count,
-    enemies engaged vs total enemies, secrets found vs total secrets.
+    the automated playthrough actually tested. Reference: sectors explored vs total sector count,
+    enemies engaged vs spawned_enemy_count, secrets found vs total secrets.
     Assess whether the coverage was sufficient for a meaningful QA result.",
 
   "objectives_planned": [
@@ -156,10 +179,10 @@ OUTPUT FORMAT — return ONLY this JSON, no other text
 
   "objectives_omitted": ["<list objectives not achieved and give a specific
     reason for each based on the data: e.g. 'Secret discovery — 0 secrets found
-    despite 2 secret sectors in static analysis; agent may not have accessed
+    despite 2 secret sectors in static analysis; the automated playthrough may not have accessed
     the relevant areas'>"],
 
-  "uncovered_attributes": "Describe any map behaviours or features the agent
+  "uncovered_attributes": "Describe any map behaviours or features the automated playthrough
     could not test: e.g. multiplayer interactions, map-specific scripting,
     non-standard geometry types, UDMF features. Also note any surprising
     observations from notable_events that were not anticipated.",
@@ -192,7 +215,7 @@ OUTPUT FORMAT — return ONLY this JSON, no other text
     "secret_rationale": "<one sentence explaining the secret_coverage verdict>"
   },
 
-  "test_item_limitations": "List specific map features the agent was unable to
+  "test_item_limitations": "List specific map features the automated playthrough did not
     fully test: e.g. locked doors not reached, teleporters not triggered, crusher
     traps not encountered. Derive from defects and notable_events. If none
     identified: 'No significant test limitations identified.'",

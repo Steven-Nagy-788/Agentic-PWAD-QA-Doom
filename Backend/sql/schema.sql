@@ -37,6 +37,10 @@ CREATE TABLE IF NOT EXISTS static_analysis_results (
     estimated_difficulty    VARCHAR(16),
     enemy_breakdown         JSONB           NOT NULL DEFAULT '{}',
     item_breakdown          JSONB           NOT NULL DEFAULT '{}',
+    map_title               TEXT,
+    map_display_name        TEXT,
+    map_title_source        VARCHAR(32),
+    spawn_summary_by_skill  JSONB           NOT NULL DEFAULT '{}',
     map_overview_png_path   TEXT,
     analyzed_at             TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
 
@@ -58,6 +62,10 @@ CREATE TABLE IF NOT EXISTS test_runs (
     duration_seconds        INTEGER,
     outcome                 VARCHAR(32),
     error_message           TEXT,
+    failure_category        VARCHAR(32),
+    failure_stage           VARCHAR(64),
+    failure_summary         TEXT,
+    failure_diagnostics     JSONB,
     final_hp                SMALLINT,
     final_armor             SMALLINT,
     total_kills             SMALLINT,
@@ -93,6 +101,7 @@ CREATE TABLE IF NOT EXISTS game_events (
     item_count          SMALLINT        NOT NULL,
     secret_count        SMALLINT        NOT NULL,
     weapon_selected     SMALLINT        NOT NULL,
+    agent_decision_id   UUID,
     action_taken        JSONB,
     llm_reasoning       TEXT,
     llm_input_summary   TEXT,
@@ -107,6 +116,32 @@ CREATE INDEX IF NOT EXISTS idx_game_events_run_id ON game_events(run_id);
 CREATE INDEX IF NOT EXISTS idx_game_events_run_id_tick ON game_events(run_id, tick_number);
 CREATE INDEX IF NOT EXISTS idx_game_events_notable ON game_events(run_id, event_type)
     WHERE event_type != 'normal';
+
+CREATE TABLE IF NOT EXISTS agent_decisions (
+    id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    run_id              UUID        NOT NULL REFERENCES test_runs(id) ON DELETE CASCADE,
+    sequence_number     INTEGER     NOT NULL,
+    tick_before         INTEGER,
+    tick_after          INTEGER,
+    game_event_id       BIGINT      REFERENCES game_events(id) ON DELETE SET NULL,
+    status              VARCHAR(16) NOT NULL DEFAULT 'started',
+    error_message       TEXT,
+    llm_input_summary   JSONB,
+    llm_decision        JSONB,
+    reasoning_summary   TEXT,
+    mcp_tool            VARCHAR(64),
+    mcp_input           JSONB,
+    mcp_output          JSONB,
+    mcp_stop_reason     VARCHAR(64),
+    llm_duration_ms     REAL,
+    mcp_duration_ms     REAL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_agent_decisions_run_sequence UNIQUE (run_id, sequence_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_decisions_run_id ON agent_decisions(run_id);
+CREATE INDEX IF NOT EXISTS idx_agent_decisions_run_id_sequence ON agent_decisions(run_id, sequence_number);
 
 CREATE TABLE IF NOT EXISTS notable_event_screenshots (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -173,6 +208,7 @@ CREATE TABLE IF NOT EXISTS defects (
     priority            SMALLINT    NOT NULL CHECK (priority BETWEEN 1 AND 3),
     resolution_status   VARCHAR(16) NOT NULL DEFAULT 'open',
     defect_type         VARCHAR(64) NOT NULL,
+    fingerprint         VARCHAR(128),
     title               VARCHAR(255) NOT NULL,
     description         TEXT        NOT NULL,
     reproduction_steps  TEXT,
@@ -181,13 +217,18 @@ CREATE TABLE IF NOT EXISTS defects (
     position_y          REAL,
     screenshot_id       UUID        REFERENCES notable_event_screenshots(id) ON DELETE SET NULL,
     recommendation      TEXT,
+    first_seen_tick     INTEGER,
+    last_seen_tick      INTEGER,
+    occurrence_count    INTEGER     NOT NULL DEFAULT 1,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT uq_defects_run_type_tick UNIQUE (run_id, defect_type, detected_at_tick)
+    CONSTRAINT uq_defects_run_type_tick UNIQUE (run_id, defect_type, detected_at_tick),
+    CONSTRAINT uq_defects_run_fingerprint UNIQUE (run_id, fingerprint)
 );
 
 CREATE INDEX IF NOT EXISTS idx_defects_run_id ON defects(run_id);
 CREATE INDEX IF NOT EXISTS idx_defects_severity ON defects(run_id, severity);
+CREATE INDEX IF NOT EXISTS idx_defects_fingerprint ON defects(run_id, fingerprint);
 
 ALTER TABLE IF EXISTS wad_files
     ADD COLUMN IF NOT EXISTS iwad_required VARCHAR(16) NOT NULL DEFAULT 'freedoom2';
@@ -195,8 +236,60 @@ ALTER TABLE IF EXISTS wad_files
 ALTER TABLE IF EXISTS test_runs
     ADD COLUMN IF NOT EXISTS max_ticks INTEGER NOT NULL DEFAULT 3000;
 
+ALTER TABLE IF EXISTS test_runs
+    ADD COLUMN IF NOT EXISTS failure_category VARCHAR(32);
+
+ALTER TABLE IF EXISTS test_runs
+    ADD COLUMN IF NOT EXISTS failure_stage VARCHAR(64);
+
+ALTER TABLE IF EXISTS test_runs
+    ADD COLUMN IF NOT EXISTS failure_summary TEXT;
+
+ALTER TABLE IF EXISTS test_runs
+    ADD COLUMN IF NOT EXISTS failure_diagnostics JSONB;
+
 ALTER TABLE IF EXISTS game_events
     ADD COLUMN IF NOT EXISTS llm_input_summary TEXT;
+
+ALTER TABLE IF EXISTS game_events
+    ADD COLUMN IF NOT EXISTS agent_decision_id UUID;
+
+ALTER TABLE IF EXISTS static_analysis_results
+    ADD COLUMN IF NOT EXISTS map_title TEXT;
+
+ALTER TABLE IF EXISTS static_analysis_results
+    ADD COLUMN IF NOT EXISTS map_display_name TEXT;
+
+ALTER TABLE IF EXISTS static_analysis_results
+    ADD COLUMN IF NOT EXISTS map_title_source VARCHAR(32);
+
+ALTER TABLE IF EXISTS static_analysis_results
+    ADD COLUMN IF NOT EXISTS spawn_summary_by_skill JSONB NOT NULL DEFAULT '{}';
+
+ALTER TABLE IF EXISTS defects
+    ADD COLUMN IF NOT EXISTS fingerprint VARCHAR(128);
+
+ALTER TABLE IF EXISTS defects
+    ADD COLUMN IF NOT EXISTS first_seen_tick INTEGER;
+
+ALTER TABLE IF EXISTS defects
+    ADD COLUMN IF NOT EXISTS last_seen_tick INTEGER;
+
+ALTER TABLE IF EXISTS defects
+    ADD COLUMN IF NOT EXISTS occurrence_count INTEGER NOT NULL DEFAULT 1;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'fk_game_events_agent_decision_id'
+    ) THEN
+        ALTER TABLE game_events
+            ADD CONSTRAINT fk_game_events_agent_decision_id
+            FOREIGN KEY (agent_decision_id) REFERENCES agent_decisions(id) ON DELETE SET NULL;
+    END IF;
+END $$;
 
 DELETE FROM defects a
 USING defects b
@@ -214,5 +307,17 @@ BEGIN
     ) THEN
         ALTER TABLE defects
             ADD CONSTRAINT uq_defects_run_type_tick UNIQUE (run_id, defect_type, detected_at_tick);
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'uq_defects_run_fingerprint'
+    ) THEN
+        ALTER TABLE defects
+            ADD CONSTRAINT uq_defects_run_fingerprint UNIQUE (run_id, fingerprint);
     END IF;
 END $$;

@@ -39,6 +39,7 @@ class WadMapOut(BaseModel):
             "example": {
                 "wad_file_id": "9d1bf2ec-7f42-4fcb-a8a9-6b4f4fced001",
                 "map_name": "E1M1",
+                "map_display_name": "custom_map - E1M1",
                 "iwad_required": "freedoom1",
                 "analyzed": True,
                 "map_overview_png_url": "/wads/9d1bf2ec-7f42-4fcb-a8a9-6b4f4fced001/map-png?map_name=E1M1",
@@ -48,6 +49,14 @@ class WadMapOut(BaseModel):
 
     wad_file_id: UUID
     map_name: str
+    map_title: str | None = None
+    map_display_name: str | None = None
+    map_title_source: str | None = None
     iwad_required: str
     analyzed: bool
+    thing_count_enemies: int | None = None
+    thing_count_items: int | None = None
+    secret_sector_count: int | None = None
+    estimated_difficulty: str | None = None
+    spawn_summary_by_skill: dict[str, object] | None = None
     map_overview_png_url: str | None = None

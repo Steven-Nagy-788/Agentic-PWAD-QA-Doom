@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -41,6 +42,10 @@ class RunOut(BaseModel):
     duration_seconds: int | None = None
     outcome: str | None = None
     error_message: str | None = None
+    failure_category: str | None = None
+    failure_stage: str | None = None
+    failure_summary: str | None = None
+    failure_diagnostics: dict[str, Any] | None = None
     final_hp: int | None = None
     final_armor: int | None = None
     total_kills: int | None = None

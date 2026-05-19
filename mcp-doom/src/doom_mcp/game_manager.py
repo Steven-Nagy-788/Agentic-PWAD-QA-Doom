@@ -4,6 +4,7 @@ import base64
 import contextlib
 import math
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -79,6 +80,7 @@ def _filter_objects(objects: list[dict]) -> list[dict]:
                 slim["screen_x"] = obj["screen_x"]
                 slim["screen_y"] = obj["screen_y"]
             filtered.append(slim)
+    filtered.sort(key=lambda obj: (not obj.get("is_visible", False), obj.get("distance", 999999)))
     return filtered
 
 
@@ -161,6 +163,7 @@ DELTA_BUTTONS = {
 # Map progression order
 _DOOM2_MAPS = [f"MAP{i:02d}" for i in range(1, 33)]
 _DOOM1_MAPS = [f"E{e}M{m}" for e in range(1, 5) for m in range(1, 10)]
+_MAP_MARKER_RE = re.compile(r"^(?:MAP\d{2}|E\dM\d)$", re.IGNORECASE)
 
 
 def _next_map(current: str) -> str | None:
@@ -219,6 +222,34 @@ def _wad_map_start_info(wad_path: str, map_name: str) -> dict:
             return {"player_starts": player_starts, "player_one": player_one, "deathmatch": deathmatch}
 
     raise ToolError(f"Map {target} not found in WAD {wad_path!r}")
+
+
+def _list_wad_maps(wad_path: str) -> list[str]:
+    path = os.path.abspath(os.path.expanduser(wad_path))
+    if not os.path.exists(path):
+        raise ToolError(f"WAD not found: {wad_path!r}")
+    maps: list[str] = []
+    with open(path, "rb") as wad_file:
+        header = wad_file.read(12)
+        if len(header) != 12:
+            raise ToolError(f"Invalid WAD header in {wad_path!r}")
+        magic, lump_count, directory_offset = struct.unpack("<4sii", header)
+        if magic not in {b"IWAD", b"PWAD"} or lump_count < 0 or directory_offset < 0:
+            raise ToolError(f"Invalid WAD header in {wad_path!r}")
+
+        wad_file.seek(directory_offset)
+        directory = []
+        for _ in range(lump_count):
+            entry = wad_file.read(16)
+            if len(entry) != 16:
+                raise ToolError(f"Invalid WAD directory in {wad_path!r}")
+            _, _, raw_name = struct.unpack("<ii8s", entry)
+            directory.append(raw_name.rstrip(b"\0").decode("ascii", errors="ignore").upper())
+
+    for index, name in enumerate(directory[:-1]):
+        if _MAP_MARKER_RE.match(name) and directory[index + 1] == "THINGS":
+            maps.append(name)
+    return sorted(dict.fromkeys(maps))
 
 
 def _wad_map_player_one_start_count(wad_path: str, map_name: str) -> int:
@@ -474,13 +505,15 @@ class GameManager:
         """Return state dict for a finished episode."""
         dead = game.get_game_variable(vzd.GameVariable.DEAD)
         level_completed = self._level_completed(game)
+        variables = extract_game_variables(game, self._variable_names)
         result = {
             "episode_finished": True,
+            "dead": bool(dead),
             "player_dead": bool(dead),
             "level_completed": level_completed,
             "episode_timeout": (not bool(dead)) and not level_completed,
             "total_reward": game.get_total_reward(),
-            "game_variables": {},
+            "game_variables": variables,
         }
         if reward is not None:
             result["reward"] = reward
@@ -709,6 +742,10 @@ class GameManager:
                 os.unlink(self._runtime_wad_path)
             self._runtime_wad_path = None
         return {"status": "stopped"}
+
+    def list_wad_maps(self, wad_path: str) -> dict:
+        """List supported Doom map markers in a WAD file."""
+        return {"wad_path": os.path.abspath(os.path.expanduser(wad_path)), "maps": _list_wad_maps(wad_path)}
 
     def new_episode(self, recording_path: str | None = None) -> dict:
         """Start a new episode. In campaign mode, auto-advances on level completion.
@@ -1048,6 +1085,11 @@ class GameManager:
                         summary["ammo_spent"] = int(initial_ammo - game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO))
                         reason = "target_killed" if kills > 0 else "target_lost"
                         return self._compound_result(game, summary, reason)
+                    if not target.get("is_visible"):
+                        summary["kills"] = int(game.get_game_variable(vzd.GameVariable.KILLCOUNT) - initial_killcount)
+                        summary["hits_landed"] = int(game.get_game_variable(vzd.GameVariable.HITCOUNT) - initial_hitcount)
+                        summary["ammo_spent"] = int(initial_ammo - game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO))
+                        return self._compound_result(game, summary, "target_not_visible")
 
                     angle = target["angle_to_aim"]
 
@@ -1556,6 +1598,10 @@ class GameManager:
                         kills = summary["kills"]
                         reason = "target_killed" if kills > 0 else "target_lost"
                         return self._compound_result(game, summary, reason)
+                    if not target.get("is_visible"):
+                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_ammo)
+                        summary["damage_taken"] = int(game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN) - initial_damage_taken)
+                        return self._compound_result(game, summary, "target_not_visible")
 
                     angle = target["angle_to_aim"]
 
@@ -1790,6 +1836,9 @@ class GameManager:
                 if self._executor is not None:
                     result["executor_state"] = self._executor.state.value
                     result["events"] = self._executor.get_recent_events()
+                    result["objectives"] = self._executor.get_objectives()
+                    result["strategy"] = self._executor.get_strategy()
+                    result["executor_progress"] = self._executor.get_progress()
                 return result
 
             state = game.get_state()
@@ -1817,6 +1866,7 @@ class GameManager:
             result["objectives"] = self._executor.get_objectives()
             result["strategy"] = self._executor.get_strategy()
             result["events"] = self._executor.get_recent_events()
+            result["executor_progress"] = self._executor.get_progress()
 
         return result
 
@@ -1826,6 +1876,7 @@ class GameManager:
         params: dict | None = None,
         priority: int = 0,
         timeout_tics: int = 0,
+        replace: bool = False,
     ) -> dict:
         """Push an objective to the executor's queue.
 
@@ -1836,6 +1887,7 @@ class GameManager:
                 for move_to_pos, {"object_id": 5} for move_to_obj).
             priority: Higher priority objectives are executed first.
             timeout_tics: Auto-fail after this many tics (0 = no timeout).
+            replace: Clear the current queue before adding this objective.
         """
         if self._executor is None:
             raise ToolError(
@@ -1854,7 +1906,7 @@ class GameManager:
             priority=priority,
             timeout_tics=timeout_tics,
         )
-        self._executor.push_objective(objective)
+        self._executor.push_objective(objective, replace=replace)
 
         return {
             "status": "objective_set",
@@ -1864,6 +1916,7 @@ class GameManager:
                 "priority": priority,
                 "timeout_tics": timeout_tics,
             },
+            "replace": replace,
             "queue": self._executor.get_objectives(),
         }
 

@@ -11,8 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.repositories.defect_repository import DefectRepository
+from app.repositories.agent_decision_repository import AgentDecisionRepository
 from app.repositories.game_event_repository import GameEventRepository
 from app.repositories.run_repository import RunRepository
+from app.serializers.agent_decision_serializers import AgentDecisionOut
 from app.serializers.defect_serializers import DefectOut
 from app.serializers.game_event_serializers import PositionTrailOut, TraceEntryOut
 from app.serializers.run_serializers import RunCreate, RunOut
@@ -89,6 +91,24 @@ async def get_events(
     return await GameEventRepository(db).list_events(run_id, event_types)
 
 
+@router.get(
+    "/{run_id}/decisions",
+    response_model=list[AgentDecisionOut],
+    tags=["Trace"],
+    summary="Full ordered LLM/MCP decision trace",
+)
+async def get_decisions(
+    run_id: UUID,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+) -> list[AgentDecisionOut]:
+    run = await RunRepository(db).get_by_id(run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
+    return await AgentDecisionRepository(db).list_by_run(run_id, page, page_size)
+
+
 @router.get("/{run_id}/defects", response_model=list[DefectOut], tags=["Reports"])
 async def get_defects(run_id: UUID, db: AsyncSession = Depends(get_db)) -> list[DefectOut]:
     run = await RunRepository(db).get_by_id(run_id)
@@ -109,7 +129,19 @@ async def get_position_trail(run_id: UUID, db: AsyncSession = Depends(get_db)) -
 )
 async def get_recording(run_id: UUID, db: AsyncSession = Depends(get_db)) -> FileResponse:
     run = await RunRepository(db).get_by_id(run_id)
-    if run is None or not run.recording_mp4_path:
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
+    if not run.recording_mp4_path:
+        if run.failure_category == "pwad_crash" or run.outcome == "pwad_crash":
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                {
+                    "error": "recording_not_available",
+                    "reason": "No recording exists because the PWAD crashed or failed before gameplay initialized.",
+                    "failure_category": run.failure_category or "pwad_crash",
+                    "failure_stage": run.failure_stage,
+                },
+            )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Recording not found")
     path = Path(run.recording_mp4_path)
     if not path.exists():

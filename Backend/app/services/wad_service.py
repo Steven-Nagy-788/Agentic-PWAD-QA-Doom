@@ -16,6 +16,7 @@ from app.services.analysis_service import (
     AnalysisService,
     detect_iwad_requirement,
     detect_map_names,
+    map_metadata_for_wad,
     player_start_counts,
 )
 
@@ -132,15 +133,29 @@ class WadService:
 
     async def _maps_for_wad(self, wad: WadFile) -> list[WadMapOut]:
         repo = AnalysisRepository(self.db)
+        metadata = map_metadata_for_wad(wad.stored_path, wad.original_filename)
         maps = []
         for map_name in wad.detected_maps or []:
             analysis = await repo.get_by_wad_and_map(wad.id, map_name)
+            map_metadata = metadata.get(map_name, {})
             maps.append(
                 WadMapOut(
                     wad_file_id=wad.id,
                     map_name=map_name,
+                    map_title=analysis.map_title if analysis else map_metadata.get("map_title"),
+                    map_display_name=(
+                        analysis.map_display_name if analysis else map_metadata.get("map_display_name")
+                    ),
+                    map_title_source=(
+                        analysis.map_title_source if analysis else map_metadata.get("map_title_source")
+                    ),
                     iwad_required=wad.iwad_required,
                     analyzed=analysis is not None,
+                    thing_count_enemies=analysis.thing_count_enemies if analysis else None,
+                    thing_count_items=analysis.thing_count_items if analysis else None,
+                    secret_sector_count=analysis.secret_sector_count if analysis else None,
+                    estimated_difficulty=analysis.estimated_difficulty if analysis else None,
+                    spawn_summary_by_skill=analysis.spawn_summary_by_skill if analysis else None,
                     map_overview_png_url=(
                         f"/wads/{wad.id}/map-png?map_name={map_name}" if analysis and analysis.map_overview_png_path else None
                     ),
