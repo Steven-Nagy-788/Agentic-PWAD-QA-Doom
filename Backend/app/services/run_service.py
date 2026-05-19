@@ -40,10 +40,37 @@ OBJECT_ID_TOOLS = {"aim_and_shoot", "strafe_and_shoot", "move_to"}
 COMBAT_TOOLS = {"aim_and_shoot", "strafe_and_shoot"}
 STUCK_RUN_ABORT_THRESHOLD = 5
 WASTED_COMBAT_ABORT_THRESHOLD = 3
+LOW_VALUE_EXPLORE_OVERRIDE_THRESHOLD = 2
+LOW_VALUE_EXPLORE_STUCK_LIMIT = 6
+QA_PROBE_BURST_LIMIT = 4
+EXPLORE_MAX_TICS_UPPER = 80
 DIRECTOR_POLL_SECONDS = 1.25
 DIRECTOR_STUCK_POLL_THRESHOLD = 5
 DIRECTOR_STUCK_RECOVERY_LIMIT = 4
 PWAD_CRASH_CATEGORY = "pwad_crash"
+TAKE_ACTION_BUTTONS = {
+    "TURN_LEFT_RIGHT_DELTA",
+    "LOOK_UP_DOWN_DELTA",
+    "MOVE_FORWARD_BACKWARD_DELTA",
+    "MOVE_LEFT_RIGHT_DELTA",
+    "ATTACK",
+    "USE",
+    "SPEED",
+    "SELECT_NEXT_WEAPON",
+    "SELECT_PREV_WEAPON",
+    "JUMP",
+    "CROUCH",
+}
+TAKE_ACTION_BINARY_BUTTONS = {
+    "ATTACK",
+    "USE",
+    "SPEED",
+    "SELECT_NEXT_WEAPON",
+    "SELECT_PREV_WEAPON",
+    "JUMP",
+    "CROUCH",
+}
+CARDINAL_DIRECTION_ANGLES = {"east": 0.0, "north": 90.0, "west": 180.0, "south": 270.0}
 OBJECT_ID_ALIASES: dict[str, tuple[str, ...]] = {
     "aim_and_shoot": ("object_id", "enemy_id", "target_id", "monster_id"),
     "strafe_and_shoot": ("object_id", "enemy_id", "target_id", "monster_id"),
@@ -220,6 +247,10 @@ async def agent_run_task(run_id: UUID) -> None:
                     "last_tick": -1,
                     "invisible_target_failures": {},
                     "wasted_combat_count": 0,
+                    "consecutive_explore_max_tics": 0,
+                    "low_value_explore_total": 0,
+                    "low_value_explore_cumulative": 0,
+                    "qa_probe_count": 0,
                 }
                 decision_repo = AgentDecisionRepository(db)
                 sequence_number = 0
@@ -553,6 +584,10 @@ def _lockstep_state_snapshot(state: dict[str, Any]) -> dict[str, Any]:
         "no_progress_polls": int(state.get("no_progress_polls") or 0),
         "recovery_count": int(state.get("recovery_count") or 0),
         "wasted_combat_count": int(state.get("wasted_combat_count") or 0),
+        "consecutive_explore_max_tics": int(state.get("consecutive_explore_max_tics") or 0),
+        "low_value_explore_total": int(state.get("low_value_explore_total") or 0),
+        "low_value_explore_cumulative": int(state.get("low_value_explore_cumulative") or 0),
+        "qa_probe_count": int(state.get("qa_probe_count") or 0),
         "invisible_target_failures": dict(state.get("invisible_target_failures") or {}),
     }
 
@@ -563,6 +598,23 @@ def _apply_lockstep_recovery(
     navigation_info: dict[str, Any],
     lockstep_state: dict[str, Any],
 ) -> dict[str, Any]:
+    selected_tool = str(decision.get("mcp_tool") or "explore")
+    low_value_explores = int(lockstep_state.get("low_value_explore_total") or 0)
+    if selected_tool == "explore" and low_value_explores >= LOW_VALUE_EXPLORE_OVERRIDE_THRESHOLD:
+        probe_count = int(lockstep_state.get("qa_probe_count") or 0)
+        if probe_count < QA_PROBE_BURST_LIMIT:
+            return _qa_probe_decision(
+                state,
+                navigation_info,
+                lockstep_state,
+                (
+                    "Recent explore calls consumed their tic budget without enemies, items, exits, or other QA "
+                    "progress, so I am taking direct lockstep control to break the circular movement pattern."
+                ),
+            )
+        lockstep_state["qa_probe_count"] = 0
+        lockstep_state["low_value_explore_total"] = 0
+
     signature = _lockstep_progress_signature(state, navigation_info)
     if signature != lockstep_state.get("last_signature"):
         lockstep_state["last_signature"] = signature
@@ -580,26 +632,94 @@ def _apply_lockstep_recovery(
     if recovery_count >= DIRECTOR_STUCK_RECOVERY_LIMIT:
         lockstep_state["should_stop_stuck"] = True
     if recovery_count % 2:
-        return {
-            "reasoning_summary": (
-                "Progress has not changed across repeated lockstep decisions, so I am retreating to break the loop "
-                "before continuing coverage."
-            ),
-            "mcp_tool": "retreat",
-            "mcp_params": {"tics": 35, "backpedal": False},
-            "event_type_override": "stuck",
-            "observed_issue": None,
-        }
+        return _qa_probe_decision(
+            state,
+            navigation_info,
+            lockstep_state,
+            "Progress has not changed across repeated lockstep decisions, so I am forcing a bounded QA recovery probe.",
+        )
     return {
         "reasoning_summary": (
             "The previous recovery did not create measurable progress, so I am exploring from the new angle with "
             "enemy and item stops enabled."
         ),
         "mcp_tool": "explore",
-        "mcp_params": {"max_tics": 120, "stop_on_enemy": True, "stop_on_item": True},
+        "mcp_params": {"max_tics": EXPLORE_MAX_TICS_UPPER, "stop_on_enemy": True, "stop_on_item": True},
         "event_type_override": "stuck",
         "observed_issue": None,
     }
+
+
+def _qa_probe_decision(
+    state: dict[str, Any],
+    navigation_info: dict[str, Any],
+    lockstep_state: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    probe_index = int(lockstep_state.get("qa_probe_count") or 0)
+    lockstep_state["qa_probe_count"] = probe_index + 1
+    variables = normalize_variables(state)
+    angle = _bounded_float(variables.get("angle"), 0.0)
+    suggested = str(navigation_info.get("suggested_direction") or "").lower()
+    nearby_doors = navigation_info.get("nearby_doors") if isinstance(navigation_info, dict) else None
+    phase = probe_index % QA_PROBE_BURST_LIMIT
+
+    if phase == 0 and isinstance(nearby_doors, list) and nearby_doors:
+        return {
+            "reasoning_summary": f"{reason} A nearby door-like sector is known, so I am pressing USE and nudging forward.",
+            "mcp_tool": "take_action",
+            "mcp_params": {"actions": {"USE": 1, "MOVE_FORWARD_BACKWARD_DELTA": 8}, "tics": 4},
+            "event_type_override": "stuck",
+            "observed_issue": None,
+        }
+
+    if phase == 0:
+        turn = _turn_delta_for_direction(suggested, angle)
+        if turn == 0:
+            turn = 35.0
+        return {
+            "reasoning_summary": (
+                f"{reason} I am facing a fresh unexplored direction first, then I will move in short bounded steps."
+            ),
+            "mcp_tool": "take_action",
+            "mcp_params": {"actions": {"TURN_LEFT_RIGHT_DELTA": turn}, "tics": 1},
+            "event_type_override": "stuck",
+            "observed_issue": None,
+        }
+
+    if phase == 1:
+        return {
+            "reasoning_summary": f"{reason} I am advancing straight under direct control instead of letting explore arc in place.",
+            "mcp_tool": "take_action",
+            "mcp_params": {"actions": {"MOVE_FORWARD_BACKWARD_DELTA": 25, "SPEED": 1}, "tics": 6},
+            "event_type_override": "stuck",
+            "observed_issue": None,
+        }
+
+    if phase == 2:
+        return {
+            "reasoning_summary": f"{reason} I am probing for a switch or door interaction before declaring the area blocked.",
+            "mcp_tool": "take_action",
+            "mcp_params": {"actions": {"USE": 1}, "tics": 3},
+            "event_type_override": "stuck",
+            "observed_issue": None,
+        }
+
+    return {
+        "reasoning_summary": f"{reason} The direct probes did not progress yet, so I am retreating and rotating out of the loop.",
+        "mcp_tool": "retreat",
+        "mcp_params": {"tics": 28, "backpedal": False},
+        "event_type_override": "stuck",
+        "observed_issue": None,
+    }
+
+
+def _turn_delta_for_direction(direction: str, current_angle: float) -> float:
+    target_angle = CARDINAL_DIRECTION_ANGLES.get(direction)
+    if target_angle is None:
+        return 0.0
+    diff = (target_angle - current_angle + 180.0) % 360.0 - 180.0
+    return round(max(-45.0, min(45.0, -diff)), 1)
 
 
 def _guard_lockstep_decision(
@@ -643,6 +763,31 @@ def _update_lockstep_after_action(
     lockstep_state: dict[str, Any],
 ) -> None:
     summary = _mcp_action_summary(mcp_call)
+    tool = str(mcp_call.get("tool") or decision.get("mcp_tool") or "")
+    stop_reason = str(summary.get("stop_reason") or "")
+    if tool == "explore" and stop_reason == "max_tics":
+        lockstep_state["consecutive_explore_max_tics"] = int(lockstep_state.get("consecutive_explore_max_tics") or 0) + 1
+        lockstep_state["low_value_explore_total"] = int(lockstep_state.get("low_value_explore_total") or 0) + 1
+        lockstep_state["low_value_explore_cumulative"] = int(lockstep_state.get("low_value_explore_cumulative") or 0) + 1
+    elif tool == "explore" and stop_reason in {"enemy_spotted", "item_found", "episode_finished", "player_died"}:
+        lockstep_state["consecutive_explore_max_tics"] = 0
+        lockstep_state["low_value_explore_total"] = 0
+        lockstep_state["low_value_explore_cumulative"] = 0
+        lockstep_state["qa_probe_count"] = 0
+    elif tool in {"move_to", "aim_and_shoot", "strafe_and_shoot"} and stop_reason not in {"target_not_visible", "no_target"}:
+        lockstep_state["consecutive_explore_max_tics"] = 0
+        lockstep_state["low_value_explore_total"] = 0
+        lockstep_state["low_value_explore_cumulative"] = 0
+        lockstep_state["qa_probe_count"] = 0
+    else:
+        lockstep_state["consecutive_explore_max_tics"] = 0
+
+    if (
+        int(lockstep_state.get("low_value_explore_total") or 0) >= LOW_VALUE_EXPLORE_STUCK_LIMIT
+        or int(lockstep_state.get("low_value_explore_cumulative") or 0) >= LOW_VALUE_EXPLORE_STUCK_LIMIT
+    ):
+        lockstep_state["should_stop_stuck"] = True
+
     if summary.get("stop_reason") == "target_not_visible":
         params = decision.get("mcp_params") if isinstance(decision.get("mcp_params"), dict) else {}
         object_id = params.get("object_id")
@@ -1014,13 +1159,15 @@ async def _execute_tool(
         tool = "explore"
         params = {}
     if tool == "explore":
-        params.setdefault("max_tics", 200)
+        params["max_tics"] = _bounded_int(params.get("max_tics"), default=EXPLORE_MAX_TICS_UPPER, lower=20, upper=EXPLORE_MAX_TICS_UPPER)
         params.setdefault("stop_on_enemy", True)
         params.setdefault("stop_on_item", True)
     elif tool in {"aim_and_shoot", "strafe_and_shoot"}:
-        params.setdefault("max_tics", 120)
+        params["max_tics"] = _bounded_int(params.get("max_tics"), default=90, lower=10, upper=120)
     elif tool == "move_to":
-        params.setdefault("max_tics", 180)
+        params["max_tics"] = _bounded_int(params.get("max_tics"), default=140, lower=20, upper=180)
+    elif tool == "retreat":
+        params["tics"] = _bounded_int(params.get("tics"), default=35, lower=8, upper=70)
     if tool in COMPOUND_TELEMETRY_TOOLS:
         params.setdefault("capture_telemetry", True)
         params.setdefault("telemetry_stride", max(1, get_settings().recording_telemetry_stride))
@@ -1033,17 +1180,27 @@ async def _execute_tool(
     if tool == "take_action" and "actions" not in params:
         call_params = {"actions": params, "tics": 4}
     response = await mcp.call_tool(call_tool_name, call_params)
+    output = _compact_mcp_output(response)
+    if call_tool_name == "take_action" and isinstance(output, dict) and "action_summary" not in output:
+        output["action_summary"] = {
+            "stop_reason": "tics_complete",
+            "tics": call_params.get("tics"),
+            "actions": call_params.get("actions") or {},
+            "lockstep_control": True,
+        }
     return response, {
         "service": "mcp-doom",
         "tool": call_tool_name,
         "input": _json_safe(call_params),
-        "output": _json_safe(_compact_mcp_output(response)),
+        "output": _json_safe(output),
     }
 
 
 def _normalize_mcp_params(tool: str, params: dict[str, Any]) -> dict[str, Any]:
     if tool == "step":
         return params
+    if tool == "take_action":
+        return _normalize_take_action_params(params)
 
     if tool in OBJECT_ID_TOOLS and "object_id" not in params:
         for alias in OBJECT_ID_ALIASES.get(tool, ("object_id",)):
@@ -1059,7 +1216,64 @@ def _normalize_mcp_params(tool: str, params: dict[str, Any]) -> dict[str, Any]:
     if allowed is not None:
         params = {key: value for key, value in params.items() if key in allowed}
 
+    return _bound_mcp_tool_params(tool, params)
+
+
+def _bound_mcp_tool_params(tool: str, params: dict[str, Any]) -> dict[str, Any]:
+    if tool == "explore":
+        params["max_tics"] = _bounded_int(
+            params.get("max_tics"),
+            default=EXPLORE_MAX_TICS_UPPER,
+            lower=20,
+            upper=EXPLORE_MAX_TICS_UPPER,
+        )
+        if "stop_on_enemy" in params:
+            params["stop_on_enemy"] = bool(params["stop_on_enemy"])
+        if "stop_on_item" in params:
+            params["stop_on_item"] = bool(params["stop_on_item"])
+    elif tool in {"aim_and_shoot", "strafe_and_shoot"}:
+        params["max_tics"] = _bounded_int(params.get("max_tics"), default=90, lower=10, upper=120)
+        if "shots" in params:
+            params["shots"] = _bounded_int(params.get("shots"), default=5, lower=1, upper=8)
+        if tool == "strafe_and_shoot":
+            direction = str(params.get("direction") or "auto").lower()
+            params["direction"] = direction if direction in {"left", "right", "auto"} else "auto"
+    elif tool == "move_to":
+        params["max_tics"] = _bounded_int(params.get("max_tics"), default=140, lower=20, upper=180)
+        if "use" in params:
+            params["use"] = bool(params["use"])
+        if "stop_on_enemy" in params:
+            params["stop_on_enemy"] = bool(params["stop_on_enemy"])
+    elif tool == "retreat":
+        params["tics"] = _bounded_int(params.get("tics"), default=35, lower=8, upper=70)
+        if "backpedal" in params:
+            params["backpedal"] = bool(params["backpedal"])
+    if tool in COMPOUND_TELEMETRY_TOOLS and "telemetry_stride" in params:
+        params["telemetry_stride"] = _bounded_int(params.get("telemetry_stride"), default=2, lower=1, upper=10)
     return params
+
+
+def _normalize_take_action_params(params: dict[str, Any]) -> dict[str, Any]:
+    actions_source = params.get("actions")
+    if not isinstance(actions_source, dict):
+        actions_source = {key: value for key, value in params.items() if key in TAKE_ACTION_BUTTONS}
+
+    actions: dict[str, float | int] = {}
+    for key, value in actions_source.items():
+        name = str(key).upper()
+        if name not in TAKE_ACTION_BUTTONS:
+            continue
+        if name in TAKE_ACTION_BINARY_BUTTONS:
+            actions[name] = 1 if _bounded_float(value, 0.0) > 0 else 0
+        elif name in {"TURN_LEFT_RIGHT_DELTA", "LOOK_UP_DOWN_DELTA"}:
+            actions[name] = round(max(-45.0, min(45.0, _bounded_float(value, 0.0))), 2)
+        else:
+            actions[name] = round(max(-50.0, min(50.0, _bounded_float(value, 0.0))), 2)
+
+    return {
+        "actions": actions,
+        "tics": _bounded_int(params.get("tics"), default=4, lower=1, upper=8),
+    }
 
 
 def _combat_target_is_visible(state: dict[str, Any] | None, object_id: Any) -> bool:

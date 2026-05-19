@@ -175,9 +175,9 @@ class GeminiService:
             }
 
         return {
-            "reasoning_summary": f"{reason} No visible combat or pickup target is available, so exploration continues.",
+            "reasoning_summary": f"{reason} No visible combat or pickup target is available, so a short bounded exploration step starts.",
             "mcp_tool": "explore",
-            "mcp_params": {"max_tics": 200, "stop_on_enemy": True, "stop_on_item": True},
+            "mcp_params": {"max_tics": 80, "stop_on_enemy": True, "stop_on_item": True},
             "observed_issue": None,
         }
 

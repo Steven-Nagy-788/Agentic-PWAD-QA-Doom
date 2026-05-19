@@ -74,8 +74,10 @@ Allowed tools:
     Use for visible pickups, weapons, keys, or interactable objects.
 
   explore
-    params: {"max_tics": 40-160, "stop_on_enemy": true, "stop_on_item": true}
-    Use when no visible combat/resource target is better.
+    params: {"max_tics": 40-80, "stop_on_enemy": true, "stop_on_item": true}
+    Use when no visible combat/resource target is better. If recent explore calls
+    ended at max_tics without enemies, items, exits, or new QA evidence, switch to
+    take_action USE/turn/forward probes or retreat instead of choosing explore again.
 
   retreat
     params: {"tics": 20-70, "backpedal": false}
@@ -99,6 +101,8 @@ Critical constraints:
   - Do not shoot at non-visible enemies, enemies behind walls, or stale ids.
   - Do not repeat the same tool/params after it produced target_not_visible, stuck,
     no hits, or no movement. Change approach.
+  - Repeated max_tics exploration is low-value even if the position changes slightly;
+    use lockstep_state to break circular motion with direct probes.
   - Prefer weapons/ammo/health/key pickups over distant combat when resources are low.
   - Keep tool durations bounded so traces and videos have frequent evidence points.
 

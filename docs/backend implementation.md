@@ -195,14 +195,16 @@ Lockstep recovery is explicit:
 
 - Progress is tracked by coarse position cluster, kills, items, secrets, explored cells, and keys.
 - Repeated identical progress signatures trigger bounded `retreat` or `explore` recovery actions.
+- Repeated low-value `explore` calls that end at `max_tics` are capped at 80 tics and overridden into a QA probe burst: direct `take_action` turn/forward/USE checks plus bounded `retreat`.
 - Repeated invisible combat targets are blacklisted for the run.
 - Repeated combat actions with shots but no hits/kills escalate recovery.
-- After the configured recovery limit, the run stops with outcome `stuck` instead of looping indefinitely.
+- After the configured recovery limit or repeated low-value exploration limit, the run stops with outcome `stuck` instead of looping indefinitely.
 
 Combat and pickup behavior is LLM-selected and MCP-executed:
 
 - Normal backend QA runs use `get_state`, `explore`, `move_to`, `aim_and_shoot`, `strafe_and_shoot`, `retreat`, bounded `take_action`, `get_threat_assessment`, and `get_navigation_info`.
 - Combat tools only fire at visible targets. If a requested target is not visible, the backend falls back to exploration and records the guard decision.
+- Stored LLM/MCP traces contain normalized bounded inputs. For example, model requests for long exploration are clipped before both storage and MCP execution, so the UI sees the same params the tool received.
 - Compound tools return telemetry frames so recordings and position trails show gameplay during the bounded tool execution, not only after each LLM decision.
 
 ## PWAD Crash Reporting
@@ -360,7 +362,7 @@ Live WebSocket messages are typed. Current message types include `llm_start`, `l
 The current implementation has been checked with:
 
 - Backend compile check: `PYTHONPATH=. .venv/bin/python -m compileall -q app` from `Backend/`.
-- Backend test suite: `PYTHONPATH=. .venv/bin/pytest -q -p no:cacheprovider tests` from `Backend/` (`22 passed`).
+- Backend test suite: `PYTHONPATH=. .venv/bin/pytest -q -p no:cacheprovider tests` from `Backend/` (`25 passed`).
 - MCP full suite: `PYTHONPATH=src .venv/bin/pytest -q -p no:cacheprovider tests` from `mcp-doom/` (`98 passed`).
 - Local `make db-schema` applied the additive `agent_decisions`, `game_events.agent_decision_id`, and defect fingerprint schema.
 - Lockstep smoke run `a58b4675-6f24-421f-81da-dac08e1297eb`: one LLM/MCP decision, one gameplay event, generated report JSON/PDF, and a 640x480 10 FPS MP4 with 61 frames.
@@ -372,6 +374,8 @@ Representative manual product matrix:
 
 | WAD / map | Difficulty | Run | Observed result |
 |-----------|------------|-----|-----------------|
+| `thelonghallways.wad` / `E1M1` | 1 | `525722e4-06fd-4e39-8464-ceaceeeb5591` | Reproduced the prior circular-motion pattern and verified the new guard: after two low-value `explore` calls, trace switched to `take_action` turn/forward/USE probes and `retreat`, then stopped as `stuck` with report/PDF and a 640x480 10 FPS MP4 with 296 frames. |
+| `LOWMEM.wad` / `E1M1` | 1 | `3d954366-ab06-4827-a75a-04d150be1387` | Startup preflight failed as `pwad_crash` with `failure_stage=startup`, zero decisions/actions, report/PDF present, and no recording expected. |
 | `thelonghallways.wad` / `E1M1` | 3 | `b38da41d-e657-403c-a7c8-2590e4a438c0` | Lockstep fallback run produced decisions, events, recording, report, and selected-difficulty static context. |
 | `thelonghallways.wad` / `E1M1` | 5 | `16af65cd-4744-4636-9842-8f2f87e1af1c` | Selected skill spawned zero enemies and produced `difficulty_spawn_mismatch`. |
 | `DRKWRLD1.WAD` / `E1M1` | 3 | `9eca31ea-5502-40ff-a9eb-ce18e01890ba` | PWAD initialized under lockstep mode and produced decisions, trace, video, and report. |

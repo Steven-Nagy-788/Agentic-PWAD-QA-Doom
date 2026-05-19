@@ -12,8 +12,10 @@ from app.services.run_service import (
     _director_should_stop_as_stuck,
     _guard_lockstep_decision,
     _normalize_director_objective_params,
+    _normalize_mcp_params,
     _is_wasted_combat_decision,
     _lockstep_should_stop_as_stuck,
+    _update_lockstep_after_action,
 )
 
 
@@ -214,3 +216,55 @@ def test_lockstep_recovery_stops_after_bounded_retries() -> None:
         _apply_lockstep_recovery({"mcp_tool": "explore", "mcp_params": {}}, state, navigation, lockstep_state)
 
     assert _lockstep_should_stop_as_stuck(lockstep_state) is True
+
+
+def test_lockstep_overrides_repeated_low_value_explore_with_qa_probe() -> None:
+    state = {
+        "game_variables": {"POSITION_X": 0, "POSITION_Y": 0, "ANGLE": 0, "KILLCOUNT": 0, "ITEMCOUNT": 0, "SECRETCOUNT": 0},
+        "objects": [],
+    }
+    navigation = {"cells_explored": 3, "keys_found": [], "suggested_direction": "north", "nearby_doors": []}
+    lockstep_state = {"last_signature": None, "low_value_explore_total": 2, "qa_probe_count": 0}
+
+    decision = _apply_lockstep_recovery(
+        {"mcp_tool": "explore", "mcp_params": {"max_tics": 160}},
+        state,
+        navigation,
+        lockstep_state,
+    )
+
+    assert decision["mcp_tool"] == "take_action"
+    assert decision["mcp_params"]["actions"]["TURN_LEFT_RIGHT_DELTA"] == -45.0
+    assert decision["event_type_override"] == "stuck"
+    assert lockstep_state["qa_probe_count"] == 1
+
+
+def test_low_value_explore_stops_run_after_bounded_attempts() -> None:
+    lockstep_state = {"low_value_explore_total": 5, "consecutive_explore_max_tics": 0}
+    mcp_call = {"tool": "explore", "output": {"action_summary": {"stop_reason": "max_tics"}}}
+
+    _update_lockstep_after_action({"mcp_tool": "explore"}, mcp_call, lockstep_state)
+
+    assert _lockstep_should_stop_as_stuck(lockstep_state) is True
+
+
+def test_lockstep_tool_params_are_bounded_for_trace_and_mcp_call() -> None:
+    assert _normalize_mcp_params("explore", {"max_tics": 999})["max_tics"] == 80
+    assert _normalize_mcp_params("retreat", {"tics": 999})["tics"] == 70
+    take_action = _normalize_mcp_params(
+        "take_action",
+        {
+            "actions": {
+                "TURN_LEFT_RIGHT_DELTA": 120,
+                "MOVE_FORWARD_BACKWARD_DELTA": 90,
+                "USE": 2,
+                "UNKNOWN": 1,
+            },
+            "tics": 99,
+        },
+    )
+
+    assert take_action == {
+        "actions": {"TURN_LEFT_RIGHT_DELTA": 45.0, "MOVE_FORWARD_BACKWARD_DELTA": 50.0, "USE": 1},
+        "tics": 8,
+    }
