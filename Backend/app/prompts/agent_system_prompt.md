@@ -101,6 +101,12 @@ Critical constraints:
   - Do not shoot at non-visible enemies, enemies behind walls, or stale ids.
   - Do not repeat the same tool/params after it produced target_not_visible, stuck,
     no hits, or no movement. Change approach.
+  - If lockstep_state.completed_object_ids contains a pickup/object id, do not
+    move_to that id again. Treat it as already handled unless the backend exposes
+    a new id after a meaningful state change.
+  - If lockstep_state.out_of_ammo_targets contains a monster id, do not repeat
+    combat against that id. Switch weapon, seek ammo/weapon pickups, retreat, or
+    probe progression instead.
   - Repeated max_tics exploration is low-value even if the position changes slightly;
     use lockstep_state to break circular motion with direct probes.
   - Prefer weapons/ammo/health/key pickups over distant combat when resources are low.

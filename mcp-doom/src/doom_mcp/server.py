@@ -133,6 +133,8 @@ def take_action(
     tics: int = 1,
     include_sectors: bool = False,
     include_depth: bool = True,
+    capture_telemetry: bool = False,
+    telemetry_stride: int = 1,
 ):
     """Execute an action and return the resulting game state.
 
@@ -150,6 +152,8 @@ def take_action(
             Use tics=1 for precise aiming.
         include_sectors: Include map geometry. Very large - default false.
         include_depth: Include depth buffer stats. Default true.
+        capture_telemetry: Return per-tic gameplay frames for recording.
+        telemetry_stride: Capture every N tics when telemetry is enabled.
 
     Returns screenshot + full state (same format as get_state).
     """
@@ -157,6 +161,8 @@ def take_action(
         actions, tics,
         include_sectors=include_sectors,
         include_depth=include_depth,
+        capture_telemetry=capture_telemetry,
+        telemetry_stride=telemetry_stride,
     )
     screenshot_png = result.pop("screenshot_png", None)
 

@@ -353,6 +353,9 @@ class ReportService:
             "max_secrets": max((event.secret_count for event in events), default=run.secrets_found),
             "recording_mp4_path": run.recording_mp4_path,
             "report_pdf_path": run.report_pdf_path,
+            "recording_metadata": run.recording_metadata or {},
+            "progress_metrics": run.progress_metrics or {},
+            "agent_quality_flags": run.agent_quality_flags or {},
             "recording_file_size_bytes": (
                 Path(run.recording_mp4_path).stat().st_size
                 if run.recording_mp4_path and Path(run.recording_mp4_path).exists()
@@ -452,6 +455,20 @@ class ReportService:
             if hidden_enemies
             else ""
         )
+        recording_meta = metrics.get("recording_metadata") or {}
+        progress_metrics = metrics.get("progress_metrics") or {}
+        quality_flags = metrics.get("agent_quality_flags") or {}
+        recording_note = (
+            f" Recording quality status: {recording_meta.get('quality_status', 'unknown')}; "
+            f"{recording_meta.get('frame_count', 0)} frames, "
+            f"{recording_meta.get('unique_frame_count', 0)} unique frames, "
+            f"{recording_meta.get('duration_seconds', 0)} seconds at {recording_meta.get('fps', 'unknown')} FPS."
+        )
+        progress_note = (
+            f" Agent progress score: {progress_metrics.get('progress_score', 0)} with "
+            f"{progress_metrics.get('meaningful_progress_events', 0)} meaningful progress event(s). "
+            f"Quality flags: {quality_flags.get('quality_status', 'unknown')}."
+        )
 
         return {
             "report_purpose": (
@@ -495,6 +512,7 @@ class ReportService:
             "test_coverage_evaluation": (
                 f"{coverage_phrase} {outcome_sentence} Combat coverage is evaluated against {spawned_enemies} "
                 f"enemy/enemies that spawn at difficulty {run.difficulty_level}, not against hidden raw THINGS."
+                f"{recording_note} {progress_note}"
             ),
             "objectives_planned": [
                 {"objective": "Validate the map starts correctly in single-player QA mode.", "status": "planned"},
@@ -506,7 +524,8 @@ class ReportService:
             "uncovered_attributes": ReportService._uncovered_attributes(run, metrics),
             "test_process_changes": (
                 "Lockstep MCP actions return per-action telemetry frames so movement, position trail, and recording "
-                "coverage are sampled during bounded tool execution, while the game remains paused during LLM selection."
+                "coverage are sampled during bounded tool execution, while the game remains paused during LLM selection. "
+                "The PDF keeps detailed evidence in a landscape appendix so long decision tables do not clip."
             ),
             "defect_summary_narrative": f"{defect_phrase} {major_risk}",
             "defect_patterns": ReportService._defect_patterns(defects),
@@ -547,8 +566,8 @@ class ReportService:
                 "telemetry, finalized recording artifacts, detected defects, and generated this report."
             ),
             "activity_variances": (
-                "Run data is sparse; treat gameplay conclusions as preliminary."
-                if metrics["event_count"] < 3
+                "Run data is sparse or quality flags are present; treat gameplay conclusions as preliminary."
+                if metrics["event_count"] < 3 or (quality_flags.get("warnings") or [])
                 else "Run data includes multiple gameplay samples and can support concrete QA conclusions."
             ),
             "elapsed_time_seconds": run.duration_seconds,
@@ -853,6 +872,9 @@ class ReportService:
             "total_actions_taken",
             "total_llm_calls",
             "recording_mp4_path",
+            "recording_metadata",
+            "progress_metrics",
+            "agent_quality_flags",
         ]
         return {key: getattr(run, key) for key in keys}
 
@@ -964,7 +986,7 @@ class ReportService:
         verdict_keys = ["map_navigation", "combat_engagement", "resource_balance", "secret_coverage", "overall_verdict"]
         rationale_keys = ["navigation_rationale", "combat_rationale", "resource_rationale", "secret_rationale"]
         display_defects = payload["defects"][:25]
-        display_decisions = payload.get("decisions", [])[:25]
+        display_decisions = payload.get("decisions", [])[:40]
         defect_omitted_count = max(len(payload["defects"]) - len(display_defects), 0)
         display_outcome = ReportService._display_outcome(payload["run"], payload["defects"])
         event_rows = []
@@ -988,14 +1010,15 @@ class ReportService:
             <head>
               <style>
                 @page { size: A4; margin: 18mm 16mm; }
+                @page appendix { size: A4 landscape; margin: 12mm; }
                 body { font-family: sans-serif; color: #1f2933; font-size: 11px; line-height: 1.45; }
                 h1 { font-size: 24px; margin: 0 0 4px; page-break-after: avoid; }
                 h2 { font-size: 15px; margin: 18px 0 8px; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; page-break-after: avoid; }
                 h3 { font-size: 12px; margin: 10px 0 4px; page-break-after: avoid; }
                 p { margin: 0 0 7px; }
-                table { border-collapse: collapse; width: 100%; margin: 8px 0 12px; font-size: 10px; table-layout: fixed; page-break-inside: avoid; }
+                table { border-collapse: collapse; width: 100%; margin: 8px 0 12px; font-size: 10px; table-layout: fixed; }
                 thead { display: table-header-group; }
-                tr { page-break-inside: avoid; }
+                tr { page-break-inside: avoid; break-inside: avoid; }
                 th, td { border: 1px solid #d7dee8; padding: 5px; vertical-align: top; overflow-wrap: anywhere; }
                 th { background: #eef2f7; text-align: left; }
                 .muted { color: #52606d; font-size: 10px; }
@@ -1006,6 +1029,12 @@ class ReportService:
                 ul { margin-top: 4px; padding-left: 16px; }
                 li { margin-bottom: 4px; }
                 .section { page-break-inside: avoid; }
+                .appendix { page: appendix; page-break-before: always; }
+                .appendix table { table-layout: fixed; font-size: 8.5px; page-break-inside: auto; }
+                .appendix td, .appendix th { padding: 4px; word-break: break-word; overflow-wrap: anywhere; }
+                .decision-card { border: 1px solid #d7dee8; padding: 6px; margin: 0 0 6px; break-inside: avoid; page-break-inside: avoid; }
+                .decision-meta { color: #52606d; font-size: 8.5px; margin-bottom: 2px; }
+                .mono { font-family: monospace; font-size: 8.5px; }
               </style>
             </head>
             <body>
@@ -1046,6 +1075,21 @@ class ReportService:
                 <tr><td>Position samples</td><td>{{ metrics.position_sample_count }}</td><td>Movement units</td><td>{{ metrics.movement_distance_units }}</td></tr>
                 <tr><td>Recording</td><td colspan="3">{{ run.recording_mp4_path or "Not produced" }}</td></tr>
               </table>
+              {% endif %}
+
+              <h2>Recording And Agent Quality</h2>
+              <table>
+                <tr><th>Recording</th><th>Value</th><th>Agent progress</th><th>Value</th></tr>
+                <tr><td>Status</td><td>{{ metrics.recording_metadata.quality_status or "unknown" }}</td><td>Progress score</td><td>{{ metrics.progress_metrics.progress_score or 0 }}</td></tr>
+                <tr><td>Frames</td><td>{{ metrics.recording_metadata.frame_count or 0 }} total / {{ metrics.recording_metadata.unique_frame_count or 0 }} unique</td><td>Meaningful progress</td><td>{{ metrics.progress_metrics.meaningful_progress_events or 0 }}</td></tr>
+                <tr><td>Video shape</td><td>{{ metrics.recording_metadata.width or "?" }} x {{ metrics.recording_metadata.height or "?" }} @ {{ metrics.recording_metadata.fps or "?" }} FPS</td><td>Completed objects</td><td>{{ metrics.progress_metrics.completed_object_count or 0 }}</td></tr>
+                <tr><td>Gameplay time</td><td>{{ metrics.recording_metadata.gameplay_seconds or "?" }}s, {{ metrics.recording_metadata.advanced_game_ticks or 0 }} tic(s)</td><td>Quality flags</td><td>{{ metrics.agent_quality_flags.quality_status or "unknown" }}</td></tr>
+              </table>
+              {% if metrics.recording_metadata.validation_warnings or metrics.agent_quality_flags.warnings %}
+              <p><strong>Quality warnings:</strong>
+              {% for item in metrics.recording_metadata.validation_warnings or [] %}<span class="badge verdict-FAIL">{{ item }}</span>{% endfor %}
+              {% for item in metrics.agent_quality_flags.warnings or [] %}<span class="badge verdict-FAIL">{{ item }}</span>{% endfor %}
+              </p>
               {% endif %}
 
               <h2>Static Analysis Context</h2>
@@ -1115,13 +1159,29 @@ class ReportService:
               {% endif %}
               {% endif %}
 
-              {% if report.major_activities_summary or report.activity_variances or event_rows %}
+              {% if report.major_activities_summary or report.activity_variances %}
               <h2>Activity Log Summary</h2>
               {% if report.major_activities_summary %}<p>{{ report.major_activities_summary }}</p>{% endif %}
               {% if report.activity_variances %}<p>{{ report.activity_variances }}</p>{% endif %}
+              {% endif %}
+
+              {% if report.test_item_limitations or report.good_quality_areas %}
+              <h2>Limitations And Recommendations</h2>
+              {% if report.test_item_limitations %}<p>{{ report.test_item_limitations }}</p>{% endif %}
+              {% if report.good_quality_areas %}
+              <h3>Good Quality Areas</h3>
+              <ul>{% for item in report.good_quality_areas %}<li><strong>{{ item.area }}:</strong> {{ item.evidence or item.assessment or "" }}</li>{% endfor %}</ul>
+              {% endif %}
+              {% endif %}
+
+              {% if event_rows or decisions %}
+              <div class="appendix">
+              <h2>Evidence Appendix</h2>
               {% if event_rows %}
+              <h3>Notable Event Trace</h3>
               <table>
-                <tr><th>Tick</th><th>Event</th><th>Position</th><th>HP</th><th>MCP Action</th><th>Stop reason</th></tr>
+                <thead><tr><th style="width: 8%">Tick</th><th style="width: 12%">Event</th><th style="width: 14%">Position</th><th style="width: 6%">HP</th><th style="width: 18%">MCP Action</th><th>Stop reason</th></tr></thead>
+                <tbody>
                 {% for event in event_rows %}
                 <tr>
                   <td>{{ event.tick }}</td>
@@ -1132,33 +1192,20 @@ class ReportService:
                   <td>{{ event.stop_reason or "" }}</td>
                 </tr>
                 {% endfor %}
+                </tbody>
               </table>
-              {% endif %}
               {% endif %}
 
               {% if decisions %}
-              <h2>LLM/MCP Decision Trace</h2>
-              <table>
-                <tr><th>#</th><th>Ticks</th><th>Tool</th><th>Stop reason</th><th>Reasoning summary</th></tr>
+              <h3>LLM/MCP Decision Trace</h3>
                 {% for decision in decisions %}
-                <tr>
-                  <td>{{ decision.sequence_number }}</td>
-                  <td>{{ decision.tick_before }} -> {{ decision.tick_after }}</td>
-                  <td>{{ decision.mcp_tool or "" }}</td>
-                  <td>{{ decision.mcp_stop_reason or "" }}</td>
-                  <td>{{ decision.reasoning_summary or "" }}</td>
-                </tr>
+                <div class="decision-card">
+                  <div class="decision-meta">#{{ decision.sequence_number }} | ticks {{ decision.tick_before }} -> {{ decision.tick_after }} | tool <span class="mono">{{ decision.mcp_tool or "" }}</span> | stop <span class="mono">{{ decision.mcp_stop_reason or "" }}</span></div>
+                  <div>{{ decision.reasoning_summary or "" }}</div>
+                </div>
                 {% endfor %}
-              </table>
               {% endif %}
-
-              {% if report.test_item_limitations or report.good_quality_areas %}
-              <h2>Limitations And Recommendations</h2>
-              {% if report.test_item_limitations %}<p>{{ report.test_item_limitations }}</p>{% endif %}
-              {% if report.good_quality_areas %}
-              <h3>Good Quality Areas</h3>
-              <ul>{% for item in report.good_quality_areas %}<li><strong>{{ item.area }}:</strong> {{ item.evidence or item.assessment or "" }}</li>{% endfor %}</ul>
-              {% endif %}
+              </div>
               {% endif %}
             </body>
             </html>

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -21,22 +23,48 @@ class RecordingService:
         self.frames_written = 0
         self.min_frames = max(10, int(round(self.fps)))
         self._last_frame: np.ndarray | None = None
+        self.width: int | None = None
+        self.height: int | None = None
+        self._unique_frame_hashes: set[str] = set()
+        self._first_game_tick: int | None = None
+        self._last_game_tick: int | None = None
+        self._next_frame_game_tick: float | None = None
 
     def start_from_frame(self, frame: np.ndarray) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         height, width = frame.shape[:2]
+        self.width = int(width)
+        self.height = int(height)
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         self.writer = cv2.VideoWriter(str(self.source_path), fourcc, self.fps, (width, height))
 
-    def write_frame(self, frame: np.ndarray | None) -> None:
+    def write_frame(self, frame: np.ndarray | None, game_tick: int | None = None) -> None:
         if frame is None:
+            return
+        tick = self.record_game_tick(game_tick)
+        if tick is not None and self._skip_frame_for_game_tick(tick):
             return
         if self.writer is None:
             self.start_from_frame(frame)
         assert self.writer is not None
         self._last_frame = frame
+        self._unique_frame_hashes.add(self._frame_hash(frame))
         self.writer.write(self._bgr(frame))
         self.frames_written += 1
+
+    def record_game_tick(self, game_tick: int | None) -> int | None:
+        if game_tick is None:
+            return None
+        try:
+            tick = int(game_tick)
+        except (TypeError, ValueError):
+            return None
+        if tick < 0:
+            return None
+        if self._first_game_tick is None:
+            self._first_game_tick = tick
+        self._last_game_tick = max(tick, self._last_game_tick if self._last_game_tick is not None else tick)
+        return tick
 
     def save_screenshot(self, frame: np.ndarray, event_id: int) -> Path:
         path = self.settings.screenshot_storage_dir / f"{event_id}.png"
@@ -54,6 +82,59 @@ class RecordingService:
             self.writer = None
             return self._transcode_h264()
         return None
+
+    def metadata(self, path: Path | None = None, outcome: str | None = None) -> dict[str, Any]:
+        output_path = path
+        if output_path is None:
+            if self.path.exists():
+                output_path = self.path
+            elif self.source_path.exists():
+                output_path = self.source_path
+        advanced_ticks = None
+        if self._first_game_tick is not None and self._last_game_tick is not None:
+            advanced_ticks = max(0, self._last_game_tick - self._first_game_tick)
+        return {
+            "timing_mode": "gameplay_time",
+            "path": str(output_path) if output_path else None,
+            "width": self.width,
+            "height": self.height,
+            "fps": self.fps,
+            "frame_count": self.frames_written,
+            "unique_frame_count": len(self._unique_frame_hashes),
+            "duration_seconds": round(self.frames_written / self.fps, 3) if self.fps else 0,
+            "first_game_tick": self._first_game_tick,
+            "last_game_tick": self._last_game_tick,
+            "advanced_game_ticks": advanced_ticks,
+            "gameplay_seconds": round(advanced_ticks / 35, 3) if advanced_ticks is not None else None,
+            "quality_status": "unknown",
+            "validation_warnings": [],
+            "outcome": outcome,
+        }
+
+    def validate(self, path: Path | None = None, outcome: str | None = None) -> dict[str, Any]:
+        metadata = self.metadata(path=path, outcome=outcome)
+        warnings: list[str] = []
+        advanced_ticks = int(metadata.get("advanced_game_ticks") or 0)
+        expected_frames = int((advanced_ticks / 35) * self.fps) if advanced_ticks > 0 else 0
+        if outcome == "pwad_crash" and self.frames_written == 0:
+            metadata["quality_status"] = "expected_missing"
+            metadata["validation_warnings"] = ["No recording is expected because gameplay did not initialize."]
+            return metadata
+        if self.frames_written == 0:
+            warnings.append("recording_has_no_frames")
+        if self.width is not None and self.height is not None and (self.width < 640 or self.height < 480):
+            warnings.append("recording_resolution_below_640x480")
+        if advanced_ticks >= 35 and self.frames_written < max(10, int(expected_frames * 0.5)):
+            warnings.append("recording_frame_count_low_for_game_ticks")
+        if advanced_ticks >= 35 and self.frames_written > max(self.min_frames, int(expected_frames * 1.5) + 5):
+            warnings.append("recording_frame_count_high_for_game_ticks")
+        if self.frames_written >= 10 and len(self._unique_frame_hashes) < max(3, int(self.frames_written * 0.05)):
+            warnings.append("recording_has_too_few_unique_frames")
+        if self.frames_written < self.min_frames and outcome not in {"pwad_crash", "cancelled"}:
+            warnings.append("recording_shorter_than_minimum_frame_count")
+        metadata["quality_status"] = "warning" if warnings else "ok"
+        metadata["validation_warnings"] = warnings
+        return metadata
 
     def _transcode_h264(self) -> Path:
         if not self.source_path.exists():
@@ -108,6 +189,27 @@ class RecordingService:
         if frame.ndim == 3 and frame.shape[2] == 3:
             return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         return frame
+
+    def _skip_frame_for_game_tick(self, tick: int) -> bool:
+        if self.fps <= 0 or self.fps >= 35:
+            return False
+        interval = 35.0 / self.fps
+        if self._next_frame_game_tick is None:
+            self._next_frame_game_tick = tick + interval
+            return False
+        if tick + 1e-9 < self._next_frame_game_tick:
+            return True
+        while self._next_frame_game_tick <= tick + 1e-9:
+            self._next_frame_game_tick += interval
+        return False
+
+    @staticmethod
+    def _frame_hash(frame: np.ndarray) -> str:
+        if frame.size == 0:
+            return "empty"
+        small = cv2.resize(frame, (64, 48), interpolation=cv2.INTER_AREA)
+        gray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY) if small.ndim == 3 else small
+        return hashlib.blake2b(gray.tobytes(), digest_size=12).hexdigest()
 
 
 def png_bytes_to_frame(png_bytes: bytes | None) -> np.ndarray | None:

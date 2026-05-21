@@ -36,6 +36,23 @@ def test_pdf_html_does_not_render_blank_objective_labels() -> None:
         final_hp=100,
         total_kills=0,
         recording_mp4_path=None,
+        recording_metadata={
+            "quality_status": "ok",
+            "frame_count": 45,
+            "unique_frame_count": 40,
+            "width": 640,
+            "height": 480,
+            "fps": 15,
+            "advanced_game_ticks": 105,
+            "gameplay_seconds": 3.0,
+            "validation_warnings": [],
+        },
+        progress_metrics={
+            "progress_score": 3,
+            "meaningful_progress_events": 1,
+            "completed_object_count": 1,
+        },
+        agent_quality_flags={"quality_status": "ok", "warnings": []},
         difficulty_level=5,
     )
     analysis = SimpleNamespace(
@@ -81,7 +98,20 @@ def test_pdf_html_does_not_render_blank_objective_labels() -> None:
             "spawned_item_count": 1,
             "hidden_item_count": 0,
             "selected_skill_summary": {"estimated_difficulty": "easy", "health_ratio": 0, "ammo_ratio": 0},
+            "recording_metadata": run.recording_metadata,
+            "progress_metrics": run.progress_metrics,
+            "agent_quality_flags": run.agent_quality_flags,
         },
+        "decisions": [
+            SimpleNamespace(
+                sequence_number=1,
+                tick_before=1,
+                tick_after=10,
+                mcp_tool="explore",
+                mcp_stop_reason="episode_finished",
+                reasoning_summary="Short QA-facing decision rationale.",
+            )
+        ],
     }
 
     html = ReportService._render_pdf_html(report, payload)
@@ -89,6 +119,10 @@ def test_pdf_html_does_not_render_blank_objective_labels() -> None:
     assert "<strong>:</strong>" not in html
     assert "Navigate to map exit" in html
     assert "episode_finished" in html
+    assert "@page appendix" in html
+    assert "Evidence Appendix" in html
+    assert "decision-card" in html
+    assert "Recording And Agent Quality" in html
 
 
 def test_report_voice_sanitizer_avoids_agent_blame() -> None:

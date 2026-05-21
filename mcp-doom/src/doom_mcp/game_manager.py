@@ -31,6 +31,7 @@ from .state import (
 
 _ACTIONABLE_TYPES = {"monster", "player", "hazard", "projectile", "key", "weapon"}
 _ITEM_TYPES = {"item", "ammo"}
+_PICKUP_TYPES = {"item", "ammo", "weapon", "key"}
 _NEARBY_RANGE = 1500.0  # units - items/ammo within this range are included
 _MONSTER_RANGE = 4000.0  # units - monsters within this range are included
 
@@ -873,6 +874,8 @@ class GameManager:
         tics: int = 1,
         include_sectors: bool = False,
         include_depth: bool = True,
+        capture_telemetry: bool = False,
+        telemetry_stride: int = 1,
     ) -> dict:
         """Execute an action and return the full resulting state.
 
@@ -887,6 +890,7 @@ class GameManager:
             tics: Number of game tics to hold the action (default 1).
         """
         game = self._require_episode()
+        self._begin_telemetry(capture_telemetry, telemetry_stride)
 
         # Validate button names for the public API
         if actions:
@@ -908,15 +912,29 @@ class GameManager:
 
         with self._with_executor_paused():
             with self._game_lock:
-                reward = self._make_action(game, action_list, tics)
+                reward = 0.0
+                tics_used = 0
+                for _ in range(max(1, int(tics))):
+                    if game.is_episode_finished() or self._is_dead(game):
+                        break
+                    reward += self._make_action(game, action_list, 1)
+                    tics_used += 1
                 self._clear_action(game)
+                summary = {
+                    "stop_reason": "player_died" if self._is_dead(game) else "episode_finished" if game.is_episode_finished() else "tics_complete",
+                    "tics": tics_used,
+                    "actions": actions or {},
+                }
 
                 if game.is_episode_finished():
-                    return self._finished_state(game, reward=reward)
+                    result = self._finished_state(game, reward=reward)
+                    result["action_summary"] = summary
+                    return self._attach_telemetry(result)
 
                 result = self._extract_full_state(game, include_sectors=include_sectors, include_depth=include_depth)
                 result["reward"] = reward
-                return result
+                result["action_summary"] = summary
+                return self._attach_telemetry(result)
 
     def get_objects(self) -> dict:
         """Get object and label info from the current state."""
@@ -1167,6 +1185,8 @@ class GameManager:
             "distance_moved": 0.0,
             "distance_remaining": None,
             "target_name": None,
+            "target_type": None,
+            "collected": False,
             "used_object": False,
             "threat_object": None,
         }
@@ -1182,6 +1202,7 @@ class GameManager:
                 target = self._find_object_by_id(game, object_id)
                 if target is not None:
                     summary["target_name"] = target["name"]
+                    summary["target_type"] = target.get("type")
 
                 while tics_used < max_tics:
                     if game.is_episode_finished() or self._is_dead(game):
@@ -1203,16 +1224,41 @@ class GameManager:
                     if target is None:
                         cx, cy = self._get_position(game)
                         summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
+                        if summary.get("target_type") in _PICKUP_TYPES:
+                            summary["collected"] = True
+                            return self._compound_result(game, summary, "arrived")
                         return self._compound_result(game, summary, "target_lost")
 
                     distance = target["distance"]
                     angle = target["angle_to_aim"]
+                    summary["target_type"] = target.get("type") or summary.get("target_type")
                     summary["distance_remaining"] = round(distance, 1)
 
                     # Arrived?
                     if distance < _ARRIVE_DISTANCE:
                         cx, cy = self._get_position(game)
                         summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
+                        if summary.get("target_type") in _PICKUP_TYPES:
+                            for _ in range(8):
+                                if game.is_episode_finished() or self._is_dead(game):
+                                    break
+                                current = self._find_object_by_id(game, object_id)
+                                if current is None:
+                                    summary["collected"] = True
+                                    return self._compound_result(game, summary, "arrived")
+                                angle = max(-20.0, min(20.0, float(current.get("angle_to_aim") or 0.0)))
+                                action = self._build_action_list({
+                                    "TURN_LEFT_RIGHT_DELTA": angle,
+                                    "MOVE_FORWARD_BACKWARD_DELTA": 18,
+                                })
+                                self._make_action(game, action, 1)
+                                tics_used += 1
+                            current = self._find_object_by_id(game, object_id)
+                            if current is None:
+                                summary["collected"] = True
+                                return self._compound_result(game, summary, "arrived")
+                            summary["distance_remaining"] = round(float(current.get("distance") or distance), 1)
+                            return self._compound_result(game, summary, "pickup_not_collected")
                         if use:
                             action = self._build_action_list({"USE": 1})
                             self._make_action(game, action, 1)

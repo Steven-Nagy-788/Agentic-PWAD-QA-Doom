@@ -145,10 +145,19 @@ class GeminiService:
 
     def _fallback_decision(self, llm_input: dict[str, Any], reason: str) -> dict[str, Any]:
         objects = [obj for obj in llm_input.get("objects", []) if isinstance(obj, dict)]
+        lockstep_state = llm_input.get("lockstep_state") if isinstance(llm_input.get("lockstep_state"), dict) else {}
+        completed_object_ids = {str(key) for key in (lockstep_state.get("completed_object_ids") or {})}
+        failed_object_ids = {
+            str(key)
+            for key, value in (lockstep_state.get("failed_object_ids") or {}).items()
+            if _number(value, 0) >= 2
+        }
+        out_of_ammo_targets = {str(key) for key in (lockstep_state.get("out_of_ammo_targets") or {})}
         visible_monsters = [
             obj
             for obj in objects
             if obj.get("type") == "monster" and obj.get("is_visible") and obj.get("id") is not None
+            and str(obj.get("id")) not in out_of_ammo_targets
         ]
         if visible_monsters:
             target = min(visible_monsters, key=lambda obj: float(obj.get("distance") or 999999))
@@ -164,6 +173,8 @@ class GeminiService:
             obj
             for obj in objects
             if obj.get("type") in {"item", "ammo", "weapon", "key"} and obj.get("is_visible") and obj.get("id") is not None
+            and str(obj.get("id")) not in completed_object_ids
+            and str(obj.get("id")) not in failed_object_ids
         ]
         if visible_pickups:
             target = min(visible_pickups, key=lambda obj: float(obj.get("distance") or 999999))
@@ -171,6 +182,22 @@ class GeminiService:
                 "reasoning_summary": f"{reason} Visible {target.get('name', 'pickup')} selected for collection.",
                 "mcp_tool": "move_to",
                 "mcp_params": {"object_id": target["id"], "stop_on_enemy": True},
+                "observed_issue": None,
+            }
+
+        if out_of_ammo_targets:
+            return {
+                "reasoning_summary": f"{reason} Recent combat ran out of ammo, so switching weapons before reassessing.",
+                "mcp_tool": "take_action",
+                "mcp_params": {"actions": {"SELECT_NEXT_WEAPON": 1}, "tics": 2},
+                "observed_issue": None,
+            }
+
+        if int(lockstep_state.get("low_value_explore_total") or 0) >= 2:
+            return {
+                "reasoning_summary": f"{reason} Recent exploration did not progress, so probing a nearby door/use interaction.",
+                "mcp_tool": "take_action",
+                "mcp_params": {"actions": {"USE": 1}, "tics": 3},
                 "observed_issue": None,
             }
 

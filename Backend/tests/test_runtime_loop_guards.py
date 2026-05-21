@@ -14,6 +14,8 @@ from app.services.run_service import (
     _normalize_director_objective_params,
     _normalize_mcp_params,
     _is_wasted_combat_decision,
+    _lockstep_progress_metrics,
+    _lockstep_quality_flags,
     _lockstep_should_stop_as_stuck,
     _update_lockstep_after_action,
 )
@@ -203,6 +205,65 @@ def test_lockstep_guard_rejects_non_visible_combat_target() -> None:
     assert "not a visible monster" in guarded["reasoning_summary"]
 
 
+def test_lockstep_guard_blocks_retargeting_completed_pickup() -> None:
+    decision = {"mcp_tool": "move_to", "mcp_params": {"object_id": 10}}
+    state = {
+        "objects": [
+            {"id": 10, "type": "item", "name": "Stimpack", "is_visible": True, "distance": 10},
+            {"id": 11, "type": "ammo", "name": "Clip", "is_visible": True, "distance": 30},
+        ]
+    }
+    lockstep_state = {
+        "completed_object_ids": {"10": {"target_name": "Stimpack", "stop_reason": "arrived"}},
+        "failed_object_ids": {},
+        "action_signature_counts": {},
+    }
+
+    guarded = _guard_lockstep_decision(decision, state, lockstep_state, {})
+
+    assert guarded["mcp_tool"] == "move_to"
+    assert guarded["mcp_params"]["object_id"] == 11
+    assert "already reached or collected" in guarded["reasoning_summary"]
+
+
+def test_lockstep_guard_blocks_repeated_out_of_ammo_combat() -> None:
+    decision = {"mcp_tool": "aim_and_shoot", "mcp_params": {"object_id": 7}}
+    state = {
+        "objects": [
+            {"id": 7, "type": "monster", "name": "FormerHuman", "is_visible": True, "distance": 160},
+            {"id": 8, "type": "ammo", "name": "Clip", "is_visible": True, "distance": 96},
+        ]
+    }
+    lockstep_state = {
+        "out_of_ammo_targets": {"7": 1},
+        "completed_object_ids": {},
+        "failed_object_ids": {},
+        "action_signature_counts": {},
+    }
+
+    guarded = _guard_lockstep_decision(decision, state, lockstep_state, {})
+
+    assert guarded["mcp_tool"] == "move_to"
+    assert guarded["mcp_params"]["object_id"] == 8
+    assert "out_of_ammo" in guarded["reasoning_summary"]
+
+
+def test_lockstep_guard_marks_strict_stop_after_repeated_blocked_decisions() -> None:
+    decision = {"mcp_tool": "move_to", "mcp_params": {"object_id": 10}}
+    state = {"objects": []}
+    lockstep_state = {
+        "completed_object_ids": {"10": {"target_name": "Stimpack"}},
+        "failed_object_ids": {},
+        "action_signature_counts": {},
+        "blocked_decision_count": 5,
+    }
+
+    guarded = _guard_lockstep_decision(decision, state, lockstep_state, {})
+
+    assert guarded["mcp_tool"] in {"take_action", "retreat"}
+    assert _lockstep_should_stop_as_stuck(lockstep_state) is True
+
+
 def test_lockstep_recovery_stops_after_bounded_retries() -> None:
     state = {
         "game_variables": {"POSITION_X": 0, "POSITION_Y": 0, "KILLCOUNT": 0, "ITEMCOUNT": 0, "SECRETCOUNT": 0},
@@ -246,6 +307,38 @@ def test_low_value_explore_stops_run_after_bounded_attempts() -> None:
     _update_lockstep_after_action({"mcp_tool": "explore"}, mcp_call, lockstep_state)
 
     assert _lockstep_should_stop_as_stuck(lockstep_state) is True
+
+
+def test_lockstep_progress_and_quality_flags_capture_guard_evidence() -> None:
+    lockstep_state = {}
+    _update_lockstep_after_action(
+        {"mcp_tool": "move_to", "mcp_params": {"object_id": 4}},
+        {
+            "tool": "move_to",
+            "input": {"object_id": 4},
+            "output": {"action_summary": {"stop_reason": "arrived", "target_name": "Clip", "target_type": "ammo"}},
+        },
+        lockstep_state,
+    )
+    _update_lockstep_after_action(
+        {"mcp_tool": "aim_and_shoot", "mcp_params": {"object_id": 9}},
+        {
+            "tool": "aim_and_shoot",
+            "input": {"object_id": 9},
+            "output": {"action_summary": {"stop_reason": "out_of_ammo"}},
+        },
+        lockstep_state,
+    )
+
+    metrics = _lockstep_progress_metrics(lockstep_state)
+    flags = _lockstep_quality_flags(lockstep_state, {"quality_status": "ok", "validation_warnings": []})
+
+    assert metrics["progress_score"] == 2
+    assert metrics["completed_object_count"] == 1
+    assert metrics["out_of_ammo_target_count"] == 1
+    assert flags["quality_status"] == "warning"
+    assert "4" in flags["completed_object_ids"]
+    assert "9" in flags["out_of_ammo_targets"]
 
 
 def test_lockstep_tool_params_are_bounded_for_trace_and_mcp_call() -> None:

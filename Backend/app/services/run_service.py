@@ -35,7 +35,7 @@ from app.services.websocket_service import websocket_service
 
 
 RUN_TASKS: dict[UUID, asyncio.Task] = {}
-COMPOUND_TELEMETRY_TOOLS = {"explore", "move_to", "aim_and_shoot", "strafe_and_shoot", "retreat"}
+COMPOUND_TELEMETRY_TOOLS = {"explore", "move_to", "aim_and_shoot", "strafe_and_shoot", "retreat", "take_action"}
 OBJECT_ID_TOOLS = {"aim_and_shoot", "strafe_and_shoot", "move_to"}
 COMBAT_TOOLS = {"aim_and_shoot", "strafe_and_shoot"}
 STUCK_RUN_ABORT_THRESHOLD = 5
@@ -44,6 +44,9 @@ LOW_VALUE_EXPLORE_OVERRIDE_THRESHOLD = 2
 LOW_VALUE_EXPLORE_STUCK_LIMIT = 6
 QA_PROBE_BURST_LIMIT = 4
 EXPLORE_MAX_TICS_UPPER = 80
+REPEATED_ACTION_ABORT_THRESHOLD = 4
+BLOCKED_DECISION_ABORT_THRESHOLD = 6
+PICKUP_OBJECT_TYPES = {"item", "ammo", "weapon", "key"}
 DIRECTOR_POLL_SECONDS = 1.25
 DIRECTOR_STUCK_POLL_THRESHOLD = 5
 DIRECTOR_STUCK_RECOVERY_LIMIT = 4
@@ -213,7 +216,7 @@ async def agent_run_task(run_id: UUID) -> None:
             return
         prompt = render_agent_prompt(wad, analysis, run)
         collector = CollectorService(db)
-        recorder = RecordingService(str(run.id), fps=max(10.0, get_settings().live_frame_fps))
+        recorder = RecordingService(str(run.id), fps=max(15.0, get_settings().recording_fps))
         gemini = GeminiService()
         total_actions = 0
         total_llm_calls = 0
@@ -224,6 +227,7 @@ async def agent_run_task(run_id: UUID) -> None:
         runtime_stage = "startup"
         failure_fields: dict[str, Any] = {}
         last_record_frame: Any = None
+        lockstep_state: dict[str, Any] = _initial_lockstep_state()
 
         try:
             async with McpDoomClient() as mcp:
@@ -239,19 +243,6 @@ async def agent_run_task(run_id: UUID) -> None:
                 await run_repo.update(run, status="running", started_at=datetime.now(UTC))
                 await db.commit()
                 runtime_stage = "gameplay"
-
-                lockstep_state: dict[str, Any] = {
-                    "last_signature": None,
-                    "no_progress_polls": 0,
-                    "recovery_count": 0,
-                    "last_tick": -1,
-                    "invisible_target_failures": {},
-                    "wasted_combat_count": 0,
-                    "consecutive_explore_max_tics": 0,
-                    "low_value_explore_total": 0,
-                    "low_value_explore_cumulative": 0,
-                    "qa_probe_count": 0,
-                }
                 decision_repo = AgentDecisionRepository(db)
                 sequence_number = 0
 
@@ -261,7 +252,7 @@ async def agent_run_task(run_id: UUID) -> None:
                     frame = png_bytes_to_frame(screenshot_png)
                     if frame is not None:
                         last_record_frame = frame
-                        recorder.write_frame(frame)
+                        recorder.write_frame(frame, game_tick=tick)
                     recent = await _recent_trace(db, run.id)
                     threat_assessment = await _safe_context_tool(mcp, "get_threat_assessment")
                     navigation_info = await _safe_context_tool(mcp, "get_navigation_info")
@@ -338,7 +329,7 @@ async def agent_run_task(run_id: UUID) -> None:
                     total_llm_calls += 1
                     llm_duration_ms = (time.monotonic() - llm_started) * 1000
                     decision = _apply_lockstep_recovery(decision, state, navigation_info, lockstep_state)
-                    decision = _guard_lockstep_decision(decision, state, lockstep_state)
+                    decision = _guard_lockstep_decision(decision, state, lockstep_state, navigation_info)
                     await decision_repo.update(
                         decision_row,
                         status="llm_complete",
@@ -379,13 +370,13 @@ async def agent_run_task(run_id: UUID) -> None:
                     frame = png_bytes_to_frame(result_screenshot_png)
                     if frame is None:
                         frame = png_bytes_to_frame(screenshot_png)
-                    if frame is not None:
-                        last_record_frame = frame
-                        recorder.write_frame(frame)
-                    record_frame = frame if frame is not None else last_record_frame
                     if not isinstance(result_state, dict) or "game_variables" not in result_state:
                         result_state = state
                     result_tick = _unique_lockstep_tick(result_state, lockstep_state)
+                    if frame is not None:
+                        last_record_frame = frame
+                        recorder.write_frame(frame, game_tick=result_tick)
+                    record_frame = frame if frame is not None else last_record_frame
                     _update_lockstep_after_action(decision, mcp_call, lockstep_state)
 
                     latest_event = await collector.collect(
@@ -420,6 +411,11 @@ async def agent_run_task(run_id: UUID) -> None:
                             "mcp_output": _json_safe(mcp_call.get("output") or {}),
                         },
                     )
+                    progress_payload = _lockstep_progress_metrics(lockstep_state)
+                    await websocket_service.broadcast(
+                        run.id,
+                        {"type": "progress", "tick": result_tick, **progress_payload},
+                    )
                     event_screenshot_b64 = None
                     if latest_event.event_type in {"kill", "death", "damage_taken", "stuck"} and record_frame is not None:
                         screenshot_path = recorder.save_screenshot(record_frame, latest_event.id)
@@ -444,7 +440,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         outcome = "player_died"
                         break
                     if _lockstep_should_stop_as_stuck(lockstep_state):
-                        outcome = "stuck"
+                        outcome = _lockstep_stop_outcome(lockstep_state)
                         break
                     if result_state.get("episode_finished") or result_state.get("episode_timeout"):
                         outcome = "timeout"
@@ -478,12 +474,18 @@ async def agent_run_task(run_id: UUID) -> None:
             if mcp_client is not None:
                 await mcp_client.stop_game()
             recording_path = recorder.finalize()
+            recording_metadata = recorder.validate(recording_path, outcome=outcome)
+            progress_metrics = _lockstep_progress_metrics(lockstep_state)
+            agent_quality_flags = _lockstep_quality_flags(lockstep_state, recording_metadata)
             completed_at = datetime.now(UTC)
             final_fields: dict[str, Any] = {
                 "outcome": outcome,
                 "completed_at": completed_at,
                 "total_actions_taken": total_actions,
                 "total_llm_calls": total_llm_calls,
+                "recording_metadata": _json_safe(recording_metadata),
+                "progress_metrics": _json_safe(progress_metrics),
+                "agent_quality_flags": _json_safe(agent_quality_flags),
             }
             final_fields.update(failure_fields)
             if recording_path:
@@ -504,6 +506,18 @@ async def agent_run_task(run_id: UUID) -> None:
                 )
             await run_repo.update(run, **final_fields)
             await db.commit()
+            await websocket_service.broadcast(
+                run.id,
+                {"type": "recording_status", "metadata": _json_safe(recording_metadata)},
+            )
+            await websocket_service.broadcast(
+                run.id,
+                {
+                    "type": "quality_summary",
+                    "progress_metrics": _json_safe(progress_metrics),
+                    "agent_quality_flags": _json_safe(agent_quality_flags),
+                },
+            )
             if run.status in {"completed", "cancelled", "failed"}:
                 await DefectService(db).detect_for_run(run)
                 await db.commit()
@@ -589,6 +603,35 @@ def _lockstep_state_snapshot(state: dict[str, Any]) -> dict[str, Any]:
         "low_value_explore_cumulative": int(state.get("low_value_explore_cumulative") or 0),
         "qa_probe_count": int(state.get("qa_probe_count") or 0),
         "invisible_target_failures": dict(state.get("invisible_target_failures") or {}),
+        "completed_object_ids": dict(state.get("completed_object_ids") or {}),
+        "failed_object_ids": dict(state.get("failed_object_ids") or {}),
+        "out_of_ammo_targets": dict(state.get("out_of_ammo_targets") or {}),
+        "blocked_decision_count": int(state.get("blocked_decision_count") or 0),
+        "progress_score": int(state.get("progress_score") or 0),
+        "quality_warnings": list(state.get("quality_warnings") or [])[-8:],
+    }
+
+
+def _initial_lockstep_state() -> dict[str, Any]:
+    return {
+        "last_signature": None,
+        "no_progress_polls": 0,
+        "recovery_count": 0,
+        "last_tick": -1,
+        "invisible_target_failures": {},
+        "wasted_combat_count": 0,
+        "consecutive_explore_max_tics": 0,
+        "low_value_explore_total": 0,
+        "low_value_explore_cumulative": 0,
+        "qa_probe_count": 0,
+        "completed_object_ids": {},
+        "failed_object_ids": {},
+        "out_of_ammo_targets": {},
+        "action_signature_counts": {},
+        "blocked_decision_count": 0,
+        "progress_score": 0,
+        "meaningful_progress_events": 0,
+        "quality_warnings": [],
     }
 
 
@@ -726,12 +769,48 @@ def _guard_lockstep_decision(
     decision: dict[str, Any],
     state: dict[str, Any],
     lockstep_state: dict[str, Any],
+    navigation_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     tool = decision.get("mcp_tool") or "explore"
     params = _normalize_mcp_params(tool, dict(decision.get("mcp_params") or {}))
     invisible_failures = lockstep_state.get("invisible_target_failures") or {}
     object_id = params.get("object_id")
+    signature = _action_signature(tool, params)
+    signature_count = int((lockstep_state.get("action_signature_counts") or {}).get(signature, 0))
+    if signature_count >= REPEATED_ACTION_ABORT_THRESHOLD:
+        return _blocked_decision_fallback(
+            f"The requested action repeats a recent no-progress signature ({tool}), so I am switching tactics.",
+            state,
+            navigation_info or {},
+            lockstep_state,
+        )
+    if tool == "move_to" and object_id is not None:
+        completed = lockstep_state.get("completed_object_ids") or {}
+        failed = lockstep_state.get("failed_object_ids") or {}
+        if str(object_id) in completed:
+            return _blocked_decision_fallback(
+                f"Object {object_id} was already reached or collected in this run, so I will not target it again.",
+                state,
+                navigation_info or {},
+                lockstep_state,
+            )
+        if int(failed.get(str(object_id), 0) or 0) >= 2:
+            return _blocked_decision_fallback(
+                f"Object {object_id} has failed repeatedly, so I am changing route instead of looping on it.",
+                state,
+                navigation_info or {},
+                lockstep_state,
+            )
     if tool in COMBAT_TOOLS:
+        out_of_ammo_targets = lockstep_state.get("out_of_ammo_targets") or {}
+        if object_id is not None and str(object_id) in out_of_ammo_targets:
+            return _blocked_decision_fallback(
+                f"Combat target {object_id} already returned out_of_ammo, so I need resources or another tactic first.",
+                state,
+                navigation_info or {},
+                lockstep_state,
+                prefer_resources=True,
+            )
         if object_id is not None and str(object_id) in invisible_failures:
             return {
                 "reasoning_summary": (
@@ -757,6 +836,76 @@ def _guard_lockstep_decision(
     return decision
 
 
+def _blocked_decision_fallback(
+    reason: str,
+    state: dict[str, Any],
+    navigation_info: dict[str, Any],
+    lockstep_state: dict[str, Any],
+    prefer_resources: bool = False,
+) -> dict[str, Any]:
+    lockstep_state["blocked_decision_count"] = int(lockstep_state.get("blocked_decision_count") or 0) + 1
+    warnings = list(lockstep_state.get("quality_warnings") or [])
+    warnings.append(reason)
+    lockstep_state["quality_warnings"] = warnings[-20:]
+    if int(lockstep_state["blocked_decision_count"]) >= BLOCKED_DECISION_ABORT_THRESHOLD:
+        lockstep_state["should_stop_stuck"] = True
+        lockstep_state["stop_outcome"] = "stuck"
+
+    pickup = _nearest_available_pickup(state, lockstep_state, prefer_resources=prefer_resources)
+    if pickup is not None:
+        return {
+            "reasoning_summary": f"{reason} I am switching to available pickup {pickup.get('name', 'object')} first.",
+            "mcp_tool": "move_to",
+            "mcp_params": {"object_id": pickup["id"], "max_tics": 80, "stop_on_enemy": True},
+            "event_type_override": "stuck",
+            "observed_issue": None,
+        }
+    if prefer_resources:
+        return {
+            "reasoning_summary": f"{reason} No visible pickup is available, so I am switching weapon before reassessing.",
+            "mcp_tool": "take_action",
+            "mcp_params": {"actions": {"SELECT_NEXT_WEAPON": 1}, "tics": 2},
+            "event_type_override": "stuck",
+            "observed_issue": None,
+        }
+    return _qa_probe_decision(state, navigation_info, lockstep_state, reason)
+
+
+def _nearest_available_pickup(
+    state: dict[str, Any],
+    lockstep_state: dict[str, Any],
+    prefer_resources: bool = False,
+) -> dict[str, Any] | None:
+    completed = {str(key) for key in (lockstep_state.get("completed_object_ids") or {})}
+    failed = lockstep_state.get("failed_object_ids") or {}
+    candidates = []
+    for obj in state.get("objects") or []:
+        if not isinstance(obj, dict) or obj.get("id") is None:
+            continue
+        if str(obj.get("id")) in completed or int(failed.get(str(obj.get("id")), 0) or 0) >= 2:
+            continue
+        obj_type = obj.get("type")
+        if obj_type not in PICKUP_OBJECT_TYPES:
+            continue
+        if prefer_resources and obj_type not in {"ammo", "weapon", "item"}:
+            continue
+        if not obj.get("is_visible"):
+            continue
+        candidates.append(obj)
+    if not candidates:
+        return None
+    return min(candidates, key=lambda obj: float(obj.get("distance") or 999999))
+
+
+def _action_signature(tool: str, params: dict[str, Any]) -> str:
+    compact_params = {
+        key: params.get(key)
+        for key in sorted(params)
+        if key not in {"capture_telemetry", "telemetry_stride"}
+    }
+    return f"{tool}:{json.dumps(_json_safe(compact_params), sort_keys=True, default=str)}"
+
+
 def _update_lockstep_after_action(
     decision: dict[str, Any],
     mcp_call: dict[str, Any],
@@ -765,6 +914,13 @@ def _update_lockstep_after_action(
     summary = _mcp_action_summary(mcp_call)
     tool = str(mcp_call.get("tool") or decision.get("mcp_tool") or "")
     stop_reason = str(summary.get("stop_reason") or "")
+    params = mcp_call.get("input") if isinstance(mcp_call.get("input"), dict) else {}
+    object_id = params.get("object_id")
+    signature = _action_signature(tool, params if isinstance(params, dict) else {})
+    signature_counts = dict(lockstep_state.get("action_signature_counts") or {})
+    signature_counts[signature] = int(signature_counts.get(signature, 0)) + 1
+    lockstep_state["action_signature_counts"] = dict(list(signature_counts.items())[-50:])
+
     if tool == "explore" and stop_reason == "max_tics":
         lockstep_state["consecutive_explore_max_tics"] = int(lockstep_state.get("consecutive_explore_max_tics") or 0) + 1
         lockstep_state["low_value_explore_total"] = int(lockstep_state.get("low_value_explore_total") or 0) + 1
@@ -788,6 +944,40 @@ def _update_lockstep_after_action(
     ):
         lockstep_state["should_stop_stuck"] = True
 
+    if tool == "move_to" and object_id is not None:
+        if stop_reason == "arrived":
+            completed = dict(lockstep_state.get("completed_object_ids") or {})
+            key = str(object_id)
+            if key not in completed:
+                lockstep_state["progress_score"] = int(lockstep_state.get("progress_score") or 0) + 2
+                lockstep_state["meaningful_progress_events"] = int(lockstep_state.get("meaningful_progress_events") or 0) + 1
+            completed[key] = {
+                "target_name": summary.get("target_name"),
+                "target_type": summary.get("target_type"),
+                "stop_reason": stop_reason,
+            }
+            lockstep_state["completed_object_ids"] = completed
+            lockstep_state["blocked_decision_count"] = 0
+        elif stop_reason in {"stuck", "pickup_not_collected", "arrival_blocked", "target_lost", "max_tics"}:
+            failed = dict(lockstep_state.get("failed_object_ids") or {})
+            key = str(object_id)
+            failed[key] = int(failed.get(key, 0)) + 1
+            lockstep_state["failed_object_ids"] = failed
+    if tool in COMBAT_TOOLS and stop_reason == "out_of_ammo" and object_id is not None:
+        out_of_ammo = dict(lockstep_state.get("out_of_ammo_targets") or {})
+        key = str(object_id)
+        out_of_ammo[key] = int(out_of_ammo.get(key, 0)) + 1
+        lockstep_state["out_of_ammo_targets"] = out_of_ammo
+        warnings = list(lockstep_state.get("quality_warnings") or [])
+        warnings.append(f"Combat against target {object_id} stopped with out_of_ammo.")
+        lockstep_state["quality_warnings"] = warnings[-20:]
+    if stop_reason in {"target_killed", "shots_complete"} and (_int_like(summary.get("hits_landed")) or _int_like(summary.get("kills"))):
+        lockstep_state["progress_score"] = int(lockstep_state.get("progress_score") or 0) + 3
+        lockstep_state["meaningful_progress_events"] = int(lockstep_state.get("meaningful_progress_events") or 0) + 1
+        lockstep_state["blocked_decision_count"] = 0
+    if stop_reason in {"item_found", "enemy_spotted"}:
+        lockstep_state["progress_score"] = int(lockstep_state.get("progress_score") or 0) + 1
+
     if summary.get("stop_reason") == "target_not_visible":
         params = decision.get("mcp_params") if isinstance(decision.get("mcp_params"), dict) else {}
         object_id = params.get("object_id")
@@ -805,6 +995,37 @@ def _update_lockstep_after_action(
 
 def _lockstep_should_stop_as_stuck(lockstep_state: dict[str, Any]) -> bool:
     return bool(lockstep_state.get("should_stop_stuck"))
+
+
+def _lockstep_stop_outcome(lockstep_state: dict[str, Any]) -> str:
+    outcome = str(lockstep_state.get("stop_outcome") or "stuck")
+    return outcome if outcome in {"stuck", "incomplete_coverage"} else "stuck"
+
+
+def _lockstep_progress_metrics(lockstep_state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "progress_score": int(lockstep_state.get("progress_score") or 0),
+        "meaningful_progress_events": int(lockstep_state.get("meaningful_progress_events") or 0),
+        "completed_object_count": len(lockstep_state.get("completed_object_ids") or {}),
+        "failed_object_count": len(lockstep_state.get("failed_object_ids") or {}),
+        "out_of_ammo_target_count": len(lockstep_state.get("out_of_ammo_targets") or {}),
+        "blocked_decision_count": int(lockstep_state.get("blocked_decision_count") or 0),
+        "low_value_explore_count": int(lockstep_state.get("low_value_explore_cumulative") or 0),
+        "recovery_count": int(lockstep_state.get("recovery_count") or 0),
+    }
+
+
+def _lockstep_quality_flags(lockstep_state: dict[str, Any], recording_metadata: dict[str, Any]) -> dict[str, Any]:
+    warnings = list(lockstep_state.get("quality_warnings") or [])
+    warnings.extend(recording_metadata.get("validation_warnings") or [])
+    return {
+        "quality_status": "warning" if warnings else "ok",
+        "warnings": warnings[-30:],
+        "completed_object_ids": dict(lockstep_state.get("completed_object_ids") or {}),
+        "failed_object_ids": dict(lockstep_state.get("failed_object_ids") or {}),
+        "out_of_ammo_targets": dict(lockstep_state.get("out_of_ammo_targets") or {}),
+        "recording_quality_status": recording_metadata.get("quality_status"),
+    }
 
 
 def _unique_lockstep_tick(state: dict[str, Any], lockstep_state: dict[str, Any]) -> int:
@@ -1336,7 +1557,7 @@ async def _record_telemetry_frames(
     recorder: RecordingService,
 ) -> None:
     for index, sample in enumerate(telemetry_frames):
-        sample_tick = tick * 1000 + index + 1
+        sample_tick = _telemetry_sample_tick(sample, fallback=tick + index + 1)
         sample_state = {
             "game_variables": sample.get("game_variables") or sample.get("variables") or sample,
             "level_completed": sample.get("level_completed"),
@@ -1353,7 +1574,15 @@ async def _record_telemetry_frames(
         except (binascii.Error, ValueError):
             continue
         frame = png_bytes_to_frame(png_bytes)
-        recorder.write_frame(frame)
+        recorder.write_frame(frame, game_tick=sample_tick)
+
+
+def _telemetry_sample_tick(sample: dict[str, Any], fallback: int) -> int:
+    with contextlib.suppress(TypeError, ValueError):
+        raw = sample.get("tic")
+        if raw is not None:
+            return max(0, int(float(raw)))
+    return fallback
 
 
 def _write_realtime_frame(

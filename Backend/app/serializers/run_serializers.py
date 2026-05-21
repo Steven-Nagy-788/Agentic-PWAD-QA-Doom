@@ -55,5 +55,8 @@ class RunOut(BaseModel):
     total_actions_taken: int | None = None
     total_llm_calls: int | None = None
     recording_mp4_path: str | None = None
+    recording_metadata: dict[str, Any] | None = None
+    progress_metrics: dict[str, Any] | None = None
+    agent_quality_flags: dict[str, Any] | None = None
     report_pdf_path: str | None = None
     created_at: datetime

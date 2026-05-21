@@ -62,6 +62,22 @@ def test_take_action_dict(manager):
     assert "episode_finished" in result
 
 
+def test_take_action_returns_telemetry_when_requested(manager):
+    manager.start(scenario="basic", seed=42)
+    result = manager.take_action(
+        {"MOVE_FORWARD_BACKWARD_DELTA": 10},
+        tics=3,
+        capture_telemetry=True,
+        telemetry_stride=1,
+    )
+
+    telemetry = result.get("telemetry_frames")
+    assert isinstance(telemetry, list)
+    assert len(telemetry) >= 1
+    assert all("tic" in sample for sample in telemetry)
+    assert any("screenshot_png_b64" in sample for sample in telemetry)
+
+
 def test_take_action_delta_turn(manager):
     manager.start(scenario="basic", seed=42)
     state_before = manager.get_state()
@@ -272,7 +288,7 @@ def test_move_to_arrives(manager):
     summary = result["action_summary"]
     assert "distance_moved" in summary
     assert summary["stop_reason"] in (
-        "arrived", "target_lost", "enemy_nearby", "stuck",
+        "arrived", "pickup_not_collected", "target_lost", "enemy_nearby", "stuck",
         "player_died", "max_tics", "episode_finished",
     )
 

@@ -42,7 +42,7 @@ Important settings:
 - `STORAGE_BASE`, `WAD_STORAGE_DIR`, `ANALYSIS_STORAGE_DIR`, `SCREENSHOT_STORAGE_DIR`, `RECORDING_STORAGE_DIR`, `REPORT_STORAGE_DIR`.
 - `GEMINI_API_KEY`, `LLM_MODEL`, `LLM_THROTTLE_SECONDS`, `GEMINI_RETRY_MAX_DELAY_SECONDS`.
 - `MCP_DOOM_SSE_URL`.
-- `DEFAULT_RUN_TICKS`, `MAX_RUN_TICKS`, `LIVE_FRAME_FPS`, `RECORDING_TELEMETRY_STRIDE`.
+- `DEFAULT_RUN_TICKS`, `MAX_RUN_TICKS`, `LIVE_FRAME_FPS`, `RECORDING_FPS`, `RECORDING_TELEMETRY_STRIDE`.
 - `CORS_ORIGINS`.
 
 The backend passes `freedoom1` or `freedoom2` to MCP based on detected map names. It does not require an IWAD path in backend config.
@@ -98,6 +98,7 @@ Important fields:
 - Failure reporting: `failure_category`, `failure_stage`, `failure_summary`, `failure_diagnostics`.
 - Final stats: `final_hp`, `final_armor`, `total_kills`, `total_deaths`, `secrets_found`, `total_items_collected`, `total_actions_taken`, `total_llm_calls`.
 - Artifacts: `recording_mp4_path`, `report_pdf_path`.
+- Frontend/report quality JSON: `recording_metadata`, `progress_metrics`, `agent_quality_flags`.
 
 Only one active run is allowed at a time.
 
@@ -185,10 +186,10 @@ The run task:
 2. Starts MCP `start_game` with `wad`, `scenario_wad`, `map_name`, `difficulty`, `episode_timeout`, and `async_player=False`.
 3. Calls `get_state`, plus non-advancing context helpers `get_threat_assessment` and `get_navigation_info`.
 4. Creates an `agent_decisions` row and broadcasts `llm_start`.
-5. Lets Gemini choose one tactical MCP tool. If Gemini is unavailable, rate-limited, or returns unusable JSON, deterministic fallback chooses visible combat, visible pickup collection, or exploration.
-6. Applies backend guards so combat tools only target currently visible monsters and repeated failed targets are avoided.
+5. Lets Gemini choose one tactical MCP tool. If Gemini is unavailable, rate-limited, or returns unusable JSON, deterministic fallback chooses visible combat, visible pickup collection, weapon/ammo switching, direct USE probes, or exploration while respecting lockstep memory.
+6. Applies backend guards so combat tools only target currently visible monsters, completed pickups are not re-targeted, repeated failed targets are avoided, and out-of-ammo combat loops are broken.
 7. Executes the selected tool, records MCP input/output, stop reason, decision timings, gameplay event, telemetry frames, notable screenshots, and MP4 frames.
-8. Broadcasts typed WebSocket messages: `llm_decision`, `mcp_call_start`, `mcp_call_result`, `state`, `frame`, `defect`, and `report_status`.
+8. Broadcasts typed WebSocket messages: `llm_decision`, `mcp_call_start`, `mcp_call_result`, `state`, `frame`, `progress`, `defect`, `recording_status`, `quality_summary`, and `report_status`.
 9. Detects defects and generates a report when the run reaches completion, death, timeout, stuck stop, cancellation, or crash.
 
 Lockstep recovery is explicit:
@@ -197,15 +198,26 @@ Lockstep recovery is explicit:
 - Repeated identical progress signatures trigger bounded `retreat` or `explore` recovery actions.
 - Repeated low-value `explore` calls that end at `max_tics` are capped at 80 tics and overridden into a QA probe burst: direct `take_action` turn/forward/USE checks plus bounded `retreat`.
 - Repeated invisible combat targets are blacklisted for the run.
+- `move_to(...)->arrived` records the object id as completed. Future choices for the same object id are blocked unless a new object id appears in the game state.
+- Combat returning `out_of_ammo` records the target id. Future combat against that id is blocked until the agent changes tactic by switching weapons, collecting resources, retreating, or probing progression.
 - Repeated combat actions with shots but no hits/kills escalate recovery.
-- After the configured recovery limit or repeated low-value exploration limit, the run stops with outcome `stuck` instead of looping indefinitely.
+- Repeated blocked decisions and repeated low-value exploration trigger strict stop as `stuck` or `incomplete_coverage` instead of spending the run budget in circular motion.
 
 Combat and pickup behavior is LLM-selected and MCP-executed:
 
 - Normal backend QA runs use `get_state`, `explore`, `move_to`, `aim_and_shoot`, `strafe_and_shoot`, `retreat`, bounded `take_action`, `get_threat_assessment`, and `get_navigation_info`.
 - Combat tools only fire at visible targets. If a requested target is not visible, the backend falls back to exploration and records the guard decision.
+- `move_to` treats pickup arrival as successful only when the pickup disappears from the object list. Otherwise MCP returns `pickup_not_collected`, `arrival_blocked`, `target_lost`, `stuck`, or `max_tics` so the backend can avoid repeating the same failed object.
 - Stored LLM/MCP traces contain normalized bounded inputs. For example, model requests for long exploration are clipped before both storage and MCP execution, so the UI sees the same params the tool received.
-- Compound tools return telemetry frames so recordings and position trails show gameplay during the bounded tool execution, not only after each LLM decision.
+- Compound tools and bounded `take_action` return telemetry frames so recordings and position trails show gameplay during the bounded tool execution, not only after each LLM decision.
+
+Recording behavior:
+
+- Saved MP4s use gameplay time, not wall-clock LLM wait time. By default they are 640x480 and at least 15 FPS; live WebSocket frame rate is separately capped by `LIVE_FRAME_FPS`.
+- Recording metadata stores path, width, height, fps, frame count, unique frame count, duration, first/last game tic, advanced game ticks, estimated gameplay seconds, quality status, validation warnings, and outcome.
+- Successful gameplay recordings are validated for minimum frame count, unique frame count, resolution, and consistency with advanced game ticks. Crash-before-gameplay runs expose `expected_missing` recording metadata instead of treating the missing video as a product error.
+- `progress_metrics` records progress score, meaningful progress events, completed/failed object counts, out-of-ammo target count, blocked-decision count, low-value exploration count, and recovery count.
+- `agent_quality_flags` records guard warnings plus completed objects, failed objects, out-of-ammo targets, and recording quality status for frontend audit panels and report evidence.
 
 ## PWAD Crash Reporting
 
@@ -300,7 +312,9 @@ PDF rendering uses WeasyPrint with:
 - Rationale text rendered separately.
 - Empty sections skipped.
 - De-duplicated defect rows and a display cap so repeated findings cannot expand a PDF into dozens of pages.
-- A decision trace table showing LLM/MCP sequence, ticks, tool, stop reason, and QA-facing reasoning summary.
+- A portrait executive summary that keeps long trace text out of fixed portrait tables.
+- A landscape evidence appendix for notable events and LLM/MCP decision cards, with safe column widths and wrapped reasoning summaries.
+- Recording quality, agent progress audit, guard evidence, coverage limitations, static analysis, and defect fingerprint evidence.
 
 Report API responses exclude `None` report fields.
 
@@ -355,16 +369,17 @@ WebSocket:
 
 - `/ws/runs/{run_id}`
 
-Live WebSocket messages are typed. Current message types include `llm_start`, `llm_decision`, `mcp_call_start`, `mcp_call_result`, `state`, `frame`, `defect`, `report_status`, and status updates. State messages include run status, health, armor, ammo, position, event type, QA-facing LLM reasoning, chosen MCP action, and optional notable screenshot.
+Live WebSocket messages are typed. Current message types include `llm_start`, `llm_decision`, `mcp_call_start`, `mcp_call_result`, `state`, `frame`, `progress`, `defect`, `recording_status`, `quality_summary`, `report_status`, and status updates. State messages include run status, health, armor, ammo, position, event type, QA-facing LLM reasoning, chosen MCP action, and optional notable screenshot.
 
 ## Verification Status
 
 The current implementation has been checked with:
 
 - Backend compile check: `PYTHONPATH=. .venv/bin/python -m compileall -q app` from `Backend/`.
-- Backend test suite: `PYTHONPATH=. .venv/bin/pytest -q -p no:cacheprovider tests` from `Backend/` (`25 passed`).
-- MCP full suite: `PYTHONPATH=src .venv/bin/pytest -q -p no:cacheprovider tests` from `mcp-doom/` (`98 passed`).
-- Local `make db-schema` applied the additive `agent_decisions`, `game_events.agent_decision_id`, and defect fingerprint schema.
+- Backend test suite: `PYTHONPATH=. .venv/bin/pytest -q -p no:cacheprovider tests` from `Backend/` (`32 passed`).
+- MCP full suite: `PYTHONPATH=src .venv/bin/pytest -q -p no:cacheprovider tests` from `mcp-doom/` (`99 passed`).
+- Local `make db-schema` applied the additive `agent_decisions`, `game_events.agent_decision_id`, defect fingerprint schema, and run quality JSON fields.
+- Manual problem-map rerun on 2026-05-20 verified `recording_metadata`, `progress_metrics`, `agent_quality_flags`, WebSocket `progress`/`recording_status`/`quality_summary`, no duplicate defect fingerprints, no repeated completed-pickup targeting, no repeated out-of-ammo combat targeting, 15 FPS gameplay-time MP4s, and landscape evidence appendix pages in generated PDFs.
 - Lockstep smoke run `a58b4675-6f24-421f-81da-dac08e1297eb`: one LLM/MCP decision, one gameplay event, generated report JSON/PDF, and a 640x480 10 FPS MP4 with 61 frames.
 - Live endpoint check for run `7365a61c-4b01-4a0f-9b9b-91fb4194c638`: health, run detail, trace, defects, report status, PDF download, recording download, and stuck events.
 - Video/report review for run `7365a61c-4b01-4a0f-9b9b-91fb4194c638`: recording is a valid 81.3 second MP4; regenerated PDF is 3 pages, reports outcome `stuck`, and contains 2 de-duplicated defects instead of hundreds of repeated agent-observed rows.
@@ -374,8 +389,10 @@ Representative manual product matrix:
 
 | WAD / map | Difficulty | Run | Observed result |
 |-----------|------------|-----|-----------------|
-| `thelonghallways.wad` / `E1M1` | 1 | `525722e4-06fd-4e39-8464-ceaceeeb5591` | Reproduced the prior circular-motion pattern and verified the new guard: after two low-value `explore` calls, trace switched to `take_action` turn/forward/USE probes and `retreat`, then stopped as `stuck` with report/PDF and a 640x480 10 FPS MP4 with 296 frames. |
-| `LOWMEM.wad` / `E1M1` | 1 | `3d954366-ab06-4827-a75a-04d150be1387` | Startup preflight failed as `pwad_crash` with `failure_stage=startup`, zero decisions/actions, report/PDF present, and no recording expected. |
+| `antony.wad` / `MAP01` | 1 | `e79c154e-80c3-4b85-861a-786ffd7738b6` | Completed as strict `stuck` after 33 lockstep actions. Recording metadata is `ok`: 640x480, 15 FPS, 202 frames, 13.467 seconds, 13.4 gameplay seconds. No repeated completed-pickup targeting and no repeated out-of-ammo combat loop. PDF has 3 portrait summary pages plus 4 landscape appendix pages. |
+| `Cluster.wad` / `MAP01` | 1 | `2b598745-6522-4b99-87ed-7ffced3eb74b` | Completed as strict `stuck` after 19 lockstep actions. Recording metadata is `ok`: 132 frames, 8.8 seconds, 8.771 gameplay seconds. Four completed pickups were tracked and not re-targeted. PDF has portrait summary plus landscape appendix. |
+| `thelonghallways.wad` / `E1M1` | 1 | `4d96faa0-be56-4871-8ce8-a604f743f1d8` | Reproduced the circular-motion risk and stopped early as `stuck` after direct probes/retreat instead of spending the full run budget. Recording metadata is `ok`: 95 frames, 6.333 seconds, 6.286 gameplay seconds. |
+| `LOWMEM.wad` / `E1M1` | 1 | `e1ef960d-1eac-4bff-9130-9269f4887578` | Startup failed as `pwad_crash` with zero actions and zero LLM calls. Recording metadata is `expected_missing` with no video path; report/PDF and crash defect were generated. |
 | `thelonghallways.wad` / `E1M1` | 3 | `b38da41d-e657-403c-a7c8-2590e4a438c0` | Lockstep fallback run produced decisions, events, recording, report, and selected-difficulty static context. |
 | `thelonghallways.wad` / `E1M1` | 5 | `16af65cd-4744-4636-9842-8f2f87e1af1c` | Selected skill spawned zero enemies and produced `difficulty_spawn_mismatch`. |
 | `DRKWRLD1.WAD` / `E1M1` | 3 | `9eca31ea-5502-40ff-a9eb-ce18e01890ba` | PWAD initialized under lockstep mode and produced decisions, trace, video, and report. |

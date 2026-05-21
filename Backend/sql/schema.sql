@@ -75,6 +75,9 @@ CREATE TABLE IF NOT EXISTS test_runs (
     total_actions_taken     INTEGER,
     total_llm_calls         INTEGER,
     recording_mp4_path      TEXT,
+    recording_metadata      JSONB,
+    progress_metrics        JSONB,
+    agent_quality_flags     JSONB,
     report_pdf_path         TEXT,
     created_at              TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
@@ -247,6 +250,15 @@ ALTER TABLE IF EXISTS test_runs
 
 ALTER TABLE IF EXISTS test_runs
     ADD COLUMN IF NOT EXISTS failure_diagnostics JSONB;
+
+ALTER TABLE IF EXISTS test_runs
+    ADD COLUMN IF NOT EXISTS recording_metadata JSONB;
+
+ALTER TABLE IF EXISTS test_runs
+    ADD COLUMN IF NOT EXISTS progress_metrics JSONB;
+
+ALTER TABLE IF EXISTS test_runs
+    ADD COLUMN IF NOT EXISTS agent_quality_flags JSONB;
 
 ALTER TABLE IF EXISTS game_events
     ADD COLUMN IF NOT EXISTS llm_input_summary TEXT;

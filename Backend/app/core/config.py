@@ -65,6 +65,7 @@ class Settings:
         self.max_run_ticks = int(os.getenv("MAX_RUN_TICKS", "35000"))
         self.default_run_ticks = int(os.getenv("DEFAULT_RUN_TICKS", "3000"))
         self.live_frame_fps = float(os.getenv("LIVE_FRAME_FPS", "10"))
+        self.recording_fps = float(os.getenv("RECORDING_FPS", "15"))
         self.recording_telemetry_stride = int(os.getenv("RECORDING_TELEMETRY_STRIDE", "2"))
         self.cors_origins = [
             origin.strip()

@@ -73,6 +73,9 @@ class TestRun(Base):
     total_actions_taken: Mapped[int | None] = mapped_column(Integer)
     total_llm_calls: Mapped[int | None] = mapped_column(Integer)
     recording_mp4_path: Mapped[str | None] = mapped_column(Text)
+    recording_metadata: Mapped[dict | None] = mapped_column(JSONB)
+    progress_metrics: Mapped[dict | None] = mapped_column(JSONB)
+    agent_quality_flags: Mapped[dict | None] = mapped_column(JSONB)
     report_pdf_path: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
