@@ -29,14 +29,26 @@ class RecordingService:
         self._first_game_tick: int | None = None
         self._last_game_tick: int | None = None
         self._next_frame_game_tick: float | None = None
+        self._needs_transcode = False
+        self._transcode_errors: list[str] = []
 
     def start_from_frame(self, frame: np.ndarray) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         height, width = frame.shape[:2]
         self.width = int(width)
         self.height = int(height)
+        fourcc = cv2.VideoWriter_fourcc(*"avc1")
+        self.writer = cv2.VideoWriter(str(self.path), fourcc, self.fps, (width, height))
+        self._needs_transcode = False
+        if self.writer.isOpened():
+            return
+        self.writer.release()
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         self.writer = cv2.VideoWriter(str(self.source_path), fourcc, self.fps, (width, height))
+        self._needs_transcode = True
+        if not self.writer.isOpened():
+            self._transcode_errors.append("opencv_video_writer_failed_to_open")
+            self.writer = None
 
     def write_frame(self, frame: np.ndarray | None, game_tick: int | None = None) -> None:
         if frame is None:
@@ -46,7 +58,8 @@ class RecordingService:
             return
         if self.writer is None:
             self.start_from_frame(frame)
-        assert self.writer is not None
+        if self.writer is None:
+            return
         self._last_frame = frame
         self._unique_frame_hashes.add(self._frame_hash(frame))
         self.writer.write(self._bgr(frame))
@@ -80,7 +93,12 @@ class RecordingService:
                     self.frames_written += 1
             self.writer.release()
             self.writer = None
-            return self._transcode_h264()
+            if self._needs_transcode:
+                return self._transcode_h264()
+            if self._video_has_frames(self.path):
+                return self.path
+            self._transcode_errors.append("direct_avc1_output_has_no_decodable_frames")
+            return self.path if self.path.exists() else None
         return None
 
     def metadata(self, path: Path | None = None, outcome: str | None = None) -> dict[str, Any]:
@@ -132,6 +150,9 @@ class RecordingService:
             warnings.append("recording_has_too_few_unique_frames")
         if self.frames_written < self.min_frames and outcome not in {"pwad_crash", "cancelled"}:
             warnings.append("recording_shorter_than_minimum_frame_count")
+        if path is not None and not self._video_has_frames(path):
+            warnings.append("recording_file_has_no_decodable_frames")
+        warnings.extend(self._transcode_errors)
         metadata["quality_status"] = "warning" if warnings else "ok"
         metadata["validation_warnings"] = warnings
         return metadata
@@ -141,47 +162,35 @@ class RecordingService:
             return self.path if self.path.exists() else self.source_path
 
         try:
-            import ffmpeg
-
-            (
-                ffmpeg.input(str(self.source_path))
-                .output(
+            completed = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    str(self.source_path),
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-movflags",
+                    "+faststart",
+                    "-an",
                     str(self.path),
-                    vcodec="libx264",
-                    pix_fmt="yuv420p",
-                    movflags="+faststart",
-                    an=None,
-                )
-                .overwrite_output()
-                .run(quiet=True)
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
             )
+            if completed.returncode != 0:
+                self._transcode_errors.append(_trim_ffmpeg_error(completed.stderr))
         except Exception:
-            try:
-                subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-y",
-                        "-i",
-                        str(self.source_path),
-                        "-c:v",
-                        "libx264",
-                        "-pix_fmt",
-                        "yuv420p",
-                        "-movflags",
-                        "+faststart",
-                        "-an",
-                        str(self.path),
-                    ],
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            except Exception:
-                return self.source_path
+            self._transcode_errors.append("ffmpeg_transcode_failed")
+            return self.source_path
 
-        if self.path.exists() and self.path.stat().st_size > 0:
+        if self.path.exists() and self.path.stat().st_size > 0 and self._video_has_frames(self.path):
             self.source_path.unlink(missing_ok=True)
             return self.path
+        self._transcode_errors.append("ffmpeg_output_missing_or_invalid")
         return self.source_path
 
     @staticmethod
@@ -210,6 +219,26 @@ class RecordingService:
         small = cv2.resize(frame, (64, 48), interpolation=cv2.INTER_AREA)
         gray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY) if small.ndim == 3 else small
         return hashlib.blake2b(gray.tobytes(), digest_size=12).hexdigest()
+
+    @staticmethod
+    def _video_has_frames(path: Path) -> bool:
+        if not path.exists() or path.stat().st_size <= 0:
+            return False
+        capture = cv2.VideoCapture(str(path))
+        try:
+            if not capture.isOpened():
+                return False
+            ok, frame = capture.read()
+            return bool(ok and frame is not None)
+        finally:
+            capture.release()
+
+
+def _trim_ffmpeg_error(stderr: str | None) -> str:
+    text = (stderr or "").strip()
+    if not text:
+        return "ffmpeg_transcode_failed_without_stderr"
+    return "ffmpeg_transcode_failed: " + text[-1000:]
 
 
 def png_bytes_to_frame(png_bytes: bytes | None) -> np.ndarray | None:

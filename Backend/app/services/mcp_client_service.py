@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import contextlib
 import json
+import time
 import warnings
 from typing import Any
 
+import httpx
+
 from app.core.config import get_settings
+
+
+MCP_STARTUP_RETRY_DELAYS = (1.0, 2.0, 4.0)
 
 
 def _suppress_fastmcp_authlib_warning() -> None:
@@ -30,9 +37,20 @@ class McpDoomClient:
             from fastmcp import Client
         except ImportError as exc:
             raise RuntimeError("fastmcp is not installed in the backend environment") from exc
-        self._client = Client(self.settings.mcp_doom_sse_url)
-        await self._client.__aenter__()
-        return self
+        last_error: Exception | None = None
+        for attempt in range(len(MCP_STARTUP_RETRY_DELAYS) + 1):
+            self._client = Client(self.settings.mcp_doom_sse_url)
+            try:
+                await self._client.__aenter__()
+                return self
+            except Exception as exc:
+                last_error = exc
+                with contextlib.suppress(Exception):
+                    await self._client.__aexit__(type(exc), exc, exc.__traceback__)
+                self._client = None
+                if attempt < len(MCP_STARTUP_RETRY_DELAYS):
+                    await asyncio.sleep(MCP_STARTUP_RETRY_DELAYS[attempt])
+        raise McpStartupError("MCP SSE connection failed after startup retries") from last_error
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         if self._client is not None:
@@ -41,7 +59,11 @@ class McpDoomClient:
     async def call_tool(self, name: str, params: dict[str, Any] | None = None) -> Any:
         if self._client is None:
             raise RuntimeError("MCP client is not connected")
-        return await self._client.call_tool(name, params or {})
+        timeout = max(0.1, self.settings.mcp_tool_timeout_seconds)
+        try:
+            return await asyncio.wait_for(self._client.call_tool(name, params or {}), timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            raise McpToolTimeoutError(f"MCP tool {name} timed out after {timeout:g}s") from exc
 
     async def start_game(
         self,
@@ -66,7 +88,15 @@ class McpDoomClient:
         }
         if ticrate is not None:
             params["ticrate"] = ticrate
-        return await self.call_tool("start_game", params)
+        last_error: Exception | None = None
+        for attempt in range(len(MCP_STARTUP_RETRY_DELAYS) + 1):
+            try:
+                return await self.call_tool("start_game", params)
+            except Exception as exc:
+                last_error = exc
+                if attempt < len(MCP_STARTUP_RETRY_DELAYS):
+                    await asyncio.sleep(MCP_STARTUP_RETRY_DELAYS[attempt])
+        raise McpStartupError("MCP start_game failed after startup retries") from last_error
 
     async def get_state(self) -> tuple[dict[str, Any], bytes | None]:
         result = await self.call_tool("get_state", {"include_sectors": False, "include_depth": True})
@@ -101,6 +131,40 @@ class McpDoomClient:
     async def stop_game(self) -> None:
         with contextlib.suppress(Exception):
             await self.call_tool("stop_game", {})
+
+
+class McpToolTimeoutError(RuntimeError):
+    pass
+
+
+class McpStartupError(RuntimeError):
+    pass
+
+
+async def probe_mcp_sse_url(url: str | None = None, timeout_seconds: float | None = None) -> dict[str, Any]:
+    settings = get_settings()
+    target_url = url or settings.mcp_doom_sse_url
+    timeout = timeout_seconds if timeout_seconds is not None else settings.mcp_probe_timeout_seconds
+    started = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=max(0.1, timeout), follow_redirects=True) as client:
+            async with client.stream("GET", target_url, headers={"Accept": "text/event-stream"}) as response:
+                status_code = response.status_code
+        latency_ms = round((time.monotonic() - started) * 1000, 2)
+        return {
+            "reachable": 200 <= status_code < 400,
+            "status_code": status_code,
+            "latency_ms": latency_ms,
+            "url": target_url,
+        }
+    except Exception as exc:
+        latency_ms = round((time.monotonic() - started) * 1000, 2)
+        return {
+            "reachable": False,
+            "latency_ms": latency_ms,
+            "url": target_url,
+            "error": str(exc),
+        }
 
 
 def normalize_mcp_state(result: Any) -> tuple[dict[str, Any], bytes | None]:

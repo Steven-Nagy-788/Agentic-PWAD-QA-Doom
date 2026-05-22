@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import uuid
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import SessionLocal
+from app.models import NotableEventScreenshot, TestRun
 from app.core.config import get_settings
 from app.models import WadFile
 from app.repositories.wad_repository import WadRepository
 from app.repositories.analysis_repository import AnalysisRepository
+from app.repositories.run_repository import RunRepository
 from app.serializers.wad_serializers import WadMapOut
 from app.services.analysis_service import (
     AnalysisService,
@@ -41,7 +46,7 @@ class WadService:
         stored_path.write_bytes(data)
 
         try:
-            map_names = detect_map_names(str(stored_path))
+            map_names = await asyncio.to_thread(detect_map_names, str(stored_path))
         except Exception as exc:
             stored_path.unlink(missing_ok=True)
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Could not parse WAD maps: {exc}") from exc
@@ -50,10 +55,10 @@ class WadService:
             stored_path.unlink(missing_ok=True)
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "PWAD contains no supported Doom maps")
 
-        start_counts = {
-            map_name: player_start_counts(str(stored_path), map_name)
-            for map_name in map_names
-        }
+        count_results = await asyncio.gather(
+            *(asyncio.to_thread(player_start_counts, str(stored_path), map_name) for map_name in map_names)
+        )
+        start_counts = dict(zip(map_names, count_results))
         unplayable_maps = [
             map_name
             for map_name, counts in start_counts.items()
@@ -105,6 +110,9 @@ class WadService:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "WAD not found")
         return wad
 
+    async def list(self, limit: int = 100, offset: int = 0) -> list[WadFile]:
+        return await self.repo.list(limit=limit, offset=offset)
+
     async def map_png_path(self, wad_id: uuid.UUID, map_name: str | None) -> Path:
         wad = await self.get(wad_id)
         selected = (map_name or (wad.detected_maps or [""])[0]).upper()
@@ -116,6 +124,38 @@ class WadService:
     async def maps(self, wad_id: uuid.UUID) -> list[WadMapOut]:
         wad = await self.get(wad_id)
         return await self._maps_for_wad(wad)
+
+    async def delete(self, wad_id: uuid.UUID) -> None:
+        wad = await self.get(wad_id)
+        if await RunRepository(self.db).has_active_for_wad(wad_id):
+            raise HTTPException(status.HTTP_409_CONFLICT, "Cannot delete a WAD while a run is pending or running")
+
+        analyses = await AnalysisRepository(self.db).list_by_wad(wad_id)
+        run_result = await self.db.execute(select(TestRun).where(TestRun.wad_file_id == wad_id))
+        runs = list(run_result.scalars().all())
+        screenshot_result = await self.db.execute(
+            select(NotableEventScreenshot).where(NotableEventScreenshot.run_id.in_([run.id for run in runs]))
+        )
+        for screenshot in screenshot_result.scalars().all():
+            Path(screenshot.screenshot_path).unlink(missing_ok=True)
+        for run in runs:
+            if run.recording_mp4_path:
+                recording_path = Path(run.recording_mp4_path)
+                recording_path.unlink(missing_ok=True)
+                recording_path.with_name(f"{recording_path.stem}.source.mp4").unlink(missing_ok=True)
+            await self.db.delete(run)
+        for analysis in analyses:
+            if analysis.map_overview_png_path:
+                Path(analysis.map_overview_png_path).unlink(missing_ok=True)
+            await self.db.delete(analysis)
+        Path(wad.stored_path).unlink(missing_ok=True)
+        await self.db.delete(wad)
+        await self.db.commit()
+
+    async def schedule_reanalysis(self, wad_id: uuid.UUID) -> WadFile:
+        wad = await self.get(wad_id)
+        asyncio.create_task(reanalyze_wad_task(wad_id))
+        return wad
 
     async def all_maps(
         self,
@@ -133,7 +173,7 @@ class WadService:
 
     async def _maps_for_wad(self, wad: WadFile) -> list[WadMapOut]:
         repo = AnalysisRepository(self.db)
-        metadata = map_metadata_for_wad(wad.stored_path, wad.original_filename)
+        metadata = await asyncio.to_thread(map_metadata_for_wad, wad.stored_path, wad.original_filename)
         maps = []
         for map_name in wad.detected_maps or []:
             analysis = await repo.get_by_wad_and_map(wad.id, map_name)
@@ -162,3 +202,18 @@ class WadService:
                 )
             )
         return maps
+
+
+async def reanalyze_wad_task(wad_id: uuid.UUID) -> None:
+    async with SessionLocal() as db:
+        wad = await WadRepository(db).get_by_id(wad_id)
+        if wad is None:
+            return
+        analyses = await AnalysisRepository(db).list_by_wad(wad_id)
+        for analysis in analyses:
+            if analysis.map_overview_png_path:
+                Path(analysis.map_overview_png_path).unlink(missing_ok=True)
+            await db.delete(analysis)
+        await db.flush()
+        await AnalysisService(db).analyze_wad(wad)
+        await db.commit()

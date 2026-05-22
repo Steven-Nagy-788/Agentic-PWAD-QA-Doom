@@ -74,7 +74,7 @@ class CollectorService:
             agent_decision_id=agent_decision_id,
             event_type=event_type,
             damage_received=variables.get("damage_received"),
-            llm_input_summary=json.dumps(llm_input, default=str)[:12000],
+            llm_input_summary=_compact_llm_event_summary(tick, event_type, variables),
             llm_reasoning=decision.get("reasoning_summary"),
             action_taken=action_taken,
         )
@@ -210,3 +210,17 @@ def normalize_observed_issue(issue: Any) -> tuple[str, str]:
     defect_type = f"agent_observed_{slug}"[:64]
     title = f"Automated playthrough observed {category.replace('_', ' ')} issue"
     return defect_type, title[:255]
+
+
+def _compact_llm_event_summary(tick: int, event_type: str, variables: dict[str, Any]) -> str:
+    summary = {
+        "tick": tick,
+        "event_type": event_type,
+        "hp": variables.get("health"),
+        "armor": variables.get("armor"),
+        "kills": variables.get("kill_count"),
+        "items": variables.get("item_count"),
+        "secrets": variables.get("secret_count"),
+        "ammo_total": variables.get("ammo_total"),
+    }
+    return json.dumps(summary, separators=(",", ":"), default=str)[:200]

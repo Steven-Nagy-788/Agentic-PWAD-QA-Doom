@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Callable
 from uuid import UUID
 
 from sqlalchemy import select
@@ -18,7 +19,8 @@ class DefectService:
 
     async def detect_for_run(self, run: TestRun) -> None:
         await self._pwad_crash(run)
-        await self._difficulty_spawn_mismatch(run)
+        analysis = await self.db.get(StaticAnalysisResult, run.static_analysis_id) if run.static_analysis_id else None
+        await self._difficulty_spawn_mismatch(run, analysis)
         result = await self.db.execute(select(GameEvent).where(GameEvent.run_id == run.id).order_by(GameEvent.tick_number))
         events = list(result.scalars().all())
         if not events:
@@ -27,7 +29,7 @@ class DefectService:
         await self._ammo_starvation(run.id, events)
         await self._health_deficit(run.id, events)
         await self._softlock(run, events)
-        await self._unreachable_secrets(run, events)
+        await self._unreachable_secrets(run, events, analysis)
 
     async def _pwad_crash(self, run: TestRun) -> None:
         if run.failure_category != "pwad_crash" and run.outcome != "pwad_crash":
@@ -51,10 +53,7 @@ class DefectService:
             )
         )
 
-    async def _difficulty_spawn_mismatch(self, run: TestRun) -> None:
-        if run.static_analysis_id is None:
-            return
-        analysis = await self.db.get(StaticAnalysisResult, run.static_analysis_id)
+    async def _difficulty_spawn_mismatch(self, run: TestRun, analysis: StaticAnalysisResult | None) -> None:
         if analysis is None:
             return
         skill_summary = selected_skill_spawn_summary(analysis, run.difficulty_level)
@@ -114,52 +113,52 @@ class DefectService:
                 )
 
     async def _ammo_starvation(self, run_id: UUID, events: list[GameEvent]) -> None:
-        streak = []
-        for event in events:
-            if event.ammo_bullets + event.ammo_shells + event.ammo_rockets + event.ammo_cells == 0:
-                streak.append(event)
-            else:
-                streak = []
-            if len(streak) > 60:
-                first = streak[0]
-                await self.repo.create(
-                    Defect(
-                        run_id=run_id,
-                        severity=2,
-                        priority=2,
-                        defect_type="ammo_starvation",
-                        title="Ammo starvation",
-                        description="The automated playthrough had no ammo for more than 60 consecutive ticks.",
-                        detected_at_tick=first.tick_number,
-                        position_x=first.player_x,
-                        position_y=first.player_y,
-                    )
+        episodes = _streak_episodes(
+            events,
+            lambda event: event.ammo_bullets + event.ammo_shells + event.ammo_rockets + event.ammo_cells == 0,
+            minimum_length=61,
+        )
+        for episode in episodes:
+            first = episode[0]
+            await self.repo.create(
+                Defect(
+                    run_id=run_id,
+                    severity=2,
+                    priority=2,
+                    defect_type="ammo_starvation",
+                    fingerprint=f"ammo_starvation:{first.tick_number}",
+                    title="Ammo starvation",
+                    description="The automated playthrough had no ammo for more than 60 consecutive ticks.",
+                    detected_at_tick=first.tick_number,
+                    position_x=first.player_x,
+                    position_y=first.player_y,
+                    first_seen_tick=first.tick_number,
+                    last_seen_tick=episode[-1].tick_number,
+                    occurrence_count=len(episode),
                 )
-                return
+            )
 
     async def _health_deficit(self, run_id: UUID, events: list[GameEvent]) -> None:
-        streak = []
-        for event in events:
-            if event.health < 10:
-                streak.append(event)
-            else:
-                streak = []
-            if len(streak) > 30:
-                first = streak[0]
-                await self.repo.create(
-                    Defect(
-                        run_id=run_id,
-                        severity=3,
-                        priority=3,
-                        defect_type="health_deficit",
-                        title="Sustained health deficit",
-                        description="The automated playthrough remained below 10 HP for more than 30 ticks.",
-                        detected_at_tick=first.tick_number,
-                        position_x=first.player_x,
-                        position_y=first.player_y,
-                    )
+        episodes = _streak_episodes(events, lambda event: event.health < 10, minimum_length=31)
+        for episode in episodes:
+            first = episode[0]
+            await self.repo.create(
+                Defect(
+                    run_id=run_id,
+                    severity=3,
+                    priority=3,
+                    defect_type="health_deficit",
+                    fingerprint=f"health_deficit:{first.tick_number}",
+                    title="Sustained health deficit",
+                    description="The automated playthrough remained below 10 HP for more than 30 ticks.",
+                    detected_at_tick=first.tick_number,
+                    position_x=first.player_x,
+                    position_y=first.player_y,
+                    first_seen_tick=first.tick_number,
+                    last_seen_tick=episode[-1].tick_number,
+                    occurrence_count=len(episode),
                 )
-                return
+            )
 
     async def _softlock(self, run: TestRun, events: list[GameEvent]) -> None:
         stuck_events = [event for event in events if event.event_type == "stuck"]
@@ -207,19 +206,40 @@ class DefectService:
                 )
             )
 
-    async def _unreachable_secrets(self, run: TestRun, events: list[GameEvent]) -> None:
-        if run.static_analysis_id is None:
-            return
-        analysis = await self.db.get(StaticAnalysisResult, run.static_analysis_id)
+    async def _unreachable_secrets(
+        self,
+        run: TestRun,
+        events: list[GameEvent],
+        analysis: StaticAnalysisResult | None,
+    ) -> None:
         if analysis and analysis.secret_sector_count > 0 and max(event.secret_count for event in events) == 0:
             await self.repo.create(
-                    Defect(
-                        run_id=run.id,
-                        severity=3,
-                        priority=3,
-                        defect_type="unreachable_secret",
-                        title="Secrets not reached",
-                description="Static analysis found secret sectors, but the automated playthrough did not enter one.",
-                        detected_at_tick=events[-1].tick_number,
-                    )
+                Defect(
+                    run_id=run.id,
+                    severity=3,
+                    priority=3,
+                    defect_type="unreachable_secret",
+                    title="Secrets not reached",
+                    description="Static analysis found secret sectors, but the automated playthrough did not enter one.",
+                    detected_at_tick=events[-1].tick_number,
                 )
+            )
+
+
+def _streak_episodes(
+    events: list[GameEvent],
+    predicate: Callable[[GameEvent], bool],
+    minimum_length: int,
+) -> list[list[GameEvent]]:
+    episodes: list[list[GameEvent]] = []
+    streak: list[GameEvent] = []
+    for event in events:
+        if predicate(event):
+            streak.append(event)
+            continue
+        if len(streak) >= minimum_length:
+            episodes.append(streak)
+        streak = []
+    if len(streak) >= minimum_length:
+        episodes.append(streak)
+    return episodes

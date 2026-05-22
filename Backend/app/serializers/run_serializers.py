@@ -60,3 +60,20 @@ class RunOut(BaseModel):
     agent_quality_flags: dict[str, Any] | None = None
     report_pdf_path: str | None = None
     created_at: datetime
+
+
+class RunListOut(BaseModel):
+    total: int
+    items: list[RunOut]
+    offset: int
+
+
+class RunCompareOut(BaseModel):
+    run_a: UUID
+    run_b: UUID
+    same_map: bool
+    outcome_change: dict[str, str | None]
+    defects: dict[str, list[dict[str, Any]]]
+    kill_coverage_delta: dict[str, int | None]
+    movement_coverage_delta: dict[str, float]
+    resource_delta: dict[str, int | None]

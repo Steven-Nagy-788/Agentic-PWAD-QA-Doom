@@ -29,6 +29,7 @@ class TestRun(Base):
         Index("idx_test_runs_wad_file_id", "wad_file_id"),
         Index("idx_test_runs_status", "status"),
         Index("idx_test_runs_created_at", text("created_at DESC")),
+        Index("idx_test_runs_wad_map_created_at", "wad_file_id", "map_name", text("created_at DESC")),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -38,7 +39,7 @@ class TestRun(Base):
     )
     wad_file_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("wad_files.id", ondelete="RESTRICT"),
+        ForeignKey("wad_files.id", ondelete="CASCADE"),
         nullable=False,
     )
     static_analysis_id: Mapped[uuid.UUID | None] = mapped_column(

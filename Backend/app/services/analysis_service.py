@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import struct
 from collections import Counter
@@ -199,7 +200,7 @@ class AnalysisService:
         self.repo = AnalysisRepository(db)
 
     async def analyze_wad(self, wad_file: WadFile) -> list[StaticAnalysisResult]:
-        map_names = detect_map_names(wad_file.stored_path)
+        map_names = await asyncio.to_thread(detect_map_names, wad_file.stored_path)
         wad_file.detected_maps = map_names
         wad_file.iwad_required = detect_iwad_requirement(map_names)
         results = []
@@ -211,6 +212,16 @@ class AnalysisService:
         map_name = map_name.upper()
         existing = await self.repo.get_by_wad_and_map(wad_file.id, map_name)
 
+        analysis_fields = await asyncio.to_thread(self._build_analysis_fields, wad_file, map_name, existing)
+        analysis = StaticAnalysisResult(**analysis_fields)
+        return await self.repo.upsert(analysis)
+
+    def _build_analysis_fields(
+        self,
+        wad_file: WadFile,
+        map_name: str,
+        existing: StaticAnalysisResult | None,
+    ) -> dict[str, Any]:
         wad = WAD(wad_file.stored_path)
         if map_name not in wad.maps:
             raise ValueError(f"Map {map_name} not found in WAD")
@@ -240,7 +251,7 @@ class AnalysisService:
         estimated_difficulty = self._difficulty(enemy_count, hitscanner_percent, health_ratio, ammo_ratio)
         overview_path = self._render_overview(wad_file.id, map_name, editor)
 
-        analysis_fields = dict(
+        analysis_fields: dict[str, Any] = dict(
             wad_file_id=wad_file.id,
             map_name=map_name,
             thing_count_total=len(editor.things),
@@ -271,8 +282,7 @@ class AnalysisService:
         )
         if existing is not None:
             analysis_fields["id"] = existing.id
-        analysis = StaticAnalysisResult(**analysis_fields)
-        return await self.repo.upsert(analysis)
+        return analysis_fields
 
     def _enemy_breakdown(self, counts: Counter[int]) -> tuple[dict[str, Any], int, int]:
         breakdown: dict[str, Any] = {}

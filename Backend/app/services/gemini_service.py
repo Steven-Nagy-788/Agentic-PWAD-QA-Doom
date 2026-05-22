@@ -4,7 +4,7 @@ import asyncio
 import json
 import random
 import re
-from typing import Any
+from typing import Any, Callable
 
 from app.core.config import get_settings
 
@@ -21,6 +21,7 @@ ALLOWED_TOOLS = {
     "take_action",
 }
 DIRECTOR_TOOLS = {"get_situation_report", "set_objective", "set_strategy"}
+_gemini_sem: asyncio.Semaphore | None = None
 
 
 class GeminiService:
@@ -30,34 +31,21 @@ class GeminiService:
     async def probe_model(self) -> dict[str, str]:
         if not self.settings.gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY is not configured")
-        try:
-            from google import genai
-        except ImportError as exc:
-            raise RuntimeError("google-genai is not installed") from exc
-        client = genai.Client(api_key=self.settings.gemini_api_key)
-        response = client.models.generate_content(model=self.settings.llm_model, contents="Return ok.")
+        response = await self._generate_content("Return ok.")
         return {"model": self.settings.llm_model, "response": response.text or ""}
 
     async def decide(self, system_prompt: str, llm_input: dict[str, Any]) -> dict[str, Any]:
         if not self.settings.gemini_api_key:
             return self._fallback_decision(llm_input, "Gemini API key is not configured; using deterministic fallback.")
-        try:
-            response = await self._call_gemini(system_prompt, llm_input)
-            return self.parse_decision(response)
-        except Exception as exc:
-            exc_str = str(exc)
-            if "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str:
-                match = re.search(r"retryDelay['\"]:\s*['\"](\d+)s", exc_str)
-                wait = int(match.group(1)) if match else 15
-                wait += random.uniform(1, 3)
-                wait = min(wait, self.settings.gemini_retry_max_delay_seconds)
-                await asyncio.sleep(wait)
-                try:
-                    response = await self._call_gemini(system_prompt, llm_input)
-                    return self.parse_decision(response)
-                except Exception:
-                    pass
-            return self._fallback_decision(llm_input, "Model response failed or was rate limited; using deterministic fallback.")
+        return await self._call_with_retry(
+            system_prompt,
+            llm_input,
+            self.parse_decision,
+            lambda: self._fallback_decision(
+                llm_input,
+                "Model response failed or was rate limited; using deterministic fallback.",
+            ),
+        )
 
     async def decide_director(self, system_prompt: str, llm_input: dict[str, Any]) -> dict[str, Any]:
         if not self.settings.gemini_api_key:
@@ -65,37 +53,62 @@ class GeminiService:
                 llm_input,
                 "Gemini API key is not configured; using deterministic director fallback.",
             )
+        return await self._call_with_retry(
+            system_prompt,
+            llm_input,
+            self.parse_director_decision,
+            lambda: self._fallback_director_decision(
+                llm_input,
+                "Model response failed or was rate limited; using deterministic director fallback.",
+            ),
+        )
+
+    async def _call_with_retry(
+        self,
+        system_prompt: str,
+        llm_input: dict[str, Any],
+        parser: Callable[[str], dict[str, Any]],
+        fallback: Callable[[], dict[str, Any]],
+    ) -> dict[str, Any]:
         try:
             response = await self._call_gemini(system_prompt, llm_input)
-            return self.parse_director_decision(response)
+            return parser(response)
         except Exception as exc:
-            exc_str = str(exc)
-            if "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str:
-                match = re.search(r"retryDelay['\"]:\s*['\"](\d+)s", exc_str)
-                wait = int(match.group(1)) if match else 15
-                wait += random.uniform(1, 3)
-                wait = min(wait, self.settings.gemini_retry_max_delay_seconds)
+            if _is_rate_limit(exc):
+                wait = min(_retry_delay_seconds(exc), self.settings.gemini_retry_max_delay_seconds)
                 await asyncio.sleep(wait)
                 try:
                     response = await self._call_gemini(system_prompt, llm_input)
-                    return self.parse_director_decision(response)
+                    return parser(response)
                 except Exception:
                     pass
-            return self._fallback_director_decision(
-                llm_input,
-                "Model response failed or was rate limited; using deterministic director fallback.",
-            )
+            return fallback()
 
     async def _call_gemini(self, system_prompt: str, llm_input: dict) -> str:
-        def generate() -> str:
+        contents = f"{system_prompt}\n\nCURRENT STATE JSON:\n{json.dumps(llm_input, default=str)}"
+        response = await self._generate_content(contents)
+        return response.text or ""
+
+    async def _generate_content(self, contents: str) -> Any:
+        try:
             from google import genai
+        except ImportError as exc:
+            raise RuntimeError("google-genai is not installed") from exc
 
+        global _gemini_sem
+        if _gemini_sem is None:
+            _gemini_sem = asyncio.Semaphore(max(1, self.settings.gemini_max_concurrency))
+
+        async with _gemini_sem:
             client = genai.Client(api_key=self.settings.gemini_api_key)
-            contents = f"{system_prompt}\n\nCURRENT STATE JSON:\n{json.dumps(llm_input, default=str)}"
-            response = client.models.generate_content(model=self.settings.llm_model, contents=contents)
-            return response.text or ""
+            async_client = getattr(client, "aio", None)
+            if async_client is not None and hasattr(async_client, "models"):
+                return await async_client.models.generate_content(model=self.settings.llm_model, contents=contents)
 
-        return await asyncio.to_thread(generate)
+            def generate() -> Any:
+                return client.models.generate_content(model=self.settings.llm_model, contents=contents)
+
+            return await asyncio.to_thread(generate)
 
     def parse_decision(self, text: str) -> dict[str, Any]:
         cleaned = text.strip()
@@ -276,6 +289,18 @@ class GeminiService:
             "mcp_params": {},
             "observed_issue": None,
         }
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    exc_str = str(exc)
+    return "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str
+
+
+def _retry_delay_seconds(exc: Exception) -> float:
+    exc_str = str(exc)
+    match = re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)s", exc_str)
+    base = float(match.group(1)) if match else 15.0
+    return base + random.uniform(1, 10)
 
 
 def _number(value: Any, default: float) -> float:

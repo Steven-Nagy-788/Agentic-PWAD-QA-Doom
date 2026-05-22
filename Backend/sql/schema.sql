@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS static_analysis_results (
 
 CREATE TABLE IF NOT EXISTS test_runs (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    wad_file_id             UUID            NOT NULL REFERENCES wad_files(id) ON DELETE RESTRICT,
+    wad_file_id             UUID            NOT NULL REFERENCES wad_files(id) ON DELETE CASCADE,
     static_analysis_id      UUID            REFERENCES static_analysis_results(id) ON DELETE SET NULL,
     map_name                VARCHAR(16)     NOT NULL,
     difficulty_level        SMALLINT        NOT NULL DEFAULT 3 CHECK (difficulty_level BETWEEN 1 AND 5),
@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS test_runs (
 CREATE INDEX IF NOT EXISTS idx_test_runs_wad_file_id ON test_runs(wad_file_id);
 CREATE INDEX IF NOT EXISTS idx_test_runs_status ON test_runs(status);
 CREATE INDEX IF NOT EXISTS idx_test_runs_created_at ON test_runs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_test_runs_wad_map_created_at ON test_runs(wad_file_id, map_name, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS game_events (
     id                  BIGSERIAL       PRIMARY KEY,

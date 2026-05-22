@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -17,7 +18,8 @@ from app.repositories.run_repository import RunRepository
 from app.serializers.agent_decision_serializers import AgentDecisionOut
 from app.serializers.defect_serializers import DefectOut
 from app.serializers.game_event_serializers import PositionTrailOut, TraceEntryOut
-from app.serializers.run_serializers import RunCreate, RunOut
+from app.serializers.run_serializers import RunCompareOut, RunCreate, RunListOut, RunOut
+from app.services.run_compare_service import RunCompareService
 from app.services.run_service import RunService
 
 router = APIRouter(prefix="/runs", tags=["Runs"])
@@ -28,9 +30,37 @@ async def create_run(payload: RunCreate, db: AsyncSession = Depends(get_db)) -> 
     return await RunService(db).create_run(payload)
 
 
-@router.get("", response_model=list[RunOut])
-async def list_runs(limit: int = Query(default=100, ge=1, le=500), db: AsyncSession = Depends(get_db)) -> list[RunOut]:
-    return await RunRepository(db).list(limit=limit)
+@router.get("", response_model=RunListOut)
+async def list_runs(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    wad_file_id: UUID | None = None,
+    map_name: str | None = None,
+    outcome: str | None = None,
+    status: str | None = None,
+    difficulty_level: int | None = Query(default=None, ge=1, le=5),
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> RunListOut:
+    repo = RunRepository(db)
+    filters = {
+        "wad_file_id": wad_file_id,
+        "map_name": map_name,
+        "outcome": outcome,
+        "status": status,
+        "difficulty_level": difficulty_level,
+        "created_after": created_after,
+        "created_before": created_before,
+    }
+    total = await repo.count(**filters)
+    items = await repo.list(limit=limit, offset=offset, **filters)
+    return RunListOut(total=total, items=items, offset=offset)
+
+
+@router.get("/compare", response_model=RunCompareOut)
+async def compare_runs(run_a: UUID, run_b: UUID, db: AsyncSession = Depends(get_db)) -> RunCompareOut:
+    return await RunCompareService(db).compare(run_a, run_b)
 
 
 @router.get("/{run_id}", response_model=RunOut)

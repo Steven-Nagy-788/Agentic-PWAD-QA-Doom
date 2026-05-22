@@ -6,7 +6,7 @@ import binascii
 import contextlib
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -27,7 +27,7 @@ from app.services.analysis_service import AnalysisService, player_start_counts, 
 from app.services.collector_service import CollectorService, normalize_variables
 from app.services.defect_service import DefectService
 from app.services.gemini_service import GeminiService
-from app.services.mcp_client_service import McpDoomClient, normalize_mcp_state
+from app.services.mcp_client_service import McpDoomClient, McpStartupError, McpToolTimeoutError, normalize_mcp_state, probe_mcp_sse_url
 from app.services.prompt_service import render_agent_prompt
 from app.services.recording_service import RecordingService, jpeg_b64, png_bytes_to_frame
 from app.services.report_service import ReportService
@@ -35,6 +35,8 @@ from app.services.websocket_service import websocket_service
 
 
 RUN_TASKS: dict[UUID, asyncio.Task] = {}
+_ACTIVE_RUN_LOCK_ID = 42770001
+_ORPHANED_RUN_STALE_AFTER = timedelta(minutes=5)
 COMPOUND_TELEMETRY_TOOLS = {"explore", "move_to", "aim_and_shoot", "strafe_and_shoot", "retreat", "take_action"}
 OBJECT_ID_TOOLS = {"aim_and_shoot", "strafe_and_shoot", "move_to"}
 COMBAT_TOOLS = {"aim_and_shoot", "strafe_and_shoot"}
@@ -51,6 +53,7 @@ DIRECTOR_POLL_SECONDS = 1.25
 DIRECTOR_STUCK_POLL_THRESHOLD = 5
 DIRECTOR_STUCK_RECOVERY_LIMIT = 4
 PWAD_CRASH_CATEGORY = "pwad_crash"
+INFRASTRUCTURE_CATEGORY = "infrastructure"
 TAKE_ACTION_BUTTONS = {
     "TURN_LEFT_RIGHT_DELTA",
     "LOOK_UP_DOWN_DELTA",
@@ -98,22 +101,13 @@ class RunService:
         self.repo = RunRepository(db)
 
     async def create_run(self, data: RunCreate) -> TestRun:
-        await self.db.execute(text("SELECT pg_advisory_xact_lock(42770001)"))
-        await self._fail_orphaned_active_runs()
-        active_run = await self.repo.get_active()
-        if active_run is not None:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                f"Another test run is already active: {active_run.id}",
-            )
-
         wad = await WadRepository(self.db).get_by_id(data.wad_file_id)
         if wad is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "WAD not found")
         map_name = data.map_name.upper()
         if map_name not in (wad.detected_maps or []):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "map_name is not in wad_files.detected_maps")
-        start_counts = player_start_counts(wad.stored_path, map_name)
+        start_counts = await asyncio.to_thread(player_start_counts, wad.stored_path, map_name)
         if start_counts["player_one"] == 0 and start_counts["deathmatch"] == 0:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
@@ -126,6 +120,26 @@ class RunService:
             analysis = await AnalysisService(self.db).analyze_map(wad, map_name)
 
         max_ticks = max(1, min(data.max_ticks or self.settings.default_run_ticks, self.settings.max_run_ticks))
+        mcp_health = await probe_mcp_sse_url()
+        if not mcp_health.get("reachable"):
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                {
+                    "error": "mcp_unreachable",
+                    "message": "mcp-doom is not reachable. Start the MCP server before creating a run.",
+                    "health": mcp_health,
+                },
+            )
+
+        await self.db.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": _ACTIVE_RUN_LOCK_ID})
+        await self._fail_orphaned_active_runs()
+        active_run = await self.repo.get_active()
+        if active_run is not None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"Another test run is already active: {active_run.id}",
+            )
+
         run = await self.repo.create(
             TestRun(
                 wad_file_id=wad.id,
@@ -181,20 +195,53 @@ class RunService:
         task = RUN_TASKS.get(active.id)
         if task is not None and not task.done():
             return
-        if active.status == "pending" and active.started_at is None:
-            await self.repo.update(
-                active,
-                status="failed",
-                outcome="error",
-                error_message="Run task was orphaned before startup.",
-                completed_at=datetime.now(UTC),
-            )
-            return
-        if active.status == "running":
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                f"Run {active.id} is marked running. Cancel it before starting another test.",
-            )
+        await _mark_run_orphaned(self.repo, active, "Orphaned by missing in-process run task.")
+
+
+async def fail_orphaned_active_runs(db: AsyncSession, reason: str = "Orphaned by server restart") -> int:
+    repo = RunRepository(db)
+    result = await db.execute(
+        select(TestRun)
+        .where(TestRun.status.in_(("pending", "analyzing", "running")))
+        .order_by(TestRun.created_at)
+    )
+    now = datetime.now(UTC)
+    failed = 0
+    for run in result.scalars().all():
+        task = RUN_TASKS.get(run.id)
+        if task is not None and not task.done():
+            continue
+        started_at = _ensure_aware(run.started_at or run.created_at)
+        stale = started_at is None or started_at < now - _ORPHANED_RUN_STALE_AFTER
+        if task is None or stale:
+            await _mark_run_orphaned(repo, run, reason)
+            failed += 1
+    return failed
+
+
+async def _mark_run_orphaned(repo: RunRepository, run: TestRun, reason: str) -> None:
+    await repo.update(
+        run,
+        status="failed",
+        outcome="error",
+        error_message=reason,
+        failure_category=INFRASTRUCTURE_CATEGORY,
+        failure_stage="orphaned_run",
+        failure_summary=reason,
+        failure_diagnostics={
+            "run_task_present": run.id in RUN_TASKS,
+            "server_time": datetime.now(UTC).isoformat(),
+        },
+        completed_at=datetime.now(UTC),
+    )
+
+
+def _ensure_aware(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
 
 
 async def agent_run_task(run_id: UUID) -> None:
@@ -467,8 +514,15 @@ async def agent_run_task(run_id: UUID) -> None:
             outcome = "cancelled"
             await run_repo.update(run, status="cancelled")
         except Exception as exc:
-            failure_fields = _pwad_crash_fields(exc, runtime_stage)
-            outcome = PWAD_CRASH_CATEGORY
+            if isinstance(exc, McpStartupError):
+                failure_fields = _infrastructure_failure_fields(exc, "mcp_connect_retry_exhausted")
+                outcome = "error"
+            elif isinstance(exc, McpToolTimeoutError):
+                failure_fields = _infrastructure_failure_fields(exc, "mcp_tool_timeout")
+                outcome = "error"
+            else:
+                failure_fields = _pwad_crash_fields(exc, runtime_stage)
+                outcome = PWAD_CRASH_CATEGORY
             await run_repo.update(run, status="failed", outcome=outcome, error_message=str(exc), **failure_fields)
         finally:
             if mcp_client is not None:
@@ -553,6 +607,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         await db.commit()
             await websocket_service.broadcast(run.id, {"type": "state", "status": run.status, "tick": run.max_ticks})
             RUN_TASKS.pop(run.id, None)
+            await websocket_service.cleanup_run(run.id)
 
 
 async def _safe_context_tool(mcp: McpDoomClient, tool_name: str) -> dict[str, Any]:
@@ -1343,6 +1398,26 @@ def _pwad_crash_fields(exc: Exception, stage: str) -> dict[str, Any]:
     }
 
 
+def _infrastructure_failure_fields(exc: Exception, stage: str) -> dict[str, Any]:
+    raw_error = str(exc)
+    if stage == "mcp_connect_retry_exhausted":
+        summary = "mcp-doom could not be reached or start_game did not respond after retrying."
+    elif stage == "mcp_tool_timeout":
+        summary = "mcp-doom stopped responding during an MCP tool call."
+    else:
+        summary = "The test infrastructure failed before the PWAD result could be classified."
+    return {
+        "failure_category": INFRASTRUCTURE_CATEGORY,
+        "failure_stage": stage,
+        "failure_summary": summary,
+        "failure_diagnostics": {
+            "raw_error": raw_error,
+            "exception_type": exc.__class__.__name__,
+            "user_facing_outcome": "infrastructure_error",
+        },
+    }
+
+
 def _bounded_int(value: Any, default: int, lower: int = 0, upper: int | None = None) -> int:
     try:
         parsed = int(float(value))
@@ -1640,6 +1715,7 @@ async def _broadcast_state(
             "health": event.health,
             "armor": event.armor,
             "kills": event.kill_count,
+            "secrets": event.secret_count,
             "ammo": {
                 "bullets": event.ammo_bullets,
                 "shells": event.ammo_shells,

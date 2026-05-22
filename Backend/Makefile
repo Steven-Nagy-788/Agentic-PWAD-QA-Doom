@@ -1,4 +1,4 @@
-.PHONY: help venv install storage-dirs db-init db-schema run clean
+.PHONY: help venv install storage-dirs db-init db-schema db-migrate db-upgrade run clean
 
 PYTHON ?= python3
 VENV ?= .venv
@@ -12,6 +12,8 @@ help:
 	@echo "  make storage-dirs Create local storage directories"
 	@echo "  make db-init    Create/update local PostgreSQL database and schema"
 	@echo "  make db-schema  Apply sql/schema.sql to the configured database"
+	@echo "  make db-migrate Create a new Alembic migration from model changes"
+	@echo "  make db-upgrade Apply Alembic migrations"
 	@echo "  make run        Start the FastAPI development server"
 	@echo "  make clean      Remove Python cache files"
 
@@ -36,6 +38,12 @@ db-schema:
 		--dbname "$$POSTGRES_DB" \
 		--file sql/schema.sql \
 		--set ON_ERROR_STOP=1
+
+db-migrate:
+	$(VENV)/bin/alembic revision --autogenerate -m "$${MSG:-model changes}"
+
+db-upgrade:
+	$(VENV)/bin/alembic upgrade head
 
 run:
 	$(UVICORN) app.main:app --reload --host 0.0.0.0 --port 8000

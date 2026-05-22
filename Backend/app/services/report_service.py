@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import contextlib
 import json
 import math
 import re
@@ -12,6 +14,7 @@ from jinja2 import Template
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from weasyprint import HTML
+from PIL import Image, ImageDraw
 
 from app.core.config import get_settings
 from app.models import AgentDecision, AgentPositionTrail, Defect, GameEvent, StaticAnalysisResult, TestReport, TestRun
@@ -975,6 +978,98 @@ class ReportService:
             return None
         return {"tick": position.tick_number, "x": position.x, "y": position.y, "health": position.health}
 
+    @staticmethod
+    def _image_data_uri(path_value: str | None) -> str | None:
+        if not path_value:
+            return None
+        path = Path(path_value)
+        if not path.exists():
+            return None
+        with contextlib.suppress(Exception):
+            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+            return f"data:image/png;base64,{encoded}"
+        return None
+
+    @staticmethod
+    def _difficulty_rows(analysis: StaticAnalysisResult | None, selected_difficulty: int) -> list[dict[str, Any]]:
+        if analysis is None:
+            return []
+        summaries = getattr(analysis, "spawn_summary_by_skill", None) or {}
+        rows = []
+        for skill in range(1, 6):
+            row = summaries.get(str(skill)) or summaries.get(skill) if isinstance(summaries, dict) else None
+            if not isinstance(row, dict):
+                row = {
+                    "thing_count_enemies": getattr(analysis, "thing_count_enemies", 0),
+                    "thing_count_items": getattr(analysis, "thing_count_items", 0),
+                    "health_ratio": getattr(analysis, "health_ratio", 0),
+                    "ammo_ratio": getattr(analysis, "ammo_ratio", 0),
+                    "estimated_difficulty": getattr(analysis, "estimated_difficulty", "unknown"),
+                }
+            rows.append(
+                {
+                    "skill": skill,
+                    "tested": skill == selected_difficulty,
+                    "enemies": row.get("thing_count_enemies", 0),
+                    "items": row.get("thing_count_items", 0),
+                    "health_ratio": row.get("health_ratio", 0),
+                    "ammo_ratio": row.get("ammo_ratio", 0),
+                    "estimated_difficulty": row.get("estimated_difficulty", "unknown"),
+                    "warning": int(row.get("thing_count_enemies") or 0) == 0,
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _position_trail_overlay_data_uri(
+        map_path: str | None,
+        positions: list[AgentPositionTrail],
+        events: list[GameEvent],
+    ) -> str | None:
+        if not map_path or not positions:
+            return None
+        path = Path(map_path)
+        if not path.exists():
+            return None
+        try:
+            image = Image.open(path).convert("RGBA")
+            draw = ImageDraw.Draw(image, "RGBA")
+            all_points = [(position.x, position.y) for position in positions]
+            min_x, max_x, min_y, max_y = _point_bounds(all_points)
+
+            def project(x: float, y: float) -> tuple[int, int]:
+                width, height = image.size
+                px = int(20 + ((x - min_x) / max(max_x - min_x, 1)) * (width - 40))
+                py = int(height - 20 - ((y - min_y) / max(max_y - min_y, 1)) * (height - 40))
+                return px, py
+
+            for position in positions:
+                x, y = project(position.x, position.y)
+                draw.ellipse((x - 4, y - 4, x + 4, y + 4), fill=(80, 80, 80, 110))
+            for event in events:
+                if event.event_type == "normal":
+                    continue
+                x, y = project(event.player_x, event.player_y)
+                color = {
+                    "kill": (220, 38, 38, 220),
+                    "stuck": (245, 158, 11, 220),
+                    "death": (0, 0, 0, 230),
+                    "item_pickup": (22, 163, 74, 220),
+                }.get(event.event_type, (8, 145, 178, 220))
+                if event.event_type == "death":
+                    draw.line((x - 10, y - 10, x + 10, y + 10), fill=color, width=5)
+                    draw.line((x + 10, y - 10, x - 10, y + 10), fill=color, width=5)
+                else:
+                    draw.ellipse((x - 7, y - 7, x + 7, y + 7), fill=color, outline=(255, 255, 255, 230), width=2)
+            from io import BytesIO
+
+            buffer = BytesIO()
+            image.save(buffer, format="PNG")
+            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+            return f"data:image/png;base64,{encoded}"
+        except Exception:
+            return None
+
     def _render_pdf(self, run_id: UUID, report: dict[str, Any], payload: dict[str, Any]) -> Path:
         self.settings.report_storage_dir.mkdir(parents=True, exist_ok=True)
         path = self.settings.report_storage_dir / f"{run_id}.pdf"
@@ -989,6 +1084,23 @@ class ReportService:
         display_decisions = payload.get("decisions", [])[:40]
         defect_omitted_count = max(len(payload["defects"]) - len(display_defects), 0)
         display_outcome = ReportService._display_outcome(payload["run"], payload["defects"])
+        analysis = payload.get("analysis")
+        run = payload["run"]
+        map_thumbnail = ReportService._image_data_uri(getattr(analysis, "map_overview_png_path", None))
+        trail_overlay = ReportService._position_trail_overlay_data_uri(
+            getattr(analysis, "map_overview_png_path", None),
+            payload.get("position_trail") or [],
+            payload.get("events") or [],
+        )
+        metric_cards = [
+            {"label": "Duration", "value": getattr(run, "duration_seconds", None) or 0},
+            {"label": "Actions", "value": getattr(run, "total_actions_taken", None) or 0},
+            {"label": "Final HP", "value": getattr(run, "final_hp", None) or 0},
+            {"label": "Kills/Spawned", "value": f"{getattr(run, 'total_kills', None) or 0}/{payload['metrics'].get('spawned_enemy_count', 0)}"},
+            {"label": "Secrets", "value": getattr(run, "secrets_found", None) or 0},
+            {"label": "Defects", "value": len(payload["defects"])},
+        ]
+        difficulty_rows = ReportService._difficulty_rows(analysis, getattr(run, "difficulty_level", 3))
         event_rows = []
         for event in payload["notable_events"]:
             action = event.action_taken or {}
@@ -1029,6 +1141,16 @@ class ReportService:
                 ul { margin-top: 4px; padding-left: 16px; }
                 li { margin-bottom: 4px; }
                 .section { page-break-inside: avoid; }
+                .score-grid { display: grid; grid-template-columns: 220px 1fr; gap: 14px; margin-bottom: 12px; align-items: stretch; }
+                .map-thumb { width: 200px; height: 200px; object-fit: contain; background: #111827; border: 1px solid #cbd5e1; }
+                .score-card { border: 1px solid #cbd5e1; padding: 10px; background: #f8fafc; }
+                .outcome { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+                .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
+                .metric-card { border: 1px solid #d7dee8; background: white; padding: 6px; min-height: 38px; }
+                .metric-label { color: #52606d; font-size: 8px; text-transform: uppercase; }
+                .metric-value { font-size: 13px; font-weight: 700; }
+                .tested-row { background: #ecfeff; }
+                .trail-overlay { width: 360px; max-height: 260px; object-fit: contain; border: 1px solid #cbd5e1; background: #111827; }
                 .appendix { page: appendix; page-break-before: always; }
                 .appendix table { table-layout: fixed; font-size: 8.5px; page-break-inside: auto; }
                 .appendix td, .appendix th { padding: 4px; word-break: break-word; overflow-wrap: anywhere; }
@@ -1038,8 +1160,26 @@ class ReportService:
               </style>
             </head>
             <body>
-              <h1>Doom PWAD QA Report</h1>
-              <p class="muted">Run {{ run.id }} | Map {{ run.map_name }} | Outcome {{ display_outcome }}</p>
+              <div class="score-grid">
+                <div>
+                  {% if map_thumbnail %}
+                  <img class="map-thumb" src="{{ map_thumbnail }}" alt="Map overview">
+                  {% endif %}
+                </div>
+                <div class="score-card">
+                  <h1>Doom PWAD QA Report</h1>
+                  <div class="outcome">{{ display_outcome }}</div>
+                  <p class="muted">Run {{ run.id }} | Map {{ run.map_name }} | Difficulty {{ run.difficulty_level }}</p>
+                  <div class="metric-grid">
+                    {% for card in metric_cards %}
+                    <div class="metric-card">
+                      <div class="metric-label">{{ card.label }}</div>
+                      <div class="metric-value">{{ card.value }}</div>
+                    </div>
+                    {% endfor %}
+                  </div>
+                </div>
+              </div>
 
               {% if report.report_purpose or report.pass_fail_summary or report.problem_and_escalation %}
               <div class="section">
@@ -1112,6 +1252,23 @@ class ReportService:
                 <tr><td>Geometry</td><td>{{ analysis.linedef_count }} linedefs</td><td>{{ analysis.sector_count }} sectors</td><td>{{ analysis.map_width_units or "?" }} x {{ analysis.map_height_units or "?" }} units</td></tr>
               </table>
               <p>Selected-difficulty estimate: {{ metrics.selected_skill_summary.estimated_difficulty or "unknown" }}. Health ratio: {{ metrics.selected_skill_summary.health_ratio }}. Ammo ratio: {{ metrics.selected_skill_summary.ammo_ratio }}.</p>
+              {% if difficulty_rows %}
+              <h3>Difficulty Comparison</h3>
+              <table>
+                <tr><th>Skill</th><th>Enemies</th><th>Items</th><th>Health ratio</th><th>Ammo ratio</th><th>Estimate</th><th>Flag</th></tr>
+                {% for row in difficulty_rows %}
+                <tr class="{% if row.tested %}tested-row{% endif %}">
+                  <td>{{ row.skill }}{% if row.tested %} tested{% endif %}</td>
+                  <td>{{ row.enemies }}</td>
+                  <td>{{ row.items }}</td>
+                  <td>{{ row.health_ratio }}</td>
+                  <td>{{ row.ammo_ratio }}</td>
+                  <td>{{ row.estimated_difficulty }}</td>
+                  <td>{% if row.warning %}No enemies{% endif %}</td>
+                </tr>
+                {% endfor %}
+              </table>
+              {% endif %}
               {% else %}
               <p>Static analysis was unavailable for this run.</p>
               {% endif %}
@@ -1174,9 +1331,14 @@ class ReportService:
               {% endif %}
               {% endif %}
 
-              {% if event_rows or decisions %}
+              {% if event_rows or decisions or trail_overlay %}
               <div class="appendix">
               <h2>Evidence Appendix</h2>
+              {% if trail_overlay %}
+              <h3>Position Trail Overlay</h3>
+              <img class="trail-overlay" src="{{ trail_overlay }}" alt="Position trail overlay">
+              <p class="muted">Covered coarse areas: {{ metrics.position_cluster_count }}. Movement distance: {{ metrics.movement_distance_units }} units.</p>
+              {% endif %}
               {% if event_rows %}
               <h3>Notable Event Trace</h3>
               <table>
@@ -1222,4 +1384,24 @@ class ReportService:
             verdict_keys=verdict_keys,
             rationale_keys=rationale_keys,
             display_outcome=display_outcome,
+            map_thumbnail=map_thumbnail,
+            trail_overlay=trail_overlay,
+            metric_cards=metric_cards,
+            difficulty_rows=difficulty_rows,
         )
+
+
+def _point_bounds(points: list[tuple[float, float]]) -> tuple[float, float, float, float]:
+    xs = [point[0] for point in points] or [0.0]
+    ys = [point[1] for point in points] or [0.0]
+    min_x = min(xs)
+    max_x = max(xs)
+    min_y = min(ys)
+    max_y = max(ys)
+    if min_x == max_x:
+        min_x -= 1
+        max_x += 1
+    if min_y == max_y:
+        min_y -= 1
+        max_y += 1
+    return min_x, max_x, min_y, max_y
