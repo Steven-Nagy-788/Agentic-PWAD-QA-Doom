@@ -142,10 +142,21 @@ def _lockstep_state_snapshot(state: LockstepState) -> LockstepState:
         "blocked_decision_count": int(state.get("blocked_decision_count") or 0),
         "progress_score": int(state.get("progress_score") or 0),
         "quality_warnings": list(state.get("quality_warnings") or [])[-8:],
+        "hypotheses": list(state.get("hypotheses") or [])[-8:],
+        "attempted_interactions": list(state.get("attempted_interactions") or [])[-12:],
+        "explored_sectors": _sector_ids_from_state(state),
         "visited_cells_count": len(state.get("visited_cells") or {}),
         "total_map_cells_estimate": state.get("total_map_cells_estimate"),
         "new_cells_last_5_decisions": state.get("new_cells_last_5_decisions", 0),
         "unvisited_quadrants": _compute_unvisited_quadrants(state),
+    }
+
+
+def _structured_memory_snapshot(state: LockstepState) -> dict[str, Any]:
+    return {
+        "explored_sectors": _sector_ids_from_state(state),
+        "attempted_interactions": list(state.get("attempted_interactions") or [])[-12:],
+        "hypotheses": list(state.get("hypotheses") or [])[-8:],
     }
 
 
@@ -170,6 +181,9 @@ def _initial_lockstep_state() -> LockstepState:
         "meaningful_progress_events": 0,
         "quality_warnings": [],
         "visited_cells": {},
+        "visited_sector_ids": {},
+        "attempted_interactions": [],
+        "hypotheses": [],
         "new_cells_last_5_decisions": 0,
         "_new_cells_current": 0,
         "_new_cells_decision_counts": [],
@@ -187,6 +201,85 @@ def _track_visited_cell(state: dict[str, Any], lockstep_state: LockstepState) ->
     lockstep_state["visited_cells"] = dict(list(visited.items())[-200:])
     if was_new:
         lockstep_state["_new_cells_current"] = lockstep_state.get("_new_cells_current", 0) + 1
+
+
+def _track_explored_sectors(
+    state: dict[str, Any],
+    navigation_info: dict[str, Any],
+    lockstep_state: LockstepState,
+) -> None:
+    sector_ids = set(_sector_ids_from_state(lockstep_state))
+    for sector_id in _extract_sector_ids(state):
+        sector_ids.add(sector_id)
+    for sector_id in _extract_sector_ids(navigation_info):
+        sector_ids.add(sector_id)
+    visited = {str(sector_id): 1 for sector_id in sorted(sector_ids)[-200:]}
+    lockstep_state["visited_sector_ids"] = visited
+
+
+def _merge_hypotheses(lockstep_state: LockstepState, decision: dict[str, Any]) -> None:
+    raw = decision.get("hypotheses")
+    candidates: list[str] = []
+    if isinstance(raw, str):
+        candidates.append(raw)
+    elif isinstance(raw, list):
+        candidates.extend(item for item in raw if isinstance(item, str))
+    issue = decision.get("observed_issue")
+    if isinstance(issue, str):
+        candidates.append(issue)
+    elif isinstance(issue, dict) and isinstance(issue.get("description"), str):
+        candidates.append(issue["description"])
+    if not candidates:
+        return
+    existing = [str(item) for item in lockstep_state.get("hypotheses") or [] if item]
+    seen = {item.lower() for item in existing}
+    for candidate in candidates:
+        text = " ".join(candidate.split())[:180]
+        if not text or text.lower() in seen:
+            continue
+        existing.append(text)
+        seen.add(text.lower())
+    lockstep_state["hypotheses"] = existing[-12:]
+
+
+def _sector_ids_from_state(state: dict[str, Any]) -> list[int]:
+    visited = state.get("visited_sector_ids") or {}
+    if isinstance(visited, dict):
+        values = visited.keys()
+    elif isinstance(visited, list):
+        values = visited
+    else:
+        values = []
+    sector_ids = []
+    for value in values:
+        try:
+            sector_ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return sorted(set(sector_ids))
+
+
+def _extract_sector_ids(value: Any) -> list[int]:
+    if not isinstance(value, dict):
+        return []
+    candidates: list[Any] = []
+    for key in ("current_sector_id", "sector_id", "player_sector_id", "sector_index"):
+        if value.get(key) is not None:
+            candidates.append(value.get(key))
+    for key in ("visited_sector_ids", "explored_sectors"):
+        if isinstance(value.get(key), list):
+            candidates.extend(value[key])
+    variables = value.get("game_variables") if isinstance(value.get("game_variables"), dict) else {}
+    for key in ("current_sector_id", "sector_id", "player_sector_id", "sector_index"):
+        if variables.get(key) is not None:
+            candidates.append(variables.get(key))
+    sector_ids = []
+    for candidate in candidates:
+        try:
+            sector_ids.append(int(candidate))
+        except (TypeError, ValueError):
+            continue
+    return sector_ids
 
 
 def _finalize_lockstep_decision(lockstep_state: dict[str, Any]) -> None:

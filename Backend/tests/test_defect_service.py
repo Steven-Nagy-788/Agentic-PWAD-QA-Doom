@@ -70,7 +70,7 @@ def test_streak_episodes_detects_streak():
 def test_streak_episodes_gap_resets():
     below = [make_event(i, health=5) for i in range(40)]
     above = [make_event(50, health=100)]
-    more_below = [make_event(i, health=5) for i in range(51, 80)]
+    more_below = [make_event(i, health=5) for i in range(51, 81)]
     episodes = _streak_episodes(below + above + more_below, lambda e: e.health < 10, minimum_length=30)
     assert len(episodes) == 2
 

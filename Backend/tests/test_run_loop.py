@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -74,6 +75,24 @@ def _make_session(db):
     sess = AsyncMock()
     sess.__aenter__.return_value = db
     return sess
+
+
+def _empty_result():
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = []
+    return result
+
+
+def _setup_ws(mock_ws):
+    mock_ws.broadcast = AsyncMock()
+    mock_ws.cleanup_run = AsyncMock()
+    return mock_ws
+
+
+async def _update_run(run, **fields):
+    for key, value in fields.items():
+        setattr(run, key, value)
+    return run
 
 
 def _make_mcp(mock_mcp_cls, start_side_effect=None, state_data=None):
@@ -155,16 +174,18 @@ async def test_normal_completion():
     ):
         db = AsyncMock()
         db.get = AsyncMock()
-        db.execute = AsyncMock()
+        db.execute = AsyncMock(return_value=_empty_result())
         db.get.side_effect = lambda cls, id: {TestRun: run, StaticAnalysisResult: analysis}.get(cls)
 
         mock_session_local.return_value = _make_session(db)
+        _setup_ws(mock_ws)
 
         mock_wad_repo = AsyncMock()
         mock_wad_repo.get_by_id = AsyncMock(return_value=wad)
         mock_wad_repo_cls.return_value = mock_wad_repo
 
         mock_run_repo = AsyncMock()
+        mock_run_repo.update = AsyncMock(side_effect=_update_run)
         mock_run_repo_cls.return_value = mock_run_repo
 
         _make_mcp(mock_mcp_cls, state_data={"episode_finished": True, "game_variables": {"x": 0, "y": 0, "health": 100}})
@@ -217,16 +238,18 @@ async def test_pwad_crash():
     ):
         db = AsyncMock()
         db.get = AsyncMock()
-        db.execute = AsyncMock()
+        db.execute = AsyncMock(return_value=_empty_result())
         db.get.side_effect = lambda cls, id: {TestRun: run, StaticAnalysisResult: analysis}.get(cls)
 
         mock_session_local.return_value = _make_session(db)
+        _setup_ws(mock_ws)
 
         mock_wad_repo = AsyncMock()
         mock_wad_repo.get_by_id = AsyncMock(return_value=wad)
         mock_wad_repo_cls.return_value = mock_wad_repo
 
         mock_run_repo = AsyncMock()
+        mock_run_repo.update = AsyncMock(side_effect=_update_run)
         mock_run_repo_cls.return_value = mock_run_repo
 
         from app.services.mcp_client_service import McpStartupError
@@ -259,7 +282,20 @@ async def test_pwad_crash():
 
         await agent_run_task(run.id)
 
-        mock_run_repo.update.assert_any_call(run, status="failed", outcome="pwad_crash", error_message="Simulated PWAD crash")
+        mock_run_repo.update.assert_any_call(
+            run,
+            status="failed",
+            outcome="error",
+            error_message="Simulated PWAD crash",
+            failure_category="infrastructure",
+            failure_stage="mcp_connect_retry_exhausted",
+            failure_summary="mcp-doom could not be reached or start_game did not respond after retrying.",
+            failure_diagnostics={
+                "raw_error": "Simulated PWAD crash",
+                "exception_type": "McpStartupError",
+                "user_facing_outcome": "infrastructure_error",
+            },
+        )
         rec.finalize.assert_called_once()
 
 
@@ -267,24 +303,53 @@ async def test_pwad_crash():
 async def test_cancelled():
     run = _mock_run()
     run.status = "cancelled"
+    wad = _mock_wad()
+    analysis = _mock_analysis()
 
     with (
         patch("app.services.run_loop.SessionLocal") as mock_session_local,
+        patch("app.services.run_loop.McpDoomClient") as mock_mcp_cls,
         patch("app.services.run_loop.WadRepository") as mock_wad_repo_cls,
         patch("app.services.run_loop.RunRepository") as mock_run_repo_cls,
+        patch("app.services.run_loop.DefectService") as mock_defect_cls,
+        patch("app.services.run_loop.ReportService") as mock_report_cls,
+        patch("app.services.run_loop.get_behavior_profile") as mock_get_profile,
+        patch("app.services.run_loop.render_agent_prompt") as mock_render_prompt,
         patch("app.services.run_loop.RecordingService") as mock_rec_cls,
         patch("app.services.run_loop.websocket_service") as mock_ws,
         patch("app.services.run_loop.RUN_TASKS", {}),
     ):
         db = AsyncMock()
         db.get = AsyncMock()
-        db.execute = AsyncMock()
-        db.get.return_value = run
+        db.execute = AsyncMock(return_value=_empty_result())
+        db.get.side_effect = lambda cls, id: {TestRun: run, StaticAnalysisResult: analysis}.get(cls)
 
         mock_session_local.return_value = _make_session(db)
+        _setup_ws(mock_ws)
+
+        mock_wad_repo = AsyncMock()
+        mock_wad_repo.get_by_id = AsyncMock(return_value=wad)
+        mock_wad_repo_cls.return_value = mock_wad_repo
 
         mock_run_repo = AsyncMock()
+        mock_run_repo.update = AsyncMock(side_effect=_update_run)
         mock_run_repo_cls.return_value = mock_run_repo
+
+        _make_mcp(mock_mcp_cls, start_side_effect=asyncio.CancelledError())
+
+        mock_get_profile.return_value = MagicMock(
+            default_stride=3, combat_stride=1, stuck_stride=5,
+            throttle_delays={"combat": 0.5, "low_health": 1.0, "stuck": 2.0, "default": 1.5},
+        )
+        mock_render_prompt.return_value = "Test prompt."
+
+        mock_defect_svc = AsyncMock()
+        mock_defect_svc.detect_for_run = AsyncMock()
+        mock_defect_cls.return_value = mock_defect_svc
+
+        mock_report_svc = AsyncMock()
+        mock_report_svc.generate = AsyncMock()
+        mock_report_cls.return_value = mock_report_svc
 
         rec = AsyncMock()
         rec.write_frame = MagicMock()

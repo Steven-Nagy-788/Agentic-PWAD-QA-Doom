@@ -10,8 +10,11 @@ from app.services.run_utils import (
     _ensure_aware,
     _int_like,
     _json_safe,
+    _merge_hypotheses,
     _normalize_take_action_params,
+    _structured_memory_snapshot,
     _summary,
+    _track_explored_sectors,
     _unique_lockstep_tick,
 )
 
@@ -217,3 +220,32 @@ def test_take_action_filters_unknown_buttons() -> None:
     })
     assert "UNKNOWN_BUTTON" not in result["actions"]
     assert result["actions"]["MOVE_FORWARD_BACKWARD_DELTA"] == 10.0
+
+
+# ── structured in-run memory ─────────────────────────────────────────────────
+
+
+def test_structured_memory_tracks_sector_ids_from_navigation() -> None:
+    lockstep = {}
+    _track_explored_sectors({}, {"current_sector_id": 2, "visited_sector_ids": [1, "3"]}, lockstep)
+    memory = _structured_memory_snapshot(lockstep)
+    assert memory["explored_sectors"] == [1, 2, 3]
+
+
+def test_merge_hypotheses_deduplicates_and_limits() -> None:
+    lockstep = {"hypotheses": ["Starting area appears blocked"]}
+    _merge_hypotheses(
+        lockstep,
+        {
+            "hypotheses": [
+                "Starting area appears blocked",
+                "ClipBox pickup may be unreachable",
+            ],
+            "observed_issue": {"description": "Invisible collision near spawn"},
+        },
+    )
+    assert lockstep["hypotheses"] == [
+        "Starting area appears blocked",
+        "ClipBox pickup may be unreachable",
+        "Invisible collision near spawn",
+    ]

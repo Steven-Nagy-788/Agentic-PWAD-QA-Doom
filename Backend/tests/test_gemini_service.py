@@ -126,6 +126,13 @@ def test_parse_decision_observed_issue_wrong_type_becomes_none() -> None:
     assert result["observed_issue"] is None
 
 
+def test_parse_decision_hypotheses_are_structured_list() -> None:
+    result = GeminiService().parse_decision(
+        '{"mcp_tool": "explore", "hypotheses": [" Starting area blocked  ", "Starting area blocked", 3]}'
+    )
+    assert result["hypotheses"] == ["Starting area blocked"]
+
+
 def test_parse_decision_tool_is_mcp_tool_case_sensitive() -> None:
     result = GeminiService().parse_decision(
         '{"mcp_tool": "aim_and_shoot", "mcp_params": {"object_id": 3}, "reasoning_summary": "combat"}'

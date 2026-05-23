@@ -249,6 +249,7 @@ class GeminiService:
             "reasoning_summary": reasoning,
             "mcp_tool": tool,
             "mcp_params": params,
+            "hypotheses": _normalize_hypotheses(data.get("hypotheses")),
             "observed_issue": observed_issue,
         }
 
@@ -273,6 +274,7 @@ class GeminiService:
             "reasoning_summary": reasoning,
             "mcp_tool": tool,
             "mcp_params": params,
+            "hypotheses": _normalize_hypotheses(data.get("hypotheses")),
             "observed_issue": observed_issue,
         }
 
@@ -450,6 +452,24 @@ def _record_api_call() -> None:
     global _api_call_timestamps
     _api_call_timestamps.append(time.monotonic())
     _api_call_timestamps = [t for t in _api_call_timestamps if time.monotonic() - t < 60.0]
+
+
+def _normalize_hypotheses(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, list):
+        raw_items = [item for item in value if isinstance(item, str)]
+    else:
+        return []
+    hypotheses = []
+    seen = set()
+    for item in raw_items:
+        text = " ".join(item.split())[:180]
+        if not text or text.lower() in seen:
+            continue
+        hypotheses.append(text)
+        seen.add(text.lower())
+    return hypotheses[:8]
 
 
 def _is_rate_limit(exc: Exception) -> bool:

@@ -27,6 +27,8 @@ class NavigationMemory:
         self._keys_found: list[dict] = []  # {"name", "x", "y"}
         self._key_objects: dict[int, dict] = {}  # id -> {"name", "x", "y"}
         self._doors: list[dict] = []  # {"x", "y", "state"}
+        self._visited_sector_ids: set[int] = set()
+        self._current_sector_id: int | None = None
         self._last_x: float | None = None
         self._last_y: float | None = None
 
@@ -64,6 +66,9 @@ class NavigationMemory:
 
         # Door detection
         if sectors is not None:
+            self._current_sector_id = _sector_at_position(px, py, sectors)
+            if self._current_sector_id is not None:
+                self._visited_sector_ids.add(self._current_sector_id)
             self._update_doors(sectors)
 
     def _update_keys(self, px: float, py: float, objects: list[dict]) -> None:
@@ -190,4 +195,50 @@ class NavigationMemory:
             ],
             "nearby_doors": nearby_doors,
             "total_doors_found": len(self._doors),
+            "current_sector_id": self._current_sector_id,
+            "visited_sector_ids": sorted(self._visited_sector_ids),
+            "explored_sectors": sorted(self._visited_sector_ids),
         }
+
+
+def _sector_at_position(px: float, py: float, sectors: list[dict]) -> int | None:
+    for index, sector in enumerate(sectors):
+        sector_id = sector.get("id", index)
+        lines = sector.get("lines") or []
+        if _point_in_closed_lines(px, py, lines):
+            try:
+                return int(sector_id)
+            except (TypeError, ValueError):
+                return index
+    return None
+
+
+def _point_in_closed_lines(px: float, py: float, lines: list[dict]) -> bool:
+    if not lines:
+        return False
+    inside = False
+    for line in lines:
+        try:
+            x1 = float(line["x1"])
+            y1 = float(line["y1"])
+            x2 = float(line["x2"])
+            y2 = float(line["y2"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if _point_on_segment(px, py, x1, y1, x2, y2):
+            return True
+        crosses = (y1 > py) != (y2 > py)
+        if not crosses:
+            continue
+        x_intersection = (x2 - x1) * (py - y1) / (y2 - y1) + x1
+        if px < x_intersection:
+            inside = not inside
+    return inside
+
+
+def _point_on_segment(px: float, py: float, x1: float, y1: float, x2: float, y2: float) -> bool:
+    cross = (py - y1) * (x2 - x1) - (px - x1) * (y2 - y1)
+    if abs(cross) > 1e-6:
+        return False
+    dot = (px - x1) * (px - x2) + (py - y1) * (py - y2)
+    return dot <= 1e-6

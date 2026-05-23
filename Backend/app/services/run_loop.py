@@ -35,6 +35,7 @@ from app.services.run_guards import (
     _lockstep_stop_outcome,
     _update_lockstep_after_action,
 )
+from app.services.run_memory import RunMemoryService
 from app.services.run_telemetry import (
     _broadcast_state,
     _pop_telemetry_frames,
@@ -53,12 +54,15 @@ from app.services.run_utils import (
     _initial_lockstep_state,
     _json_safe,
     _lockstep_state_snapshot,
+    _merge_hypotheses,
     _mcp_action_summary,
     _normalize_mcp_params,
     _normalize_take_action_params,
     _pwad_crash_fields,
     _state_report_call,
+    _structured_memory_snapshot,
     _summary,
+    _track_explored_sectors,
     _track_visited_cell,
     _unique_lockstep_tick,
     get_behavior_profile,
@@ -85,8 +89,17 @@ async def agent_run_task(run_id: UUID) -> None:
             )
             await db.commit()
             return
+        cross_run_memory = await RunMemoryService(db).build_cross_run_memory(
+            run.wad_file_id,
+            run.map_name,
+            current_run_id=run.id,
+        )
         profile = get_behavior_profile(run)
-        prompt = render_agent_prompt(wad, analysis, run) + "\n\n" + profile.system_prompt_addendum
+        prompt = (
+            render_agent_prompt(wad, analysis, run, cross_run_memory=cross_run_memory["prompt"])
+            + "\n\n"
+            + profile.system_prompt_addendum
+        )
         collector = CollectorService(db)
         recorder = RecordingService(str(run.id), fps=max(15.0, get_settings().recording_fps))
         gemini = GeminiService()
@@ -129,6 +142,7 @@ async def agent_run_task(run_id: UUID) -> None:
                     recent = await _recent_trace(db, run.id)
                     threat_assessment = await _safe_context_tool(mcp, "get_threat_assessment")
                     navigation_info = await _safe_context_tool(mcp, "get_navigation_info")
+                    _track_explored_sectors(state, navigation_info, lockstep_state)
                     visited_count = len(lockstep_state.get("visited_cells") or {})
                     ticks_remaining = max(0, run.max_ticks - tick)
                     total_cells = lockstep_state.get("total_map_cells_estimate", 225) or 225
@@ -146,6 +160,8 @@ async def agent_run_task(run_id: UUID) -> None:
                         "threat_assessment": threat_assessment,
                         "navigation_info": navigation_info,
                         "recent_trace": recent,
+                        "structured_memory": _structured_memory_snapshot(lockstep_state),
+                        "cross_run_memory": cross_run_memory,
                         "lockstep_state": _lockstep_state_snapshot(lockstep_state),
                         "exploration_coverage": {
                             "visited_cells_count": visited_count,
@@ -219,6 +235,7 @@ async def agent_run_task(run_id: UUID) -> None:
                     llm_duration_ms = (time.monotonic() - llm_started) * 1000
                     token_usage = get_last_token_usage()
                     raw_decision = dict(decision)
+                    _merge_hypotheses(lockstep_state, raw_decision)
                     decision = _apply_lockstep_recovery(decision, state, navigation_info, lockstep_state)
                     decision = _guard_lockstep_decision(decision, state, lockstep_state, navigation_info)
                     guard_status = "kept"

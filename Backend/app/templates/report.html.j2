@@ -93,7 +93,7 @@
     <tr><td>Actions</td><td>{{ run.total_actions_taken }}</td><td>LLM calls</td><td>{{ run.total_llm_calls }}</td></tr>
     <tr><td>Final HP</td><td>{{ run.final_hp }}</td><td>Kills</td><td>{{ run.total_kills }}</td></tr>
     <tr><td>Position samples</td><td>{{ metrics.position_sample_count }}</td><td>Movement units</td><td>{{ metrics.movement_distance_units }}</td></tr>
-    <tr><td>Recording</td><td colspan="3">{% if metrics.recording_metadata.status == "ok" %}{{ run.id }} — available via API{% else %}Not produced{% endif %}</td></tr>
+    <tr><td>Recording</td><td colspan="3">{% if metrics.recording_metadata.get("quality_status") == "ok" %}{{ run.id }} — available via API{% else %}Not produced{% endif %}</td></tr>
   </table>
   {% endif %}
 

@@ -48,8 +48,8 @@ class Settings(BaseSettings):
     max_run_ticks: int = 35000
     default_run_ticks: int = 3000
     live_frame_fps: float = 10.0
-    recording_fps: float = 15.0
-    recording_telemetry_stride: int = 2
+    recording_fps: float = 30.0
+    recording_telemetry_stride: int = 1
     default_agent_behavior: str = "thorough"
     cors_origins: list[str] | str = "http://localhost:3000"
 

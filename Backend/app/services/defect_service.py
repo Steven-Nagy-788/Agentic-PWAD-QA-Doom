@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Defect, GameEvent, StaticAnalysisResult, TestRun
+from app.models import Defect, GameEvent, NotableEventScreenshot, StaticAnalysisResult, TestRun
 from app.repositories.defect_repository import DefectRepository
 from app.services.analysis_service import selected_skill_spawn_summary
 
@@ -30,6 +30,7 @@ class DefectService:
         await self._health_deficit(run.id, events)
         await self._softlock(run, events)
         await self._unreachable_secrets(run, events, analysis)
+        await self._link_screenshots_to_defects(run.id)
 
     async def _pwad_crash(self, run: TestRun) -> None:
         if run.failure_category != "pwad_crash" and run.outcome != "pwad_crash":
@@ -70,7 +71,7 @@ class DefectService:
             hidden_parts.append(f"{raw_enemies - spawned_enemies} of {raw_enemies} enemies")
         if spawned_items < raw_items:
             hidden_parts.append(f"{raw_items - spawned_items} of {raw_items} items")
-        severity = 2 if raw_enemies and spawned_enemies == 0 else 3
+        severity = 2 if raw_enemies and spawned_enemies < raw_enemies else 3
         await self.repo.create(
             Defect(
                 run_id=run.id,
@@ -224,6 +225,32 @@ class DefectService:
                     detected_at_tick=events[-1].tick_number,
                 )
             )
+
+    async def _link_screenshots_to_defects(self, run_id: UUID) -> None:
+        screenshot_result = await self.db.execute(
+            select(NotableEventScreenshot).where(NotableEventScreenshot.run_id == run_id)
+        )
+        screenshots: list[NotableEventScreenshot] = list(screenshot_result.scalars().all())
+        if not screenshots:
+            return
+        event_to_screenshot = {s.game_event_id: s.id for s in screenshots}
+        events_result = await self.db.execute(
+            select(GameEvent.id, GameEvent.tick_number).where(GameEvent.run_id == run_id)
+        )
+        tick_to_event: dict[int, int] = {}
+        for row in events_result:
+            tick_to_event[row.tick_number] = row.id
+        defects_result = await self.db.execute(
+            select(Defect).where(
+                Defect.run_id == run_id,
+                Defect.screenshot_id.is_(None),
+                Defect.detected_at_tick.isnot(None),
+            )
+        )
+        for defect in defects_result.scalars().all():
+            event_id = tick_to_event.get(defect.detected_at_tick)
+            if event_id is not None and event_id in event_to_screenshot:
+                defect.screenshot_id = event_to_screenshot[event_id]
 
 
 def _streak_episodes(

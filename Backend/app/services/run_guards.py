@@ -314,6 +314,7 @@ def _update_lockstep_after_action(
     signature_counts = dict(lockstep_state.get("action_signature_counts") or {})
     signature_counts[signature] = int(signature_counts.get(signature, 0)) + 1
     lockstep_state["action_signature_counts"] = dict(list(signature_counts.items())[-50:])
+    _record_attempted_interaction(tool, params, summary, lockstep_state)
 
     if tool == "explore" and stop_reason == "max_tics":
         lockstep_state["consecutive_explore_max_tics"] = int(lockstep_state.get("consecutive_explore_max_tics") or 0) + 1
@@ -353,7 +354,7 @@ def _update_lockstep_after_action(
             }
             lockstep_state["completed_object_ids"] = completed
             lockstep_state["blocked_decision_count"] = 0
-        elif stop_reason in {"stuck", "pickup_not_collected", "arrival_blocked", "target_lost", "max_tics"}:
+        elif stop_reason in {"stuck", "pickup_not_collected", "arrival_blocked", "target_lost", "max_tics", "enemy_nearby"}:
             failed = dict(lockstep_state.get("failed_object_ids") or {})
             key = str(object_id)
             failed[key] = int(failed.get(key, 0)) + 1
@@ -387,6 +388,48 @@ def _update_lockstep_after_action(
         lockstep_state["wasted_combat_count"] = 0
     if int(lockstep_state.get("wasted_combat_count") or 0) >= WASTED_COMBAT_ABORT_THRESHOLD:
         lockstep_state["no_progress_polls"] = STUCK_RUN_ABORT_THRESHOLD
+
+
+def _record_attempted_interaction(
+    tool: str,
+    params: dict[str, Any],
+    summary: dict[str, Any],
+    lockstep_state: LockstepState,
+) -> None:
+    stop_reason = str(summary.get("stop_reason") or "")
+    object_id = params.get("object_id")
+    attempt: dict[str, Any] = {
+        "type": tool,
+        "result": _interaction_result(tool, stop_reason),
+    }
+    if object_id is not None:
+        attempt["object_id"] = object_id
+    if stop_reason:
+        attempt["stop_reason"] = stop_reason
+    for source_key, target_key in (("target_name", "target_name"), ("target_type", "target_type")):
+        if summary.get(source_key) is not None:
+            attempt[target_key] = summary[source_key]
+    attempts = list(lockstep_state.get("attempted_interactions") or [])
+    attempts.append(attempt)
+    lockstep_state["attempted_interactions"] = attempts[-30:]
+
+
+def _interaction_result(tool: str, stop_reason: str) -> str:
+    if stop_reason in {"arrival_blocked", "stuck"}:
+        return "blocked_by_collision"
+    if stop_reason == "arrived":
+        return "reached"
+    if stop_reason == "target_not_visible":
+        return "target_not_visible"
+    if stop_reason == "out_of_ammo":
+        return "out_of_ammo"
+    if stop_reason in {"pickup_not_collected", "target_lost", "max_tics", "enemy_nearby"}:
+        return "unreachable_or_interrupted"
+    if stop_reason in {"target_killed", "shots_complete"}:
+        return "combat_executed"
+    if tool == "take_action" and stop_reason in {"", "tics_complete"}:
+        return "probe_executed"
+    return stop_reason or "executed"
 
 
 def _lockstep_should_stop_as_stuck(lockstep_state: LockstepState) -> bool:

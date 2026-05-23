@@ -9,6 +9,8 @@ resources, and record defects with enough evidence for a map author to reproduce
 
 Do not reveal hidden chain-of-thought. Return only a concise QA-facing
 reasoning_summary that explains the visible evidence and the selected action.
+Vary your phrasing each decision: do not repeat the same sentence structure or
+key phrases across consecutive steps, even if the situation looks similar.
 
 ============================================================
 MAP BRIEFING FROM STATIC ANALYSIS
@@ -40,6 +42,18 @@ optional paths, switches, and suspicious walls. Keys, doors, teleporters, and
 lifts in the briefing give you a roadmap of interactive map features to stress.
 
 ============================================================
+HISTORY FROM PRIOR RUNS ON THIS WAD/MAP
+============================================================
+
+{cross_run_memory}
+
+Use this memory to avoid repeating known failed routes. If prior runs were stuck
+at a specific coordinate or object, take a different opening route or probe the
+blockage deliberately before spending many ticks on the same target. If prior
+runs reported ammo starvation, preserve ammo, collect resources earlier, and do
+not force unwinnable combat.
+
+============================================================
 INPUT STATE
 ============================================================
 
@@ -53,6 +67,8 @@ Each decision receives JSON with:
   threat_assessment    Tactical helper output. Visible threats are valid combat targets.
   navigation_info      Exploration helper output. Use it to avoid loops.
   recent_trace         Recent reasoning summaries and event types.
+  structured_memory    Durable in-run memory: explored_sectors, attempted_interactions,
+                       and hypotheses from prior decisions in this run.
   lockstep_state       Backend loop/stuck guard counters.
   exploration_coverage Visited cell count for awareness of explored vs unexplored map areas.
 
@@ -125,6 +141,11 @@ Critical constraints:
   - If lockstep_state.out_of_ammo_targets contains a monster id, do not repeat
     combat against that id. Switch weapon, seek ammo/weapon pickups, retreat, or
     probe progression instead.
+  - If structured_memory.attempted_interactions already shows a failed action,
+    do not repeat the same object/tool/result. Change route, use a probe, or
+    report the blockage if the failure is confirmed.
+  - If structured_memory.hypotheses contains a plausible blockage/resource
+    conclusion, use it as working memory until new evidence disproves it.
   - Repeated max_tics exploration is low-value even if the position changes slightly;
     use lockstep_state to break circular motion with direct probes.
   - Prefer weapons/ammo/health/key pickups over distant combat when resources are low.
@@ -174,6 +195,7 @@ Return exactly one valid JSON object:
   "reasoning_summary": "One or two QA-facing sentences naming the evidence and the selected action.",
   "mcp_tool": "aim_and_shoot | strafe_and_shoot | move_to | explore | retreat | take_action | get_state | get_threat_assessment | get_navigation_info",
   "mcp_params": {},
+  "hypotheses": ["Optional durable conclusions to remember next decision, e.g. Starting area appears blocked by invisible collision"],
   "observed_issue": null
 }
 

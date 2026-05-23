@@ -21,7 +21,7 @@ class RecordingService:
         self.source_path = self.settings.recording_storage_dir / f"{run_id}.source.mp4"
         self.writer: cv2.VideoWriter | None = None
         self.frames_written = 0
-        self.min_frames = max(10, int(round(self.fps)))
+        self.min_frames = max(int(round(self.fps * 2)), int(round(self.fps)))
         self._last_frame: np.ndarray | None = None
         self.width: int | None = None
         self.height: int | None = None
@@ -87,7 +87,7 @@ class RecordingService:
 
     def finalize(self) -> Path | None:
         if self.writer is not None:
-            if self._last_frame is not None and 0 < self.frames_written < self.min_frames:
+            if self._should_pad_minimum_recording():
                 for _ in range(self.min_frames - self.frames_written):
                     self.writer.write(self._bgr(self._last_frame))
                     self.frames_written += 1
@@ -148,7 +148,11 @@ class RecordingService:
             warnings.append("recording_frame_count_high_for_game_ticks")
         if self.frames_written >= 10 and len(self._unique_frame_hashes) < max(3, int(self.frames_written * 0.05)):
             warnings.append("recording_has_too_few_unique_frames")
-        if self.frames_written < self.min_frames and outcome not in {"pwad_crash", "cancelled"}:
+        if (
+            self.frames_written < self.min_frames
+            and outcome not in {"pwad_crash", "cancelled"}
+            and self._should_warn_short_recording(expected_frames)
+        ):
             warnings.append("recording_shorter_than_minimum_frame_count")
         if path is not None and not self._video_has_frames(path):
             warnings.append("recording_file_has_no_decodable_frames")
@@ -211,6 +215,20 @@ class RecordingService:
         while self._next_frame_game_tick <= tick + 1e-9:
             self._next_frame_game_tick += interval
         return False
+
+    def _should_pad_minimum_recording(self) -> bool:
+        if self._last_frame is None or self.frames_written <= 0 or self.frames_written >= self.min_frames:
+            return False
+        if self._first_game_tick is None or self._last_game_tick is None:
+            return True
+        advanced_ticks = max(0, self._last_game_tick - self._first_game_tick)
+        expected_frames = int((advanced_ticks / 35) * self.fps) if advanced_ticks > 0 else 0
+        return self.frames_written < max(10, int(expected_frames * 0.5))
+
+    def _should_warn_short_recording(self, expected_frames: int) -> bool:
+        if self._first_game_tick is None or self._last_game_tick is None:
+            return True
+        return self.frames_written < max(10, int(expected_frames * 0.5))
 
     @staticmethod
     def _frame_hash(frame: np.ndarray) -> str:

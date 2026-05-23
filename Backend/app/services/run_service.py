@@ -37,6 +37,7 @@ from app.services.run_constants import (
     _ACTIVE_RUN_LOCK_ID,
 )
 from app.services.run_loop import agent_run_task
+from app.services.run_memory import RunMemoryService
 from app.services.run_utils import (
     _bounded_float,
     _bounded_int,
@@ -94,6 +95,12 @@ class RunService:
                 f"Another test run is already active: {active_run.id}",
             )
 
+        behavior_profile = await RunMemoryService(self.db).recommend_behavior_profile(
+            wad.id,
+            map_name,
+            data.behavior_profile,
+            self.settings.default_agent_behavior,
+        )
         run = await self.repo.create(
             TestRun(
                 wad_file_id=wad.id,
@@ -103,7 +110,7 @@ class RunService:
                 iwad_used=wad.iwad_required,
                 llm_model=self.settings.llm_model,
                 max_ticks=max_ticks,
-                behavior_profile=data.behavior_profile or self.settings.default_agent_behavior,
+                behavior_profile=behavior_profile,
                 status="pending",
             )
         )

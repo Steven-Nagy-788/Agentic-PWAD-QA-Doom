@@ -8,6 +8,7 @@ from app.services.run_guards import (
     _lockstep_stop_outcome,
     _nearest_available_pickup,
     _turn_delta_for_direction,
+    _update_lockstep_after_action,
 )
 
 
@@ -215,3 +216,33 @@ def test_stop_outcome_passthrough_valid() -> None:
 
 def test_stop_outcome_invalid_falls_back_to_stuck() -> None:
     assert _lockstep_stop_outcome({"stop_outcome": "map_completed"}) == "stuck"
+
+
+# ── structured attempted interactions ────────────────────────────────────────
+
+
+def test_update_lockstep_records_attempted_interaction_result() -> None:
+    lockstep = {}
+    _update_lockstep_after_action(
+        {"mcp_tool": "move_to", "mcp_params": {"object_id": 35}},
+        {
+            "tool": "move_to",
+            "input": {"object_id": 35},
+            "output": {
+                "action_summary": {
+                    "stop_reason": "arrival_blocked",
+                    "target_name": "ClipBox",
+                    "target_type": "ammo",
+                }
+            },
+        },
+        lockstep,
+    )
+    assert lockstep["attempted_interactions"][-1] == {
+        "type": "move_to",
+        "result": "blocked_by_collision",
+        "object_id": 35,
+        "stop_reason": "arrival_blocked",
+        "target_name": "ClipBox",
+        "target_type": "ammo",
+    }

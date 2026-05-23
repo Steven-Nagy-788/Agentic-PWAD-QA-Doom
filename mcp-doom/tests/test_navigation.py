@@ -134,6 +134,40 @@ def test_nav_memory_door_detection():
     assert len(summary["nearby_doors"]) == 1
 
 
+def test_nav_memory_tracks_visited_sector_ids():
+    nav = NavigationMemory()
+    sectors = [
+        {
+            "id": 7,
+            "floor_height": 0,
+            "ceiling_height": 128,
+            "lines": [
+                {"x1": 0, "y1": 0, "x2": 128, "y2": 0},
+                {"x1": 128, "y1": 0, "x2": 128, "y2": 128},
+                {"x1": 128, "y1": 128, "x2": 0, "y2": 128},
+                {"x1": 0, "y1": 128, "x2": 0, "y2": 0},
+            ],
+        },
+        {
+            "id": 9,
+            "floor_height": 0,
+            "ceiling_height": 128,
+            "lines": [
+                {"x1": 128, "y1": 0, "x2": 256, "y2": 0},
+                {"x1": 256, "y1": 0, "x2": 256, "y2": 128},
+                {"x1": 256, "y1": 128, "x2": 128, "y2": 128},
+                {"x1": 128, "y1": 128, "x2": 128, "y2": 0},
+            ],
+        },
+    ]
+    nav.update(64, 64, 0, sectors=sectors)
+    nav.update(192, 64, 0, sectors=sectors)
+    summary = nav.get_exploration_summary(192, 64, 0)
+    assert summary["current_sector_id"] == 9
+    assert summary["visited_sector_ids"] == [7, 9]
+    assert summary["explored_sectors"] == [7, 9]
+
+
 def test_nav_memory_door_dedup():
     nav = NavigationMemory()
     door1 = {

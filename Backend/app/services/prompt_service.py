@@ -14,7 +14,12 @@ def _sanitize_prompt_value(value: Any) -> str:
     return text.replace("{", "(").replace("}", ")")
 
 
-def render_agent_prompt(wad: WadFile, analysis: StaticAnalysisResult, run: TestRun) -> str:
+def render_agent_prompt(
+    wad: WadFile,
+    analysis: StaticAnalysisResult,
+    run: TestRun,
+    cross_run_memory: str | None = None,
+) -> str:
     template = (BASE_DIR / "app" / "prompts" / "agent_system_prompt.md").read_text()
     skill_summary = selected_skill_spawn_summary(analysis, run.difficulty_level)
     spawned_enemies = int(skill_summary.get("thing_count_enemies", analysis.thing_count_enemies) or 0)
@@ -59,6 +64,7 @@ def render_agent_prompt(wad: WadFile, analysis: StaticAnalysisResult, run: TestR
         "key_requirements": key_summary,
         "teleporter_count": map_features.get("teleporter_count", "unknown"),
         "lift_count": map_features.get("lift_count", "unknown"),
+        "cross_run_memory": cross_run_memory or "No prior runs exist for this WAD/map.",
     }
     for key, value in values.items():
         template = template.replace("{" + key + "}", _sanitize_prompt_value(value))

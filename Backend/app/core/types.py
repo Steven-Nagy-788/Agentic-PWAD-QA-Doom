@@ -23,6 +23,9 @@ class LockstepState(TypedDict, total=False):
     meaningful_progress_events: int
     quality_warnings: list[str]
     visited_cells: dict[str, int]
+    visited_sector_ids: dict[str, int]
+    attempted_interactions: list[dict]
+    hypotheses: list[str]
     new_cells_last_5_decisions: int
     _new_cells_current: int
     _new_cells_decision_counts: list[int]
@@ -40,6 +43,7 @@ class LlmInput(TypedDict, total=False):
     threat_assessment: dict
     navigation_info: dict
     recent_trace: list[dict]
+    structured_memory: dict
     lockstep_state: LockstepState
     exploration_coverage: ExplorationCoverage
     objects: list[dict]
