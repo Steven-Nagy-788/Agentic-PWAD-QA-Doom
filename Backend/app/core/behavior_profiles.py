@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 
-BehaviorProfileName = Literal["speedrunner", "safety", "exploit_hunter"]
+BehaviorProfileName = Literal["thorough", "fast", "exploit_focused"]
 
 
 @dataclass
@@ -19,37 +19,15 @@ class BehaviorProfile:
     allowlist_overrides: list[str] | None = None
 
 
-# ── Speedrunner ──────────────────────────────────────────────
-# Focus: reach the exit as fast as possible, minimal exploration
-SPEEDRUNNER = BehaviorProfile(
-    name="speedrunner",
-    description="Moves fast toward the exit. Skips non-essential rooms. High stride at all times.",
-    system_prompt_addendum=(
-        "You are a SPEEDRUNNER. Your goal is to reach the exit as fast as possible. "
-        "Focus on forward movement, ignore side rooms unless blocked. "
-        "Call 'check_position' every 3-4 ticks instead of every tick. "
-        "Report any doors, lifts, or teleporters that block your path as defects. "
-        "Do NOT backtrack or explore side areas."
-    ),
-    default_stride=5,
-    combat_stride=2,
-    stuck_stride=10,
-    throttle_delays={
-        "move": 0.1,
-        "turn": 0.1,
-        "use": 0.3,
-        "check_position": 0.8,
-    },
-)
-
-# ── Safety ───────────────────────────────────────────────────
-# Focus: thorough testing, slow and careful, report every anomaly
-SAFETY = BehaviorProfile(
-    name="safety",
+# ── Thorough ──────────────────────────────────────────────
+# Focus: methodical, every room, every corner, maximum coverage
+THOROUGH = BehaviorProfile(
+    name="thorough",
     description="Slow, methodical exploration. Checks every room, every corner. Maximum coverage.",
     system_prompt_addendum=(
-        "You are a SAFETY inspector. Your goal is to thoroughly test every room, corridor, "
-        "and interactable element in the map. Move slowly, check your position after every step. "
+        "You are a QA tester. Your primary goal is coverage. "
+        "Move slowly and check every room, corridor, and interactable element. "
+        "After each move, verify you can see new geometry. "
         "If you find a door, try opening it. If you find a lift, step on it. "
         "Look for HOM effects, misaligned textures, missing geometry, and softlocks. "
         "Report every anomaly you find with precise position coordinates."
@@ -65,14 +43,39 @@ SAFETY = BehaviorProfile(
     },
 )
 
-# ── Exploit Hunter ───────────────────────────────────────────
-# Focus: find crash bugs, softlocks, out-of-bounds, and broken mechanics
-EXPLOIT_HUNTER = BehaviorProfile(
-    name="exploit_hunter",
+# ── Fast ──────────────────────────────────────────────
+# Focus: cover ground quickly, prioritise breadth over depth
+FAST = BehaviorProfile(
+    name="fast",
+    description="Covers ground quickly. Prioritises breadth over exhaustive single-room inspection.",
+    system_prompt_addendum=(
+        "You are a QA tester. Your primary goal is coverage. "
+        "Move briskly through accessible areas to cover as much of the map as possible. "
+        "Engage visible enemies, collect visible pickups, and probe doors/switches as you pass. "
+        "Do not spend excessive ticks in a single room — if nothing blocks progress, move on. "
+        "Report any doors, lifts, or teleporters that block your path as defects. "
+        "Prioritise covering new cells over re-examining areas you have already seen."
+    ),
+    default_stride=5,
+    combat_stride=2,
+    stuck_stride=10,
+    throttle_delays={
+        "move": 0.1,
+        "turn": 0.1,
+        "use": 0.3,
+        "check_position": 0.8,
+    },
+)
+
+# ── Exploit-Focused ───────────────────────────────────
+# Focus: find crash bugs, softlocks, out-of-bounds, broken mechanics
+EXPLOIT_FOCUSED = BehaviorProfile(
+    name="exploit_focused",
     description="Aggressively tests boundaries. Tries to break the map. Jumps, wall-hugs, spam-uses.",
     system_prompt_addendum=(
-        "You are an EXPLOIT HUNTER. Your goal is to crash, break, or softlock the map. "
-        "Try these techniques: walk into walls, spam 'use' on lines repeatedly, "
+        "You are a QA tester. Your primary goal is coverage. "
+        "Stress-test every interactable you find. Try these techniques: "
+        "walk into walls, spam 'use' on lines repeatedly, "
         "try to walk off ledges, hug walls and turn, interact with everything multiple times. "
         "Report crashes, freezes, stuck states, visual glitches, and out-of-bounds positions. "
         "Be aggressive — if something works once, do it five more times to check for instability."
@@ -89,9 +92,9 @@ EXPLOIT_HUNTER = BehaviorProfile(
 )
 
 PROFILES: dict[BehaviorProfileName, BehaviorProfile] = {
-    "speedrunner": SPEEDRUNNER,
-    "safety": SAFETY,
-    "exploit_hunter": EXPLOIT_HUNTER,
+    "thorough": THOROUGH,
+    "fast": FAST,
+    "exploit_focused": EXPLOIT_FOCUSED,
 }
 
 

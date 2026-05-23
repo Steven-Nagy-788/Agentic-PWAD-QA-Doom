@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     live_frame_fps: float = 10.0
     recording_fps: float = 15.0
     recording_telemetry_stride: int = 2
-    default_agent_behavior: str = "safety"
+    default_agent_behavior: str = "thorough"
     cors_origins: list[str] | str = "http://localhost:3000"
 
     @field_validator("debug", mode="before")

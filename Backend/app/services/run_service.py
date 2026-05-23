@@ -34,6 +34,7 @@ from app.services.run_constants import (
     DIRECTOR_STUCK_RECOVERY_LIMIT,
     PWAD_CRASH_CATEGORY,
     RUN_TASKS,
+    _ACTIVE_RUN_LOCK_ID,
 )
 from app.services.run_loop import agent_run_task
 from app.services.run_utils import (
@@ -67,9 +68,10 @@ class RunService:
                 "QA runs need a start position that can be normalized for single-player.",
             )
 
-        analysis = await AnalysisRepository(self.db).get_by_wad_and_map(wad.id, map_name)
-        if analysis is None:
-            analysis = await AnalysisService(self.db).analyze_map(wad, map_name)
+        async with SessionLocal() as analysis_db:
+            analysis = await AnalysisRepository(analysis_db).get_by_wad_and_map(wad.id, map_name)
+            if analysis is None:
+                analysis = await AnalysisService(analysis_db).analyze_map(wad, map_name)
 
         max_ticks = max(1, min(data.max_ticks or self.settings.default_run_ticks, self.settings.max_run_ticks))
         mcp_health = await probe_mcp_sse_url()
@@ -83,7 +85,7 @@ class RunService:
                 },
             )
 
-        await self.db.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": 42770001})
+        await self.db.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": _ACTIVE_RUN_LOCK_ID})
         await self._fail_orphaned_active_runs()
         active_run = await self.repo.get_active()
         if active_run is not None:

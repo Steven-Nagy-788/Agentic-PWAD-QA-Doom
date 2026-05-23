@@ -20,7 +20,7 @@ depends_on = None
 def upgrade() -> None:
     op.add_column(
         "test_runs",
-        sa.Column("behavior_profile", sa.String(32), server_default="safety", nullable=True),
+        sa.Column("behavior_profile", sa.String(32), server_default="thorough", nullable=True),
     )
 
 

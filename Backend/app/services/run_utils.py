@@ -13,11 +13,19 @@ from app.services.mcp_client_service import normalize_mcp_state
 from app.services.run_constants import INFRASTRUCTURE_CATEGORY, PWAD_CRASH_CATEGORY
 
 
+_PROFILE_ALIASES: dict[str, str] = {
+    "speedrunner": "fast",
+    "safety": "thorough",
+    "exploit_hunter": "exploit_focused",
+}
+
+
 def get_behavior_profile(run: Any | None):
     from app.core.behavior_profiles import get_profile
     if run and getattr(run, "behavior_profile", None):
+        name = _PROFILE_ALIASES.get(run.behavior_profile, run.behavior_profile)
         try:
-            return get_profile(run.behavior_profile)
+            return get_profile(name)
         except KeyError:
             pass
     from app.core.config import settings as _settings

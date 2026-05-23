@@ -130,8 +130,18 @@ async def agent_run_task(run_id: UUID) -> None:
                     threat_assessment = await _safe_context_tool(mcp, "get_threat_assessment")
                     navigation_info = await _safe_context_tool(mcp, "get_navigation_info")
                     visited_count = len(lockstep_state.get("visited_cells") or {})
+                    ticks_remaining = max(0, run.max_ticks - tick)
+                    total_cells = lockstep_state.get("total_map_cells_estimate", 225) or 225
+                    coverage_percent = round(visited_count / max(total_cells, 1) * 100, 1)
+                    coverage_warning = None
+                    if coverage_percent < 20 and ticks_remaining < run.max_ticks * 0.5:
+                        coverage_warning = (
+                            f"WARNING: Coverage is {coverage_percent}% with {ticks_remaining} ticks remaining. "
+                            "Prioritize exploration over combat immediately."
+                        )
                     llm_input = {
                         "tick": tick,
+                        "ticks_remaining": ticks_remaining,
                         **_compact_state_for_llm(state),
                         "threat_assessment": threat_assessment,
                         "navigation_info": navigation_info,
@@ -139,6 +149,8 @@ async def agent_run_task(run_id: UUID) -> None:
                         "lockstep_state": _lockstep_state_snapshot(lockstep_state),
                         "exploration_coverage": {
                             "visited_cells_count": visited_count,
+                            "coverage_percent": coverage_percent,
+                            "coverage_warning": coverage_warning,
                         },
                     }
 

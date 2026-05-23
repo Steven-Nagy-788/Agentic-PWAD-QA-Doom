@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.repositories.report_repository import ReportRepository
 from app.repositories.run_repository import RunRepository
@@ -47,7 +48,7 @@ async def get_report_status(run_id: UUID, db: AsyncSession = Depends(get_db)) ->
             and (datetime.now(UTC) - run.completed_at).total_seconds() < 120
         )
         return ReportStatusOut(status="generating" if (not terminal or recently_completed) else "missing")
-    pdf_available = bool(report.pdf_path and Path(report.pdf_path).exists())
+    pdf_available = bool(report.pdf_path and Path(get_settings().report_storage_dir.parent, report.pdf_path).exists())
     status_value = report.generation_status
     if status_value == "complete" and not pdf_available:
         status_value = "missing"
@@ -82,7 +83,7 @@ async def get_report_pdf(run_id: UUID, db: AsyncSession = Depends(get_db)) -> Fi
         except Exception as exc:
             await db.rollback()
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Report PDF generation failed: {exc}") from exc
-    path = Path(report.pdf_path)
+    path = Path(get_settings().report_storage_dir.parent, report.pdf_path)
     if not path.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Report PDF file is missing")
     return FileResponse(path, media_type="application/pdf")

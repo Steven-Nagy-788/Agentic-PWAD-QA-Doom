@@ -54,7 +54,7 @@ class TestRun(Base):
         nullable=False,
         server_default=text("'gemini-2.5-flash'"),
     )
-    behavior_profile: Mapped[str | None] = mapped_column(String(32), default="safety", server_default=text("'safety'"))
+    behavior_profile: Mapped[str | None] = mapped_column(String(32), default="thorough", server_default=text("'thorough'"))
     max_ticks: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("3000"))
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'pending'"))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

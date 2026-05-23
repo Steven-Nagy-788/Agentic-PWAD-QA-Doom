@@ -279,6 +279,7 @@ class GeminiService:
     def _fallback_decision(self, llm_input: dict[str, Any], reason: str) -> dict[str, Any]:
         objects = [obj for obj in llm_input.get("objects", []) if isinstance(obj, dict)]
         lockstep_state = llm_input.get("lockstep_state") if isinstance(llm_input.get("lockstep_state"), dict) else {}
+        navigation_info = llm_input.get("navigation_info") if isinstance(llm_input.get("navigation_info"), dict) else {}
         completed_object_ids = {str(key) for key in (lockstep_state.get("completed_object_ids") or {})}
         failed_object_ids = {
             str(key)
@@ -336,10 +337,28 @@ class GeminiService:
                 "observed_issue": None,
             }
 
+        unexplored_direction = navigation_info.get("unexplored_direction") if isinstance(navigation_info, dict) else None
+        if unexplored_direction:
+            return {
+                "reasoning_summary": f"{reason} Navigation info indicates unexplored area to the {unexplored_direction}, exploring toward it.",
+                "mcp_tool": "explore",
+                "mcp_params": {"max_tics": 80, "stop_on_enemy": True, "stop_on_item": True},
+                "observed_issue": None,
+            }
+
+        unvisited_quadrants = int(lockstep_state.get("unvisited_quadrants") or 0)
+        if unvisited_quadrants > 0:
+            return {
+                "reasoning_summary": f"{reason} {unvisited_quadrants} quadrant(s) remain unexplored; turning to probe new directions.",
+                "mcp_tool": "take_action",
+                "mcp_params": {"actions": {"TURN_LEFT_RIGHT_DELTA": 90}, "tics": 3},
+                "observed_issue": None,
+            }
+
         return {
-            "reasoning_summary": f"{reason} No visible combat or pickup target is available, so a short bounded exploration step starts.",
-            "mcp_tool": "explore",
-            "mcp_params": {"max_tics": 80, "stop_on_enemy": True, "stop_on_item": True},
+            "reasoning_summary": f"{reason} No targets or navigation cues available, retreating to reassess from a safer position.",
+            "mcp_tool": "retreat",
+            "mcp_params": {"tics": 35},
             "observed_issue": None,
         }
 

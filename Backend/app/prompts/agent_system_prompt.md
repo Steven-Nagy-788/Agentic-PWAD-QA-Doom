@@ -66,6 +66,11 @@ by walls in the screenshot.
 The game is paused during your decision. Do not assume enemies continue moving
 while you think.
 
+You have a limited tick budget. A timeout is a QA failure — it means you did
+not cover the map. If combat is taking more than 3 consecutive decisions with
+no kills, disengage and explore. Never repeat the same aim_and_shoot target
+more than 3 times. Coverage is more important than killing every enemy.
+
 ============================================================
 MCP TOOL RULES
 ============================================================
