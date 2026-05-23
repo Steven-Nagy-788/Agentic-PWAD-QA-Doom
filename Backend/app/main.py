@@ -1,15 +1,23 @@
 from contextlib import asynccontextmanager
+import os
 from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
+
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, REGISTRY
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
-from app.routers import admin_storage, analysis, reports, runs, wads, ws
+from app.routers import admin_storage, analysis, patterns, reports, runs, settings as settings_router, wads, ws
 from app.services.gemini_service import GeminiService
+import app.core.metrics
 from app.services.mcp_client_service import probe_mcp_sse_url
+from app.services.smoke_service import SmokeService
 from app.services.run_service import fail_orphaned_active_runs
+from app.models.test_run import TestRun
+from sqlalchemy import select, func, text
 
 
 settings = get_settings()
@@ -29,6 +37,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     async with SessionLocal() as db:
         await fail_orphaned_active_runs(db, reason="Orphaned by server restart")
         await db.commit()
+    try:
+        import sentry_sdk
+        has_sentry = True
+    except ImportError:
+        has_sentry = False
+    if has_sentry and settings.sentry_dsn:
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            traces_sample_rate=0.1,
+            environment="production" if not settings.debug else "development",
+        )
     yield
 
 
@@ -47,12 +66,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(wads.router)
-app.include_router(analysis.router)
-app.include_router(runs.router)
-app.include_router(reports.router)
-app.include_router(ws.router)
-app.include_router(admin_storage.router)
+app.include_router(wads.router, prefix="/v1")
+app.include_router(analysis.router, prefix="/v1")
+app.include_router(runs.router, prefix="/v1")
+app.include_router(reports.router, prefix="/v1")
+app.include_router(ws.router, prefix="/v1")
+app.include_router(patterns.router, prefix="/v1")
+app.include_router(admin_storage.router, prefix="/v1")
+app.include_router(settings_router.router, prefix="/v1")
+
+
+@app.get("/metrics", tags=["Metrics"])
+def metrics() -> Response:
+    return Response(content=generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/health", tags=["Health"])
@@ -73,3 +99,63 @@ async def gemini_health_check() -> dict[str, str]:
 async def mcp_health_check() -> dict[str, object]:
     result = await probe_mcp_sse_url()
     return {"status": "ok" if result.get("reachable") else "error", **result}
+
+
+@app.get("/health/smoke", tags=["Health"])
+async def smoke_health_check():
+    result = await SmokeService().run_smoke()
+    status_code = 200 if result["overall"] == "pass" else 503
+    return JSONResponse(content=result, status_code=status_code)
+
+
+@app.get("/health/detailed", tags=["Health"])
+async def detailed_health_check():
+    deps: dict[str, object] = {}
+
+    try:
+        async with SessionLocal() as db:
+            await db.execute(text("SELECT 1"))
+        deps["postgres"] = {"status": "ok"}
+    except Exception as exc:
+        deps["postgres"] = {"status": "error", "error": str(exc)}
+
+    try:
+        mcp_result = await probe_mcp_sse_url()
+        deps["mcp"] = {
+            "status": "ok" if mcp_result.get("reachable") else "error",
+            **mcp_result,
+        }
+    except Exception as exc:
+        deps["mcp"] = {"status": "error", "error": str(exc)}
+
+    deps["gemini"] = {"status": "ok" if settings.gemini_api_key else "error"}
+
+    storage_statuses = {}
+    for path in [
+        settings.storage_dir,
+        settings.wad_storage_dir,
+        settings.report_storage_dir,
+        settings.recording_storage_dir,
+        settings.screenshot_storage_dir,
+        settings.analysis_storage_dir,
+    ]:
+        storage_statuses[str(path.relative_to(settings.storage_dir.parent))] = (
+            "ok" if path.is_dir() and os.access(path, os.W_OK) else "error"
+        )
+    deps["storage"] = {"status": "ok" if all(v == "ok" for v in storage_statuses.values()) else "error", "dirs": storage_statuses}
+
+    try:
+        async with SessionLocal() as db:
+            result = await db.execute(
+                select(func.count()).where(TestRun.status.in_(("pending", "analyzing", "running")))
+            )
+            active_count = result.scalar()
+        deps["run_status"] = {"status": "ok", "active_runs": active_count}
+    except Exception as exc:
+        deps["run_status"] = {"status": "error", "error": str(exc)}
+
+    overall = "ok" if all(
+        dep.get("status") == "ok" for dep in deps.values()
+        if isinstance(dep, dict)
+    ) else "degraded"
+    return {"status": overall, "dependencies": deps}

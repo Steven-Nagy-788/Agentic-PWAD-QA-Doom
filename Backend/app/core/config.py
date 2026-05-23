@@ -44,12 +44,14 @@ class Settings(BaseSettings):
     mcp_doom_sse_url: str = "http://localhost:8001/sse"
     mcp_probe_timeout_seconds: float = 3.0
     mcp_tool_timeout_seconds: float = 30.0
+    sentry_dsn: str | None = Field(default=None, alias="SENTRY_DSN")
     max_run_ticks: int = 35000
     default_run_ticks: int = 3000
     live_frame_fps: float = 10.0
     recording_fps: float = 15.0
     recording_telemetry_stride: int = 2
-    cors_origins: list[str] | str = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173"
+    default_agent_behavior: str = "safety"
+    cors_origins: list[str] | str = "http://localhost:3000"
 
     @field_validator("debug", mode="before")
     @classmethod
@@ -111,15 +113,7 @@ class Settings(BaseSettings):
             raise ValueError("MAX_RUN_TICKS must be greater than or equal to DEFAULT_RUN_TICKS")
 
         if self.debug or self.app_env.lower() in {"dev", "development", "local"}:
-            dev_origins = (
-                "http://localhost:3000",
-                "http://127.0.0.1:3000",
-                "http://localhost:3001",
-                "http://127.0.0.1:3001",
-                "http://localhost:5173",
-                "http://127.0.0.1:5173",
-            )
-            self.cors_origins = list(dict.fromkeys([*self.cors_origins, *dev_origins]))
+            self.cors_origins = list(dict.fromkeys([*self.cors_origins, "http://localhost:3000", "http://127.0.0.1:3000"]))
 
         self.storage_dir = self._resolve_path(self.storage_dir)
         self.wad_storage_dir = self._resolve_path(self.wad_storage_dir or self.storage_dir / "wads")

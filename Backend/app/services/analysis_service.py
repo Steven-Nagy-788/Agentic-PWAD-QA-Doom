@@ -233,6 +233,7 @@ class AnalysisService:
         enemy_breakdown, total_monster_hp, hitscanner_count = self._enemy_breakdown(thing_counts)
         item_breakdown, health_pts, armor_pts, ammo_score = self._item_breakdown(thing_counts)
         spawn_summary_by_skill = self._spawn_summary_by_skill(editor)
+        map_features = self._extract_map_features(editor, thing_counts)
 
         vertices = editor.vertexes
         if vertices:
@@ -277,7 +278,7 @@ class AnalysisService:
             map_title=metadata.get("map_title"),
             map_display_name=metadata.get("map_display_name") or f"{wad_file.original_filename} - {map_name}",
             map_title_source=metadata.get("map_title_source") or "fallback_filename",
-            spawn_summary_by_skill=spawn_summary_by_skill,
+            spawn_summary_by_skill={**spawn_summary_by_skill, "_map_features": map_features},
             map_overview_png_path=str(overview_path),
         )
         if existing is not None:
@@ -350,6 +351,43 @@ class AnalysisService:
                 "item_breakdown": item_breakdown,
             }
         return summaries
+
+    @staticmethod
+    def _extract_map_features(editor: MapEditor, thing_counts: Counter[int]) -> dict[str, Any]:
+        door_specials = {1, 26, 31, 32, 33, 34, 46, 61, 62, 90, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118}
+        key_lock_specials = {32, 33, 34, 103, 106, 109}
+        lift_specials = {10, 14, 62, 66, 67, 68, 69, 70, 87, 88, 95, 100, 121, 122, 123, 124, 125, 126, 127, 128}
+        teleporter_things = {39, 97}
+
+        door_count = 0
+        locked_door_count = 0
+        lift_count = 0
+        teleporter_count = sum(thing_counts[t] for t in teleporter_things if t in thing_counts)
+
+        red_key_count = thing_counts.get(13, 0) + thing_counts.get(38, 0)
+        yellow_key_count = thing_counts.get(6, 0) + thing_counts.get(39, 0)
+        blue_key_count = thing_counts.get(5, 0) + thing_counts.get(40, 0)
+
+        for linedef in editor.linedefs:
+            special = int(getattr(linedef, "special", 0) or 0)
+            if special in door_specials:
+                door_count += 1
+                if special in key_lock_specials:
+                    locked_door_count += 1
+            if special in lift_specials:
+                lift_count += 1
+
+        return {
+            "door_count": door_count,
+            "locked_door_count": locked_door_count,
+            "key_requirements": {
+                "red": red_key_count > 0,
+                "yellow": yellow_key_count > 0,
+                "blue": blue_key_count > 0,
+            },
+            "teleporter_count": teleporter_count,
+            "lift_count": lift_count,
+        }
 
     @staticmethod
     def _difficulty(

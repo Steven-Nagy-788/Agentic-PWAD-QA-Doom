@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 
 class RunCreate(BaseModel):
@@ -23,6 +23,7 @@ class RunCreate(BaseModel):
     map_name: str
     difficulty_level: int = Field(default=3, ge=1, le=5)
     max_ticks: int | None = Field(default=None, ge=1)
+    behavior_profile: str | None = None
 
 
 class RunOut(BaseModel):
@@ -36,6 +37,7 @@ class RunOut(BaseModel):
     iwad_used: str
     llm_model: str
     max_ticks: int
+    behavior_profile: str | None = None
     status: str
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -59,7 +61,22 @@ class RunOut(BaseModel):
     progress_metrics: dict[str, Any] | None = None
     agent_quality_flags: dict[str, Any] | None = None
     report_pdf_path: str | None = None
+    recording_mp4_url: str | None = None
+    report_pdf_url: str | None = None
     created_at: datetime
+
+    @model_validator(mode="after")
+    def _compute_urls(self) -> "RunOut":
+        self.recording_mp4_url = f"/runs/{self.id}/recording" if self.recording_mp4_path else None
+        self.report_pdf_url = f"/runs/{self.id}/report/pdf" if self.report_pdf_path else None
+        return self
+
+    @model_serializer(mode="wrap")
+    def _strip_paths(self, handler) -> dict[str, Any]:
+        result = handler(self)
+        result.pop("recording_mp4_path", None)
+        result.pop("report_pdf_path", None)
+        return result
 
 
 class RunListOut(BaseModel):

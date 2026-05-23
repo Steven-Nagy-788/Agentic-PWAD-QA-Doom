@@ -27,4 +27,7 @@ class AgentDecisionOut(BaseModel):
     mcp_stop_reason: str | None = None
     llm_duration_ms: float | None = None
     mcp_duration_ms: float | None = None
+    llm_input_tokens: int | None = None
+    llm_output_tokens: int | None = None
+    llm_cost_estimate_usd: float | None = None
     created_at: datetime

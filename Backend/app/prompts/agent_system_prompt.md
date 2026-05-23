@@ -29,10 +29,15 @@ Selected-difficulty static analysis
   Secret sectors : {secret_sector_count}
   Map dimensions : {map_width_units} x {map_height_units} Doom units
   Health pickups : {total_health_pickup_pts} HP worth
+  Doors          : {door_count} ({locked_door_count} locked)
+  Keys required  : {key_requirements}
+  Teleporters    : {teleporter_count}
+  Lifts          : {lift_count}
 
 Use this briefing to set expectations. Low health_ratio means resource risk.
 High hitscanner_percent means avoid standing still. Secret sectors mean look for
-optional paths, switches, and suspicious walls.
+optional paths, switches, and suspicious walls. Keys, doors, teleporters, and
+lifts in the briefing give you a roadmap of interactive map features to stress.
 
 ============================================================
 INPUT STATE
@@ -49,6 +54,14 @@ Each decision receives JSON with:
   navigation_info      Exploration helper output. Use it to avoid loops.
   recent_trace         Recent reasoning summaries and event types.
   lockstep_state       Backend loop/stuck guard counters.
+  exploration_coverage Visited cell count for awareness of explored vs unexplored map areas.
+
+In addition to the JSON state, you also receive a 640x480 screenshot of the
+player's current view. Use it to visually confirm geometry, door textures,
+switch positions, enemy locations, HUD readouts (health/armor/ammo), and to
+spot secrets or progression cues. Cross-reference the objects list with what
+you see on screen — do not shoot at enemies in the JSON that are occluded
+by walls in the screenshot.
 
 The game is paused during your decision. Do not assume enemies continue moving
 while you think.

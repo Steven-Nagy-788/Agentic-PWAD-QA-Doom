@@ -55,7 +55,7 @@ async def get_report_status(run_id: UUID, db: AsyncSession = Depends(get_db)) ->
         status=status_value,
         report_id=report.id,
         pdf_available=pdf_available,
-        pdf_path=report.pdf_path,
+        pdf_url=f"/runs/{run_id}/report/pdf" if pdf_available else None,
         generation_error=report.generation_error,
     )
 

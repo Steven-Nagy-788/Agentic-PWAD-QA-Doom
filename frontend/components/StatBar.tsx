@@ -34,7 +34,7 @@ function Stat({ icon, label, value }: { icon: React.ReactElement; label: string;
       <span className="text-neutral-500 [&>svg]:h-4 [&>svg]:w-4">{icon}</span>
       <span className="min-w-0">
         <span className="block text-[11px] font-medium uppercase text-neutral-500">{label}</span>
-        <span className="block truncate font-semibold text-neutral-950">{value}</span>
+        <span className="block truncate font-semibold text-neutral-950" aria-label={`${label}: ${value}`}>{value}</span>
       </span>
     </div>
   );

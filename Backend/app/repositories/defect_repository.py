@@ -16,6 +16,8 @@ class DefectRepository:
 
     async def create(self, defect: Defect) -> Defect:
         self._ensure_fingerprint(defect)
+        if not defect.fingerprint:
+            raise ValueError(f"Fingerprint is still None after _ensure_fingerprint for defect_type={defect.defect_type}")
         values = {
             column.name: getattr(defect, column.name)
             for column in Defect.__table__.columns
@@ -98,9 +100,10 @@ class DefectRepository:
         title_slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")[:64] or "issue"
         if defect.defect_type.startswith("agent_observed"):
             defect.fingerprint = f"{defect.defect_type}:{title_slug}"[:128]
-            return
-        if defect.position_x is not None and defect.position_y is not None:
+        elif defect.position_x is not None and defect.position_y is not None:
             bucket = f"{round(defect.position_x / 64)}_{round(defect.position_y / 64)}"
             defect.fingerprint = f"{defect.defect_type}:{title_slug}:{bucket}"[:128]
-            return
-        defect.fingerprint = f"{defect.defect_type}:{title_slug}:{defect.detected_at_tick or 0}"[:128]
+        else:
+            defect.fingerprint = f"{defect.defect_type}:{title_slug}:{defect.detected_at_tick or 0}"[:128]
+        if not defect.fingerprint:
+            defect.fingerprint = f"{defect.defect_type}:{defect.detected_at_tick or 0}:{id(defect)}"[:128]

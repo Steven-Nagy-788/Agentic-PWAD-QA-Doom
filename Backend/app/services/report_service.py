@@ -107,6 +107,8 @@ class ReportService:
         def json_value(key: str) -> Any:
             return report_json.get(key)
 
+        pdf_path_str = str(pdf_path.relative_to(get_settings().report_storage_dir.parent)) if pdf_path.is_absolute() else str(pdf_path)
+
         return {
             "generation_status": "complete",
             "generation_error": None,
@@ -145,7 +147,7 @@ class ReportService:
             "activity_variances": text_value("activity_variances"),
             "elapsed_time_seconds": report_json.get("elapsed_time_seconds") or run.duration_seconds,
             "total_actions_taken": report_json.get("total_actions_taken") or run.total_actions_taken,
-            "pdf_path": str(pdf_path),
+            "pdf_path": pdf_path_str,
         }
 
     @staticmethod
@@ -168,26 +170,34 @@ class ReportService:
 
     @staticmethod
     def _sanitize_report_voice(value: Any) -> Any:
-        replacements = [
-            (r"\b[Tt]he agent failed to\b", "the automated playthrough did not"),
-            (r"\b[Aa]gent failed to\b", "automated playthrough did not"),
+        long_first_replacements = [
+            (r"\b[Tt]he automated playthrough was unable to\b", "the automated playthrough did not"),
+            (r"\b[Aa]utomated playthrough was unable to\b", "automated playthrough did not"),
             (r"\b[Tt]he agent was unable to\b", "the automated playthrough did not"),
             (r"\b[Aa]gent was unable to\b", "automated playthrough did not"),
+            (r"\b[Tt]he agent failed to\b", "the automated playthrough did not"),
+            (r"\b[Aa]gent failed to\b", "automated playthrough did not"),
             (r"\b[Tt]he agent could not\b", "the automated playthrough did not"),
             (r"\b[Aa]gent could not\b", "automated playthrough did not"),
             (r"\b[Tt]he agent did not\b", "the automated playthrough did not"),
             (r"\b[Aa]gent did not\b", "automated playthrough did not"),
-            (r"\b[Tt]he automated playthrough was unable to\b", "the automated playthrough did not"),
-            (r"\b[Aa]utomated playthrough was unable to\b", "automated playthrough did not"),
-            (r"\bAutomated automated playthrough\b", "Automated playthrough"),
-            (r"\bautomated automated playthrough\b", "automated playthrough"),
+        ]
+        catch_all_replacements = [
             (r"\bAgent\b", "Automated playthrough"),
             (r"\bagent\b", "automated playthrough"),
         ]
         if isinstance(value, str):
             result = value
-            for source, target in replacements:
+            for source, target in long_first_replacements:
                 result = re.sub(source, target, result)
+            doubled = False
+            if "automated automated" in result.lower():
+                doubled = True
+                result = re.sub(r"\b[Aa]utomated\s+[Aa]utomated playthrough\b", "Automated playthrough", result)
+            for source, target in catch_all_replacements:
+                result = re.sub(source, target, result)
+            if doubled:
+                result = re.sub(r"\b[Aa]utomated\s+[Aa]utomated playthrough\b", "Automated playthrough", result)
             if result.startswith("the automated"):
                 result = "T" + result[1:]
             return result
@@ -354,17 +364,22 @@ class ReportService:
             "max_kills": max((event.kill_count for event in events), default=run.total_kills),
             "max_items": max((event.item_count for event in events), default=run.total_items_collected),
             "max_secrets": max((event.secret_count for event in events), default=run.secrets_found),
-            "recording_mp4_path": run.recording_mp4_path,
-            "report_pdf_path": run.report_pdf_path,
+            "recording_mp4_url": f"/runs/{run.id}/recording" if run.recording_mp4_path else None,
+            "report_pdf_url": f"/runs/{run.id}/report/pdf" if run.report_pdf_path else None,
             "recording_metadata": run.recording_metadata or {},
             "progress_metrics": run.progress_metrics or {},
             "agent_quality_flags": run.agent_quality_flags or {},
-            "recording_file_size_bytes": (
-                Path(run.recording_mp4_path).stat().st_size
-                if run.recording_mp4_path and Path(run.recording_mp4_path).exists()
-                else None
-            ),
+            "recording_file_size_bytes": ReportService._safe_file_size(run.recording_mp4_path),
         }
+
+    @staticmethod
+    def _safe_file_size(path_str: str | None) -> int | None:
+        if not path_str:
+            return None
+        try:
+            return Path(path_str).stat().st_size
+        except OSError:
+            return None
 
     async def _call_gemini_or_fallback(self, payload: dict[str, Any]) -> dict[str, Any]:
         fallback = self._fallback_report(payload)
@@ -736,7 +751,7 @@ class ReportService:
                 }
             )
         if run.recording_mp4_path:
-            covered.append({"objective": "Gameplay recording", "evidence": run.recording_mp4_path})
+            covered.append({"objective": "Gameplay recording", "evidence": f"/runs/{run.id}/recording"})
         return covered
 
     @staticmethod
@@ -874,12 +889,13 @@ class ReportService:
             "total_items_collected",
             "total_actions_taken",
             "total_llm_calls",
-            "recording_mp4_path",
             "recording_metadata",
             "progress_metrics",
             "agent_quality_flags",
         ]
-        return {key: getattr(run, key) for key in keys}
+        result = {key: getattr(run, key) for key in keys}
+        result["recording_mp4_url"] = f"/runs/{run.id}/recording" if run.recording_mp4_path else None
+        return result
 
     @staticmethod
     def _analysis_snapshot(analysis: StaticAnalysisResult | None) -> dict[str, Any] | None:
@@ -911,9 +927,13 @@ class ReportService:
             "enemy_breakdown",
             "item_breakdown",
             "spawn_summary_by_skill",
-            "map_overview_png_path",
         ]
-        return {key: getattr(analysis, key) for key in keys}
+        result = {key: getattr(analysis, key) for key in keys}
+        result["map_overview_png_url"] = (
+            f"/wads/{analysis.wad_file_id}/map-png?map_name={analysis.map_name}"
+            if analysis.map_overview_png_path else None
+        )
+        return result
 
     @staticmethod
     def _event_snapshot(event: GameEvent) -> dict[str, Any]:
@@ -1213,7 +1233,7 @@ class ReportService:
                 <tr><td>Actions</td><td>{{ run.total_actions_taken }}</td><td>LLM calls</td><td>{{ run.total_llm_calls }}</td></tr>
                 <tr><td>Final HP</td><td>{{ run.final_hp }}</td><td>Kills</td><td>{{ run.total_kills }}</td></tr>
                 <tr><td>Position samples</td><td>{{ metrics.position_sample_count }}</td><td>Movement units</td><td>{{ metrics.movement_distance_units }}</td></tr>
-                <tr><td>Recording</td><td colspan="3">{{ run.recording_mp4_path or "Not produced" }}</td></tr>
+                <tr><td>Recording</td><td colspan="3">{{ run.recording_mp4_url or "Not produced" }}</td></tr>
               </table>
               {% endif %}
 

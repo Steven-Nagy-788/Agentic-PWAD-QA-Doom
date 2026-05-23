@@ -51,6 +51,9 @@ class AgentDecision(Base):
     mcp_stop_reason: Mapped[str | None] = mapped_column(String(64))
     llm_duration_ms: Mapped[float | None] = mapped_column(REAL)
     mcp_duration_ms: Mapped[float | None] = mapped_column(REAL)
+    llm_input_tokens: Mapped[int | None] = mapped_column(Integer)
+    llm_output_tokens: Mapped[int | None] = mapped_column(Integer)
+    llm_cost_estimate_usd: Mapped[float | None] = mapped_column(REAL)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     run: Mapped[TestRun] = relationship("TestRun", back_populates="agent_decisions")

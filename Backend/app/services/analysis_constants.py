@@ -41,3 +41,5 @@ ITEM_TYPES: dict[int, tuple[str, int, str]] = {
 
 KEY_TYPES = {5, 13, 6, 39, 38, 40}
 WEAPON_TYPES = {2001, 2002, 2003, 2004, 2005, 2006, 82}
+
+CELL_SIZE = 256

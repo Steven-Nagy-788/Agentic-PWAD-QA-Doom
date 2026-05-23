@@ -5,19 +5,21 @@ from uuid import uuid4
 from app.models import Defect
 from app.repositories.defect_repository import DefectRepository
 from app.services.collector_service import STUCK_DECISION_THRESHOLD, CollectorService
-from app.services.run_service import (
+from app.services.run_guards import (
     _apply_lockstep_recovery,
-    _apply_director_recovery,
     _combat_target_is_visible,
-    _director_should_stop_as_stuck,
     _guard_lockstep_decision,
-    _normalize_director_objective_params,
-    _normalize_mcp_params,
     _is_wasted_combat_decision,
     _lockstep_progress_metrics,
     _lockstep_quality_flags,
     _lockstep_should_stop_as_stuck,
     _update_lockstep_after_action,
+)
+from app.services.run_utils import _normalize_mcp_params
+from app.services.run_service import (
+    _apply_director_recovery,
+    _director_should_stop_as_stuck,
+    _normalize_director_objective_params,
 )
 
 

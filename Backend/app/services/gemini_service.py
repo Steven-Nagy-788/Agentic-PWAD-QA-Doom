@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import re
-from typing import Any, Callable
+import time
+from collections.abc import Callable
+from typing import Any
 
 from app.core.config import get_settings
 
@@ -21,7 +24,15 @@ ALLOWED_TOOLS = {
     "take_action",
 }
 DIRECTOR_TOOLS = {"get_situation_report", "set_objective", "set_strategy"}
+
+logger = logging.getLogger(__name__)
 _gemini_sem: asyncio.Semaphore | None = None
+_api_call_timestamps: list[float] = []
+_last_token_usage: dict[str, int] = {}
+
+
+def get_last_token_usage() -> dict[str, int]:
+    return dict(_last_token_usage)
 
 
 class GeminiService:
@@ -31,10 +42,10 @@ class GeminiService:
     async def probe_model(self) -> dict[str, str]:
         if not self.settings.gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY is not configured")
-        response = await self._generate_content("Return ok.")
+        response = await self._generate_content("Return ok.", {})
         return {"model": self.settings.llm_model, "response": response.text or ""}
 
-    async def decide(self, system_prompt: str, llm_input: dict[str, Any]) -> dict[str, Any]:
+    async def decide(self, system_prompt: str, llm_input: dict[str, Any], screenshot_png: bytes | None = None) -> dict[str, Any]:
         if not self.settings.gemini_api_key:
             return self._fallback_decision(llm_input, "Gemini API key is not configured; using deterministic fallback.")
         return await self._call_with_retry(
@@ -45,6 +56,7 @@ class GeminiService:
                 llm_input,
                 "Model response failed or was rate limited; using deterministic fallback.",
             ),
+            screenshot_png=screenshot_png,
         )
 
     async def decide_director(self, system_prompt: str, llm_input: dict[str, Any]) -> dict[str, Any]:
@@ -69,29 +81,49 @@ class GeminiService:
         llm_input: dict[str, Any],
         parser: Callable[[str], dict[str, Any]],
         fallback: Callable[[], dict[str, Any]],
+        screenshot_png: bytes | None = None,
     ) -> dict[str, Any]:
-        try:
-            response = await self._call_gemini(system_prompt, llm_input)
-            return parser(response)
-        except Exception as exc:
-            if _is_rate_limit(exc):
-                wait = min(_retry_delay_seconds(exc), self.settings.gemini_retry_max_delay_seconds)
-                await asyncio.sleep(wait)
-                try:
-                    response = await self._call_gemini(system_prompt, llm_input)
-                    return parser(response)
-                except Exception:
-                    pass
-            return fallback()
+        last_error = ""
+        await _throttle_local_rate()
+        for attempt in range(3):
+            try:
+                response = await self._call_gemini(system_prompt, llm_input, screenshot_png=screenshot_png)
+                _record_api_call()
+                return parser(response)
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning("Gemini API call attempt %d/3 failed: %s", attempt + 1, last_error)
+                if _is_rate_limit(exc) and attempt < 2:
+                    wait = min(_retry_delay_seconds(exc), 60.0)
+                    logger.info("Rate limited, retrying in %.1fs (attempt %d/3)", wait, attempt + 2)
+                    await asyncio.sleep(wait)
+                    continue
+                if attempt < 2:
+                    logger.info("Non-rate-limit error, retrying in 5s (attempt %d/3)", attempt + 2)
+                    await asyncio.sleep(5.0)
+                    continue
+        logger.warning("All 3 Gemini API attempts failed, using deterministic fallback")
+        fallback_result = fallback()
+        fallback_result["reasoning_summary"] = (
+            f"Gemini API failed after 3 attempts: {last_error}. "
+            f"{fallback_result.get('reasoning_summary', 'Falling back to deterministic.')}"
+        )
+        return fallback_result
 
-    async def _call_gemini(self, system_prompt: str, llm_input: dict) -> str:
-        contents = f"{system_prompt}\n\nCURRENT STATE JSON:\n{json.dumps(llm_input, default=str)}"
-        response = await self._generate_content(contents)
+    async def _call_gemini(self, system_prompt: str, llm_input: dict, screenshot_png: bytes | None = None) -> str:
+        global _last_token_usage
+        response = await self._generate_content(system_prompt, llm_input, screenshot_png=screenshot_png)
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
+            _last_token_usage = {
+                "prompt_tokens": getattr(response.usage_metadata, "prompt_token_count", 0) or 0,
+                "completion_tokens": getattr(response.usage_metadata, "candidates_token_count", 0) or 0,
+            }
         return response.text or ""
 
-    async def _generate_content(self, contents: str) -> Any:
+    async def _generate_content(self, system_prompt: str, llm_input: dict, screenshot_png: bytes | None = None) -> Any:
         try:
             from google import genai
+            from google.genai import types
         except ImportError as exc:
             raise RuntimeError("google-genai is not installed") from exc
 
@@ -99,61 +131,149 @@ class GeminiService:
         if _gemini_sem is None:
             _gemini_sem = asyncio.Semaphore(max(1, self.settings.gemini_max_concurrency))
 
+        text_part = f"{system_prompt}\n\nCURRENT STATE JSON:\n{json.dumps(llm_input, default=str)}"
+
         async with _gemini_sem:
             client = genai.Client(api_key=self.settings.gemini_api_key)
             async_client = getattr(client, "aio", None)
+
+            if screenshot_png is not None and async_client is not None and hasattr(async_client, "models"):
+                parts = [
+                    types.Part.from_text(text=text_part),
+                    types.Part.from_bytes(data=screenshot_png, mime_type="image/png"),
+                ]
+                return await async_client.models.generate_content(
+                    model=self.settings.llm_model,
+                    contents=types.Content(parts=parts, role="user"),
+                )
+
             if async_client is not None and hasattr(async_client, "models"):
-                return await async_client.models.generate_content(model=self.settings.llm_model, contents=contents)
+                return await async_client.models.generate_content(model=self.settings.llm_model, contents=text_part)
 
             def generate() -> Any:
-                return client.models.generate_content(model=self.settings.llm_model, contents=contents)
+                if screenshot_png is not None:
+                    parts = [
+                        types.Part.from_text(text=text_part),
+                        types.Part.from_bytes(data=screenshot_png, mime_type="image/png"),
+                    ]
+                    return client.models.generate_content(
+                        model=self.settings.llm_model,
+                        contents=types.Content(parts=parts, role="user"),
+                    )
+                return client.models.generate_content(model=self.settings.llm_model, contents=text_part)
 
             return await asyncio.to_thread(generate)
 
-    def parse_decision(self, text: str) -> dict[str, Any]:
+    @staticmethod
+    def _extract_json_block(text: str) -> str | None:
+        match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+        if match:
+            return _extract_json(match.group(1))
+        return None
+
+    @staticmethod
+    def _extract_json_braces(text: str) -> str | None:
         cleaned = text.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.strip("`")
-            cleaned = cleaned.removeprefix("json").strip()
         start = cleaned.find("{")
         end = cleaned.rfind("}")
         if start >= 0 and end >= start:
-            cleaned = cleaned[start : end + 1]
-        data = json.loads(cleaned)
+            return cleaned[start : end + 1]
+        return None
+
+    @staticmethod
+    def _extract_json_balanced(text: str) -> str | None:
+        candidates: list[str] = []
+        i = 0
+        while True:
+            start = text.find("{", i)
+            if start == -1:
+                break
+            depth = 0
+            pos = start
+            while pos < len(text):
+                ch = text[pos]
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidates.append(text[start:pos+1])
+                        i = pos + 1
+                        break
+                pos += 1
+            else:
+                break
+        if not candidates:
+            return None
+        return max(candidates, key=len)
+
+    @staticmethod
+    def _decode_json(text: str) -> dict[str, Any] | None:
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return None
+
+    def _parse_json_response(self, text: str) -> dict[str, Any]:
+        strategies = [
+            self._extract_json_block,
+            self._extract_json_balanced,
+            self._extract_json_braces,
+        ]
+        for strategy in strategies:
+            extracted = strategy(text)
+            if extracted is not None:
+                data = self._decode_json(extracted)
+                if data is not None:
+                    return data
+        raise ValueError("Could not parse LLM response as JSON")
+
+    def parse_decision(self, text: str) -> dict[str, Any]:
+        try:
+            data = self._parse_json_response(text)
+        except ValueError:
+            data = {}
         tool = data.get("mcp_tool") or "explore"
         if tool not in ALLOWED_TOOLS:
             tool = "explore"
         params = data.get("mcp_params")
         if not isinstance(params, dict):
             params = {}
+        reasoning = data.get("reasoning_summary")
+        if not isinstance(reasoning, str):
+            reasoning = "No reasoning summary returned."
+        observed_issue = data.get("observed_issue")
+        if observed_issue is not None and not isinstance(observed_issue, (str, dict)):
+            observed_issue = None
         return {
-            "reasoning_summary": str(data.get("reasoning_summary") or "No reasoning summary returned."),
+            "reasoning_summary": reasoning,
             "mcp_tool": tool,
             "mcp_params": params,
-            "observed_issue": data.get("observed_issue"),
+            "observed_issue": observed_issue,
         }
 
     def parse_director_decision(self, text: str) -> dict[str, Any]:
-        cleaned = text.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.strip("`")
-            cleaned = cleaned.removeprefix("json").strip()
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start >= 0 and end >= start:
-            cleaned = cleaned[start : end + 1]
-        data = json.loads(cleaned)
+        try:
+            data = self._parse_json_response(text)
+        except ValueError:
+            data = {}
         tool = data.get("mcp_tool") or "get_situation_report"
         if tool not in DIRECTOR_TOOLS:
             tool = "get_situation_report"
         params = data.get("mcp_params")
         if not isinstance(params, dict):
             params = {}
+        reasoning = data.get("reasoning_summary")
+        if not isinstance(reasoning, str):
+            reasoning = "Director requested the current situation."
+        observed_issue = data.get("observed_issue")
+        if observed_issue is not None and not isinstance(observed_issue, (str, dict)):
+            observed_issue = None
         return {
-            "reasoning_summary": str(data.get("reasoning_summary") or "Director requested the current situation."),
+            "reasoning_summary": reasoning,
             "mcp_tool": tool,
             "mcp_params": params,
-            "observed_issue": data.get("observed_issue"),
+            "observed_issue": observed_issue,
         }
 
     def _fallback_decision(self, llm_input: dict[str, Any], reason: str) -> dict[str, Any]:
@@ -166,11 +286,13 @@ class GeminiService:
             if _number(value, 0) >= 2
         }
         out_of_ammo_targets = {str(key) for key in (lockstep_state.get("out_of_ammo_targets") or {})}
+        invisible_target_failures = {str(key) for key in (lockstep_state.get("invisible_target_failures") or {})}
         visible_monsters = [
             obj
             for obj in objects
             if obj.get("type") == "monster" and obj.get("is_visible") and obj.get("id") is not None
             and str(obj.get("id")) not in out_of_ammo_targets
+            and str(obj.get("id")) not in invisible_target_failures
         ]
         if visible_monsters:
             target = min(visible_monsters, key=lambda obj: float(obj.get("distance") or 999999))
@@ -291,6 +413,26 @@ class GeminiService:
         }
 
 
+async def _throttle_local_rate() -> None:
+    global _api_call_timestamps
+    now = time.monotonic()
+    window = 60.0
+    _api_call_timestamps = [t for t in _api_call_timestamps if now - t < window]
+
+    max_calls = 12
+    if len(_api_call_timestamps) >= max_calls:
+        oldest = _api_call_timestamps[0]
+        wait = window - (now - oldest) + 1.0
+        logger.info("Local rate limiter: %d calls in last 60s, waiting %.1fs", len(_api_call_timestamps), wait)
+        await asyncio.sleep(wait)
+
+
+def _record_api_call() -> None:
+    global _api_call_timestamps
+    _api_call_timestamps.append(time.monotonic())
+    _api_call_timestamps = [t for t in _api_call_timestamps if time.monotonic() - t < 60.0]
+
+
 def _is_rate_limit(exc: Exception) -> bool:
     exc_str = str(exc)
     return "429" in exc_str or "RESOURCE_EXHAUSTED" in exc_str
@@ -308,3 +450,12 @@ def _number(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _extract_json(text: str) -> str | None:
+    cleaned = text.strip()
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start >= 0 and end >= start:
+        return cleaned[start : end + 1]
+    return None

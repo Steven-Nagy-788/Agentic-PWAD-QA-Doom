@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
@@ -18,9 +18,17 @@ from app.repositories.run_repository import RunRepository
 from app.serializers.agent_decision_serializers import AgentDecisionOut
 from app.serializers.defect_serializers import DefectOut
 from app.serializers.game_event_serializers import PositionTrailOut, TraceEntryOut
+from collections import Counter
+from pydantic import BaseModel
+
+from app.core.behavior_profiles import PROFILES, BehaviorProfileName
 from app.serializers.run_serializers import RunCompareOut, RunCreate, RunListOut, RunOut
 from app.services.run_compare_service import RunCompareService
 from app.services.run_service import RunService
+
+
+class BehaviorUpdatePayload(BaseModel):
+    behavior_profile: BehaviorProfileName
 
 router = APIRouter(prefix="/runs", tags=["Runs"])
 
@@ -68,6 +76,27 @@ async def get_run(run_id: UUID, db: AsyncSession = Depends(get_db)) -> RunOut:
     run = await RunRepository(db).get_by_id(run_id)
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
+    return run
+
+
+@router.patch("/{run_id}/behavior", response_model=RunOut)
+async def update_run_behavior(
+    run_id: UUID,
+    payload: BehaviorUpdatePayload,
+    db: AsyncSession = Depends(get_db),
+) -> RunOut:
+    run = await RunRepository(db).get_by_id(run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
+    if payload.behavior_profile not in PROFILES:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Unknown behavior profile '{payload.behavior_profile}'. "
+            f"Valid options: {', '.join(PROFILES)}",
+        )
+    await RunRepository(db).update(run, behavior_profile=payload.behavior_profile)
+    await db.commit()
+    await db.refresh(run)
     return run
 
 
@@ -177,3 +206,57 @@ async def get_recording(run_id: UUID, db: AsyncSession = Depends(get_db)) -> Fil
     if not path.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Recording file is missing")
     return FileResponse(path, media_type="video/mp4")
+
+
+@router.get("/{run_id}/usage", tags=["Runs"])
+async def get_run_usage(run_id: UUID, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """Return aggregated token usage and cost for a run."""
+    run = await RunRepository(db).get_by_id(run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
+    decisions = await AgentDecisionRepository(db).list_by_run(run_id, 1, 500)
+    decisions_list = list(decisions) if isinstance(decisions, list) else list(decisions.scalars().all()) if hasattr(decisions, 'scalars') else []
+    total_prompt = sum(d.llm_input_tokens or 0 for d in decisions_list)
+    total_completion = sum(d.llm_output_tokens or 0 for d in decisions_list)
+    total_cost = sum(d.llm_cost_estimate_usd or 0 for d in decisions_list)
+    return {
+        "run_id": str(run_id),
+        "model": run.llm_model,
+        "total_llm_calls": len(decisions_list),
+        "total_prompt_tokens": total_prompt,
+        "total_completion_tokens": total_completion,
+        "total_tokens": total_prompt + total_completion,
+        "estimated_cost_usd": round(total_cost, 6),
+        "per_decision_avg_cost_usd": round(total_cost / max(len(decisions_list), 1), 8),
+    }
+
+
+@router.get("/{run_id}/benchmark", tags=["Runs"])
+async def get_run_benchmark(run_id: UUID, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """Return performance timing breakdown for a run."""
+    decisions = await AgentDecisionRepository(db).list_by_run(run_id, 1, 500)
+    decisions_list = list(decisions) if isinstance(decisions, list) else list(decisions.scalars().all()) if hasattr(decisions, 'scalars') else []
+    llm_times = [d.llm_duration_ms for d in decisions_list if d.llm_duration_ms is not None]
+    mcp_times = [d.mcp_duration_ms for d in decisions_list if d.mcp_duration_ms is not None]
+
+    def _stats(values: list[float]) -> dict[str, float]:
+        if not values:
+            return {"avg": 0, "p50": 0, "p95": 0, "max": 0, "min": 0, "count": 0}
+        sorted_v = sorted(values)
+        n = len(sorted_v)
+        return {
+            "avg": round(sum(values) / n, 1),
+            "p50": round(sorted_v[n // 2], 1),
+            "p95": round(sorted_v[int(n * 0.95)], 1),
+            "max": round(max(values), 1),
+            "min": round(min(values), 1),
+            "count": n,
+        }
+
+    return {
+        "run_id": str(run_id),
+        "total_decisions": len(decisions_list),
+        "llm_latency_ms": _stats(llm_times),
+        "mcp_latency_ms": _stats(mcp_times),
+        "tools_used": dict(Counter(d.mcp_tool or "unknown" for d in decisions_list)),
+    }

@@ -2,6 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element */
 
+import { useCallback, useState } from "react";
 import { assetUrl, PositionSample, TraceEntry, WadMap } from "@/lib/api";
 
 type MapCanvasProps = {
@@ -12,10 +13,36 @@ type MapCanvasProps = {
   className?: string;
 };
 
+const STEP = 15;
+
 export function MapCanvas({ map, trail = [], events = [], livePosition, className = "" }: MapCanvasProps) {
   const imageUrl = assetUrl(map?.map_overview_png_url);
   const points = livePosition ? [...trail, { id: -1, run_id: "", tick_number: 0, x: livePosition.x, y: livePosition.y, health: 0 }] : trail;
   const bounds = getBounds(points);
+  const [focusX, setFocusX] = useState(500);
+  const [focusY, setFocusY] = useState(500);
+
+  const onKeyDown = useCallback((event: React.KeyboardEvent<SVGSVGElement>) => {
+    switch (event.key) {
+      case "ArrowUp":
+        event.preventDefault();
+        setFocusY((prev) => Math.max(0, prev - STEP));
+        break;
+      case "ArrowDown":
+        event.preventDefault();
+        setFocusY((prev) => Math.min(1000, prev + STEP));
+        break;
+      case "ArrowLeft":
+        event.preventDefault();
+        setFocusX((prev) => Math.max(0, prev - STEP));
+        break;
+      case "ArrowRight":
+        event.preventDefault();
+        setFocusX((prev) => Math.min(1000, prev + STEP));
+        break;
+    }
+  }, []);
+
   return (
     <div className={`relative aspect-square overflow-hidden rounded border border-neutral-200 bg-neutral-950 ${className}`}>
       {imageUrl ? (
@@ -23,7 +50,15 @@ export function MapCanvas({ map, trail = [], events = [], livePosition, classNam
       ) : (
         <div className="absolute inset-0 bg-[linear-gradient(90deg,#262626_1px,transparent_1px),linear-gradient(#262626_1px,transparent_1px)] bg-[size:32px_32px]" />
       )}
-      <svg className="absolute inset-0 h-full w-full" viewBox="0 0 1000 1000" aria-hidden="true">
+      <span className="sr-only">Map overview with player position trail</span>
+      <svg
+        className="absolute inset-0 h-full w-full"
+        viewBox="0 0 1000 1000"
+        tabIndex={0}
+        role="application"
+        aria-label={`${map?.map_name ?? "Map"} overview with player position trail. Use arrow keys to navigate.`}
+        onKeyDown={onKeyDown}
+      >
         {trail.map((sample, index) => {
           const p = project(sample.x, sample.y, bounds);
           return <circle key={`${sample.tick_number}-${index}`} cx={p.x} cy={p.y} r="5" fill="rgba(59,130,246,0.62)" />;
@@ -51,6 +86,8 @@ export function MapCanvas({ map, trail = [], events = [], livePosition, classNam
             strokeWidth="4"
           />
         ) : null}
+        <circle cx={focusX} cy={focusY} r="14" fill="none" stroke="white" strokeWidth="3" className="drop-shadow-lg" />
+        <circle cx={focusX} cy={focusY} r="14" fill="none" stroke="#0891b2" strokeWidth="1.5" />
       </svg>
     </div>
   );

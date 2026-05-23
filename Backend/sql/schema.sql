@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS test_runs (
     difficulty_level        SMALLINT        NOT NULL DEFAULT 3 CHECK (difficulty_level BETWEEN 1 AND 5),
     iwad_used               VARCHAR(64)     NOT NULL DEFAULT 'freedoom2',
     llm_model               VARCHAR(128)    NOT NULL DEFAULT 'gemini-2.5-flash',
+    behavior_profile        VARCHAR(32)     DEFAULT 'safety',
     max_ticks               INTEGER         NOT NULL DEFAULT 3000,
     status                  VARCHAR(16)     NOT NULL DEFAULT 'pending',
     started_at              TIMESTAMPTZ,
@@ -121,6 +122,12 @@ CREATE INDEX IF NOT EXISTS idx_game_events_run_id_tick ON game_events(run_id, ti
 CREATE INDEX IF NOT EXISTS idx_game_events_notable ON game_events(run_id, event_type)
     WHERE event_type != 'normal';
 
+CREATE TABLE IF NOT EXISTS config_entries (
+    key             VARCHAR(128) PRIMARY KEY,
+    value           JSONB NOT NULL DEFAULT '{}',
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS agent_decisions (
     id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     run_id              UUID        NOT NULL REFERENCES test_runs(id) ON DELETE CASCADE,
@@ -139,6 +146,9 @@ CREATE TABLE IF NOT EXISTS agent_decisions (
     mcp_stop_reason     VARCHAR(64),
     llm_duration_ms     REAL,
     mcp_duration_ms     REAL,
+    llm_input_tokens    INTEGER,
+    llm_output_tokens   INTEGER,
+    llm_cost_estimate_usd REAL,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT uq_agent_decisions_run_sequence UNIQUE (run_id, sequence_number)

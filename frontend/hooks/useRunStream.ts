@@ -28,6 +28,14 @@ export type RunStreamMessage = {
   severity?: number;
   fingerprint?: string;
   detected_at_tick?: number;
+  llm_duration_ms?: number;
+  llm_input?: Record<string, unknown>;
+  llm_raw_output?: Record<string, unknown>;
+  mcp_duration_ms?: number;
+  guard_status?: string;
+  llm_input_tokens?: number;
+  llm_output_tokens?: number;
+  llm_cost_estimate_usd?: number;
 };
 
 export type LiveDecision = {
@@ -37,6 +45,22 @@ export type LiveDecision = {
   tool?: string;
   stopReason?: string;
   params?: Record<string, unknown>;
+  llmInput?: Record<string, unknown>;
+  llmOutput?: Record<string, unknown>;
+  guardStatus?: "kept" | "modified" | "blocked";
+  mcpDurationMs?: number;
+  llmDurationMs?: number;
+  llmInputTokens?: number;
+  llmOutputTokens?: number;
+  llmCostEstimateUsd?: number;
+};
+
+export type SessionTokenTotals = {
+  totalPrompt: number;
+  totalCompletion: number;
+  totalTokens: number;
+  totalCost: number;
+  decisionCount: number;
 };
 
 export function useRunStream(runId?: string) {
@@ -46,8 +70,13 @@ export function useRunStream(runId?: string) {
   const [decisions, setDecisions] = useState<LiveDecision[]>([]);
   const [defects, setDefects] = useState<Defect[]>([]);
   const [connected, setConnected] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  const [retryDelay, setRetryDelay] = useState(0);
+  const [lastMessageAt, setLastMessageAt] = useState(0);
+  const [tokenTotals, setTokenTotals] = useState<SessionTokenTotals>({ totalPrompt: 0, totalCompletion: 0, totalTokens: 0, totalCost: 0, decisionCount: 0 });
   const retryRef = useRef(0);
   const socketRef = useRef<WebSocket | null>(null);
+  const lastFrameLengthRef = useRef(0);
 
   useEffect(() => {
     if (!runId) {
@@ -61,18 +90,37 @@ export function useRunStream(runId?: string) {
       socketRef.current = socket;
       socket.onopen = () => {
         retryRef.current = 0;
+        setRetryCount(0);
+        setRetryDelay(0);
         setConnected(true);
       };
       socket.onmessage = (event) => {
+        setLastMessageAt(Date.now());
         const payload = JSON.parse(event.data) as RunStreamMessage;
+        if (payload.type === "ping") {
+          socket.send(JSON.stringify({ type: "pong" }));
+          return;
+        }
         setMessages((current) => [...current.slice(-250), payload]);
         if (payload.type === "frame" && payload.frame_b64) {
+          if (payload.frame_b64.length === lastFrameLengthRef.current) return;
+          lastFrameLengthRef.current = payload.frame_b64.length;
           setFrame(`data:${payload.mime_type ?? "image/jpeg"};base64,${payload.frame_b64}`);
         }
         if (payload.type === "state") {
           setState(payload);
         }
         if (payload.type === "llm_decision") {
+          const inputTokens = payload.llm_input_tokens ?? 0;
+          const outputTokens = payload.llm_output_tokens ?? 0;
+          const cost = payload.llm_cost_estimate_usd ?? 0;
+          setTokenTotals((current) => ({
+            totalPrompt: current.totalPrompt + inputTokens,
+            totalCompletion: current.totalCompletion + outputTokens,
+            totalTokens: current.totalTokens + inputTokens + outputTokens,
+            totalCost: current.totalCost + cost,
+            decisionCount: current.decisionCount + 1,
+          }));
           setDecisions((current) => [
             ...current,
             {
@@ -81,14 +129,25 @@ export function useRunStream(runId?: string) {
               reasoning: payload.reasoning_summary,
               tool: payload.mcp_tool,
               params: payload.mcp_params,
+              llmInput: payload.llm_input,
+              llmOutput: payload.llm_raw_output,
+              llmDurationMs: payload.llm_duration_ms,
+              llmInputTokens: inputTokens,
+              llmOutputTokens: outputTokens,
+              llmCostEstimateUsd: cost,
             },
-          ]);
+          ].slice(-500));
         }
         if (payload.type === "mcp_call_result") {
           setDecisions((current) =>
             current.map((decision) =>
               decision.sequenceNumber === payload.sequence_number
-                ? { ...decision, stopReason: payload.mcp_stop_reason }
+                ? {
+                    ...decision,
+                    stopReason: payload.mcp_stop_reason,
+                    mcpDurationMs: payload.mcp_duration_ms,
+                    guardStatus: (payload.guard_status ?? "kept") as "kept" | "modified" | "blocked",
+                  }
                 : decision,
             ),
           );
@@ -103,7 +162,7 @@ export function useRunStream(runId?: string) {
               detected_at_tick: payload.detected_at_tick,
               fingerprint: payload.fingerprint,
             },
-          ]);
+          ].slice(-200));
         }
       };
       socket.onclose = () => {
@@ -112,6 +171,8 @@ export function useRunStream(runId?: string) {
           return;
         }
         const delay = Math.min(30_000, 1000 * 2 ** retryRef.current);
+        setRetryCount(retryRef.current);
+        setRetryDelay(delay);
         retryRef.current += 1;
         timer = setTimeout(connect, delay);
       };
@@ -129,7 +190,7 @@ export function useRunStream(runId?: string) {
   }, [runId]);
 
   return useMemo(
-    () => ({ connected, messages, frame, state, decisions, defects }),
-    [connected, messages, frame, state, decisions, defects],
+    () => ({ connected, retryCount, retryDelay, lastMessageAt, messages, frame, state, decisions, defects, tokenTotals }),
+    [connected, retryCount, retryDelay, lastMessageAt, messages, frame, state, decisions, defects, tokenTotals],
   );
 }

@@ -26,7 +26,7 @@ Key integrations:
 - `omgifol` parses Doom-format WAD maps.
 - Pillow renders static map overview PNGs.
 - FastMCP client calls the Doom MCP server over SSE.
-- Gemini can drive the agent and report generation; deterministic fallbacks are used when Gemini is unavailable.
+- Gemini drives the agent (with optional vision input — the 640×480 screenshot is sent alongside structured state JSON via Gemini's multimodal API) and report generation; deterministic fallbacks are used when Gemini is unavailable.
 - OpenCV and ffmpeg produce MP4 recordings.
 - WeasyPrint renders PDF reports.
 
@@ -40,7 +40,7 @@ Important settings:
 
 - `DATABASE_URL` or `POSTGRES_*` values for PostgreSQL.
 - `STORAGE_BASE`, `WAD_STORAGE_DIR`, `ANALYSIS_STORAGE_DIR`, `SCREENSHOT_STORAGE_DIR`, `RECORDING_STORAGE_DIR`, `REPORT_STORAGE_DIR`.
-- `GEMINI_API_KEY`, `LLM_MODEL`, `LLM_THROTTLE_SECONDS`, `GEMINI_RETRY_MAX_DELAY_SECONDS`.
+- `GEMINI_API_KEY`, `LLM_MODEL`, `LLM_THROTTLE_SECONDS` (base static throttle; overridden by dynamic throttle at runtime), `GEMINI_RETRY_MAX_DELAY_SECONDS`.
 - `MCP_DOOM_SSE_URL`.
 - `DEFAULT_RUN_TICKS`, `MAX_RUN_TICKS`, `LIVE_FRAME_FPS`, `RECORDING_FPS`, `RECORDING_TELEMETRY_STRIDE`.
 - `CORS_ORIGINS`.
@@ -85,6 +85,16 @@ Current UI/report fields:
 - `spawn_summary_by_skill`: JSON keyed by Doom difficulty `1` through `5`.
 
 `spawn_summary_by_skill` preserves authored Doom skill flags. For each skill it reports spawnable enemy/item/resource counts, enemy and item breakdowns, ratios, and estimated difficulty for backend single-player mode. If a mapper places enemies only on medium skill, those enemies are not counted as spawned at skills 1, 2, 4, or 5.
+
+Enriched map features are now extracted and stored under `spawn_summary_by_skill._map_features`:
+
+- `door_count`: total door-linedef count (specials 1, 26, 31-34, 46, 61-62, 90, 103-118).
+- `locked_door_count`: key-locked door linedefs (specials 32, 33, 34, 103, 106, 109).
+- `key_requirements`: dict with `red`, `yellow`, `blue` booleans indicating which keys exist as THINGS.
+- `teleporter_count`: thing-type 39 (teleporter landing) and 97 (teleporter exit) count.
+- `lift_count`: lift/platform linedef specials (10, 14, 62, 66-70, 87-88, 95, 100, 121-128).
+
+These features are interpolated into the agent system prompt so the LLM knows about doors, keys, teleporters, and lifts before entering the map, enabling goal-directed key-hunting and progression-aware decisions.
 
 ### `test_runs`
 
@@ -182,15 +192,17 @@ New QA runs use lockstep LLM control by default. The backend starts MCP with `as
 
 The run task:
 
-1. Renders the lockstep QA prompt with selected-difficulty static analysis.
+1. Renders the lockstep QA prompt via `render_agent_prompt()` with selected-difficulty static analysis and enriched map features (doors, keys, teleporters, lifts). All interpolated values are sanitized — curly braces `{` and `}` in any value are replaced with parentheses `(` and `)` to prevent template corruption from map names, enemy names, or other user-supplied text.
 2. Starts MCP `start_game` with `wad`, `scenario_wad`, `map_name`, `difficulty`, `episode_timeout`, and `async_player=False`.
-3. Calls `get_state`, plus non-advancing context helpers `get_threat_assessment` and `get_navigation_info`.
-4. Creates an `agent_decisions` row and broadcasts `llm_start`.
-5. Lets Gemini choose one tactical MCP tool. If Gemini is unavailable, rate-limited, or returns unusable JSON, deterministic fallback chooses visible combat, visible pickup collection, weapon/ammo switching, direct USE probes, or exploration while respecting lockstep memory.
-6. Applies backend guards so combat tools only target currently visible monsters, completed pickups are not re-targeted, repeated failed targets are avoided, and out-of-ammo combat loops are broken.
-7. Executes the selected tool, records MCP input/output, stop reason, decision timings, gameplay event, telemetry frames, notable screenshots, and MP4 frames.
-8. Broadcasts typed WebSocket messages: `llm_decision`, `mcp_call_start`, `mcp_call_result`, `state`, `frame`, `progress`, `defect`, `recording_status`, `quality_summary`, and `report_status`.
-9. Detects defects and generates a report when the run reaches completion, death, timeout, stuck stop, cancellation, or crash.
+3. Calls `get_state` (returns screenshot PNG + structured state), plus non-advancing context helpers `get_threat_assessment` and `get_navigation_info`.
+4. Tracks the current position cell in `visited_cells` within lockstep state. The LLM input includes `exploration_coverage.visited_cells_count` so it knows how much of the map it has already covered.
+5. Creates an `agent_decisions` row and broadcasts `llm_start`.
+6. Lets Gemini choose one tactical MCP tool. The screenshot PNG from `get_state` is sent alongside the structured JSON via Gemini's multimodal API, so the LLM can visually confirm geometry, door textures, enemy positions, and HUD readouts. If Gemini is unavailable, rate-limited, or returns unusable JSON, deterministic fallback chooses visible combat, visible pickup collection, weapon/ammo switching, direct USE probes, or exploration while respecting lockstep memory.
+7. Applies backend guards so combat tools only target currently visible monsters, completed pickups are not re-targeted, repeated failed targets are avoided, and out-of-ammo combat loops are broken.
+8. Executes the selected tool, records MCP input/output, stop reason, decision timings, gameplay event, telemetry frames, notable screenshots, and MP4 frames.
+9. Applies a **dynamic throttle** between decisions instead of a fixed 12s wait: 3s when enemies are visible, 6s when health < 25 or ammo = 0, 10s when progress is stalled, 12s by default. This gives the LLM faster reaction time during combat without wasting wall-clock time during quiet exploration.
+10. Broadcasts typed WebSocket messages: `llm_decision`, `mcp_call_start`, `mcp_call_result`, `state`, `frame`, `progress`, `defect`, `recording_status`, `quality_summary`, and `report_status`.
+11. Detects defects and generates a report when the run reaches completion, death, timeout, stuck stop, cancellation, or crash.
 
 Lockstep recovery is explicit:
 
@@ -279,13 +291,18 @@ Current defect sources include:
 - `ammo_starvation`, `health_deficit`, `repeated_death_location`, and `unreachable_secret`.
 - Playthrough-observed issue strings captured from decisions.
 
-Observed defects are normalized and de-duplicated. New inserts compute a stable fingerprint and update `occurrence_count` / `last_seen_tick` on repeat instead of creating duplicate rows with slightly different naming. Existing rows are still de-duplicated on read for `/runs/{run_id}/defects` and report generation.
+Observed defects are normalized and de-duplicated at two levels:
+
+- **Database-level**: New inserts compute a stable fingerprint and update `occurrence_count` / `last_seen_tick` on repeat instead of creating duplicate rows with slightly different naming. Existing rows are de-duplicated on read for `/runs/{run_id}/defects` and report generation via `dedupe_defects()`.
+- **Position-based**: Before creating a new agent-observed defect, the collector checks existing defects of the same type within 500 ticks and 100 map units. If a match is found, the new defect is skipped entirely. This prevents a single stuck position from generating dozens of near-identical GEOMETRY or PROGRESSION defects.
 
 ## Reports
 
 `ReportService` gathers run, analysis, event, decision, position, defect, and artifact data.
 
 Reports are generated from Gemini JSON when available, merged with deterministic fallback defaults. If Gemini is unavailable or returns invalid data, the fallback report is used.
+
+LLM response parsing uses a multi-strategy approach: it first tries to extract JSON from markdown code fences (`` ```json ``), then falls back to top-level brace extraction. This makes the pipeline resilient to variations in how the LLM formats its response.
 
 Report generation is difficulty-aware:
 
@@ -294,7 +311,7 @@ Report generation is difficulty-aware:
 - Hidden raw enemies/items are called out as skill-flag issues.
 - Resource ratios come from `selected_skill_summary`.
 
-Report voice is normalized before storage and rendering. Obvious blame phrases such as "the agent failed" or "the agent was unable" are rewritten to describe coverage and runtime behavior, for example "the automated playthrough did not reach combat coverage".
+Report voice is normalized before storage and rendering. Obvious blame phrases such as "the agent failed" or "the agent was unable" are rewritten to describe coverage and runtime behavior, for example "the automated playthrough did not reach combat coverage". Longer patterns (e.g., "automated playthrough was unable to") are matched before shorter catch-all patterns (e.g., "agent" → "automated playthrough") to prevent double-replacement compounding. A secondary pass corrects any remaining "automated automated playthrough" artifacts.
 
 Crash reports are first-class QA evidence. They include WAD, map, selected difficulty, failure stage, raw runtime diagnostic, static-analysis availability, endpoint expectations, and why video or trace data may be unavailable by design.
 
@@ -401,6 +418,31 @@ Representative manual product matrix:
 | `deathmatch.wad` / `MAP01` | 3 | `c77fe3da-8dc6-4324-8c15-6c0a7826b385` | Doom II style map naming and lockstep report payloads were validated. |
 | `MYHOME.wad` / `E1M1` | 3 | `a3bb1790-b982-4ccb-8110-4f7ef3d1d9ad` | Short lockstep run produced valid decision trace, JSON report, PDF, and MP4 recording. |
 | MCP unavailable startup failure | 3 | `a3ba9534-b0a6-4d6e-804b-c14050aee345` | `status=failed`, `outcome=pwad_crash`, `failure_category=pwad_crash`, zero actions, structured empty trace/position endpoints, `pwad_crash` defect, JSON report, PDF, and structured no-recording response. |
+
+### Invisible Target Failure Handling (May 2026)
+
+**Problem**: `invisible_target_failures` had no expiry mechanism. Once a combat target was rejected as `target_not_visible`, the guard blocked it permanently. The deterministic fallback kept suggesting the same invisible target because it only checked `out_of_ammo_targets`. This created an infinite loop: fallback → suggest target 7 → guard → explore → item_found (resetting low-value protections) → fallback → target 7 again.
+
+**Fix 1 — Fallback filters `invisible_target_failures`** (`gemini_service.py:_fallback_decision`): The `visible_monsters` filter now also excludes targets in `invisible_target_failures`, causing the fallback to skip to pickups or real exploration instead of repeatedly suggesting a blocked target.
+
+**Fix 2 — Guard redirect uses `stop_on_item=False`** (`run_service.py:_guard_lockstep_decision`): When the guard redirects a combat action to explore (because the target is invisible), it sets `stop_on_item=False`. This prevents the explore from immediately stopping on the same visible item and resetting low-value-explore protections, allowing the agent to actually move to a new position.
+
+**Fix 3 — Clear `invisible_target_failures` on progress** (`run_service.py:_update_lockstep_after_action`): When the agent arrives at a pickup (`move_to` → `arrived`) or lands combat hits (`target_killed`/`shots_complete` with hits/kills), the invisible failures dict is cleared. This allows previously-invisible targets to be retried now that the game state has changed.
+
+### Telemetry Frame WebSocket Broadcasting (May 2026)
+
+**Problem**: Only one frame per decision cycle was broadcast to the frontend WebSocket. During tool execution (e.g., `explore` for 80 tics), telemetry frames were captured every `telemetry_stride` tics and written to the MP4 recording, but never sent to the frontend. Combined with the throttle between decisions, this caused ~20s gaps between frame updates on the live stream.
+
+**Fix** (`run_service.py:_record_telemetry_frames`): Each decoded telemetry frame is now broadcast to the WebSocket at up to `live_frame_fps` FPS, gated by a module-level monotonic clock (`_last_telemetry_frame_at`). The post-action frame broadcast is kept as a safety net for actions without telemetry.
+
+### API Reliability Improvements (May 2026)
+
+**Problem**: The `_call_with_retry` method did one retry with a 20s capped delay, then fell back to deterministic decisions. No error logging meant the actual API failure reason was invisible. Under 15 RPM free-tier quotas and a 3-12s dynamic throttle, the effective request rate could exceed quota during combat-heavy maps.
+
+**Fixes** (`gemini_service.py`):
+- **Local rate limiter** (`_throttle_local_rate`): Tracks API calls in a sliding 60s window. Once 12 calls are reached (leaving 3 buffer for the 15 RPM quota), subsequent calls are delayed until older entries expire.
+- **3 retry attempts** (up from 1): Non-rate-limit errors retry after 5s. Rate-limit retries respect the server's `retryDelay` (capped at 60s instead of 20s).
+- **Error logging** (`logger.warning`): All API failures are logged with exception type and message. Final fallback is also logged. This makes it possible to diagnose API issues from server logs.
 
 Current operational limitations:
 

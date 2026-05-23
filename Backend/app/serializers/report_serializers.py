@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_serializer, model_validator
 
 
 class ReportOut(BaseModel):
@@ -15,6 +15,7 @@ class ReportOut(BaseModel):
     generation_status: str
     generation_error: Optional[str] = None
     pdf_path: Optional[str] = None
+    pdf_url: Optional[str] = None
     generated_at: datetime
     report_purpose: Optional[str] = None
     intended_audience: Optional[str] = None
@@ -44,10 +45,21 @@ class ReportOut(BaseModel):
     elapsed_time_seconds: Optional[int] = None
     total_actions_taken: Optional[int] = None
 
+    @model_validator(mode="after")
+    def _compute_url(self) -> "ReportOut":
+        self.pdf_url = f"/runs/{self.run_id}/report/pdf" if self.pdf_path else None
+        return self
+
+    @model_serializer(mode="wrap")
+    def _strip_path(self, handler) -> dict[str, Any]:
+        result = handler(self)
+        result.pop("pdf_path", None)
+        return result
+
 
 class ReportStatusOut(BaseModel):
     status: str
     report_id: Optional[UUID] = None
     pdf_available: bool = False
-    pdf_path: Optional[str] = None
+    pdf_url: Optional[str] = None
     generation_error: Optional[str] = None

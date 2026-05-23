@@ -1,5 +1,6 @@
 from app.models.agent_position_trail import AgentPositionTrail
 from app.models.agent_decision import AgentDecision
+from app.models.config_entry import ConfigEntry
 from app.models.defect import Defect
 from app.models.game_event import GameEvent
 from app.models.notable_event_screenshot import NotableEventScreenshot
@@ -11,6 +12,7 @@ from app.models.wad_file import WadFile
 __all__ = [
     "AgentPositionTrail",
     "AgentDecision",
+    "ConfigEntry",
     "Defect",
     "GameEvent",
     "NotableEventScreenshot",

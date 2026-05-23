@@ -52,7 +52,6 @@ class StaticAnalysisOut(BaseModel):
     enemy_breakdown: dict[str, Any]
     item_breakdown: dict[str, Any]
     spawn_summary_by_skill: dict[str, Any] = Field(default_factory=dict)
-    map_overview_png_path: str | None = None
     map_overview_png_url: str | None = None
     analyzed_at: datetime
 

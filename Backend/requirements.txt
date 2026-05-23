@@ -42,3 +42,5 @@ fastmcp==2.14.1
 ffmpeg-python==0.2.0
 pytest==9.0.3
 httpx==0.28.1
+prometheus_client>=0.21.0
+sentry-sdk>=2.0.0
