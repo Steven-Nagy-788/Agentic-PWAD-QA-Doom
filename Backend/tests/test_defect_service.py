@@ -216,6 +216,7 @@ async def test_softlock_no_defect_for_map_completed(service, mock_db):
 async def test_unreachable_secrets_detects_missed_secrets(service, mock_db):
     run = MagicMock(spec=TestRun)
     run.id = uuid4()
+    run.progress_metrics = {"coverage_percent": 75.0}
     analysis = MagicMock(spec=StaticAnalysisResult)
     analysis.secret_sector_count = 3
     events = [make_event(100, secret_count=0)]
@@ -227,6 +228,7 @@ async def test_unreachable_secrets_detects_missed_secrets(service, mock_db):
 async def test_unreachable_secrets_no_defect_when_none_exist(service, mock_db):
     run = MagicMock(spec=TestRun)
     run.id = uuid4()
+    run.progress_metrics = {"coverage_percent": 75.0}
     analysis = MagicMock(spec=StaticAnalysisResult)
     analysis.secret_sector_count = 0
     events = [make_event(100, secret_count=0)]
@@ -238,8 +240,21 @@ async def test_unreachable_secrets_no_defect_when_none_exist(service, mock_db):
 async def test_unreachable_secrets_no_defect_when_secret_found(service, mock_db):
     run = MagicMock(spec=TestRun)
     run.id = uuid4()
+    run.progress_metrics = {"coverage_percent": 75.0}
     analysis = MagicMock(spec=StaticAnalysisResult)
     analysis.secret_sector_count = 3
     events = [make_event(100, secret_count=1)]
+    await service._unreachable_secrets(run, events, analysis)
+    service.repo.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unreachable_secrets_no_defect_when_coverage_is_low(service, mock_db):
+    run = MagicMock(spec=TestRun)
+    run.id = uuid4()
+    run.progress_metrics = {"coverage_percent": 17.5}
+    analysis = MagicMock(spec=StaticAnalysisResult)
+    analysis.secret_sector_count = 3
+    events = [make_event(100, secret_count=0)]
     await service._unreachable_secrets(run, events, analysis)
     service.repo.create.assert_not_called()

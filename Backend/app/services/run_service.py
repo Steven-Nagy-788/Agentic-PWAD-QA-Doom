@@ -16,6 +16,7 @@ from app.core.database import SessionLocal
 from app.models import AgentDecision, AgentPositionTrail, Defect, GameEvent, StaticAnalysisResult, TestReport, TestRun
 from app.repositories.agent_decision_repository import AgentDecisionRepository
 from app.repositories.analysis_repository import AnalysisRepository
+from app.repositories.config_repository import ConfigRepository
 from app.repositories.defect_repository import DefectRepository
 from app.repositories.run_repository import RunRepository
 from app.repositories.wad_repository import WadRepository
@@ -74,7 +75,14 @@ class RunService:
             if analysis is None:
                 analysis = await AnalysisService(analysis_db).analyze_map(wad, map_name)
 
-        max_ticks = max(1, min(data.max_ticks or self.settings.default_run_ticks, self.settings.max_run_ticks))
+        runtime_overrides = await ConfigRepository(self.db).get_all()
+
+        def runtime_value(key: str, fallback: Any = None) -> Any:
+            return runtime_overrides.get(key, getattr(self.settings, key, fallback))
+
+        default_run_ticks = _bounded_int(runtime_value("default_run_ticks", self.settings.default_run_ticks), self.settings.default_run_ticks, lower=1)
+        max_run_ticks = _bounded_int(runtime_value("max_run_ticks", self.settings.max_run_ticks), self.settings.max_run_ticks, lower=1)
+        max_ticks = max(1, min(data.max_ticks or default_run_ticks, max_run_ticks))
         mcp_health = await probe_mcp_sse_url()
         if not mcp_health.get("reachable"):
             raise HTTPException(
@@ -99,7 +107,7 @@ class RunService:
             wad.id,
             map_name,
             data.behavior_profile,
-            self.settings.default_agent_behavior,
+            str(runtime_value("default_agent_behavior", self.settings.default_agent_behavior)),
         )
         run = await self.repo.create(
             TestRun(
@@ -108,7 +116,7 @@ class RunService:
                 map_name=map_name,
                 difficulty_level=data.difficulty_level,
                 iwad_used=wad.iwad_required,
-                llm_model=self.settings.llm_model,
+                llm_model=str(runtime_value("llm_model", self.settings.llm_model)),
                 max_ticks=max_ticks,
                 behavior_profile=behavior_profile,
                 status="pending",

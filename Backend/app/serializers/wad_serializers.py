@@ -60,3 +60,9 @@ class WadMapOut(BaseModel):
     estimated_difficulty: str | None = None
     spawn_summary_by_skill: dict[str, object] | None = None
     map_overview_png_url: str | None = None
+    map_min_x: int | None = None
+    map_max_x: int | None = None
+    map_min_y: int | None = None
+    map_max_y: int | None = None
+    map_width_units: int | None = None
+    map_height_units: int | None = None

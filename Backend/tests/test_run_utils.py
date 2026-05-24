@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from app.core.behavior_profiles import PROFILES
 from app.services.run_utils import (
     _bounded_float,
     _bounded_int,
@@ -16,6 +17,7 @@ from app.services.run_utils import (
     _summary,
     _track_explored_sectors,
     _unique_lockstep_tick,
+    get_behavior_profile,
 )
 
 
@@ -249,3 +251,13 @@ def test_merge_hypotheses_deduplicates_and_limits() -> None:
         "ClipBox pickup may be unreachable",
         "Invisible collision near spawn",
     ]
+
+
+def test_behavior_profile_fallback_uses_settings_default() -> None:
+    profile = get_behavior_profile(None)
+    assert profile.name in PROFILES
+
+
+def test_behavior_profile_throttle_keys_match_lockstep_contexts() -> None:
+    for profile in PROFILES.values():
+        assert {"combat", "low_health", "stuck", "default"} <= set(profile.throttle_delays)

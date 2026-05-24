@@ -21,6 +21,7 @@ from app.services.analysis_service import (
     AnalysisService,
     detect_iwad_requirement,
     detect_map_names,
+    map_bounds_for_wad,
     map_metadata_for_wad,
     player_start_counts,
 )
@@ -178,6 +179,7 @@ class WadService:
         for map_name in wad.detected_maps or []:
             analysis = await repo.get_by_wad_and_map(wad.id, map_name)
             map_metadata = metadata.get(map_name, {})
+            bounds = await self._map_bounds(wad, map_name, analysis)
             maps.append(
                 WadMapOut(
                     wad_file_id=wad.id,
@@ -199,9 +201,45 @@ class WadService:
                     map_overview_png_url=(
                         f"/wads/{wad.id}/map-png?map_name={map_name}" if analysis and analysis.map_overview_png_path else None
                     ),
+                    map_min_x=bounds.get("min_x") if bounds else None,
+                    map_max_x=bounds.get("max_x") if bounds else None,
+                    map_min_y=bounds.get("min_y") if bounds else None,
+                    map_max_y=bounds.get("max_y") if bounds else None,
+                    map_width_units=analysis.map_width_units if analysis else None,
+                    map_height_units=analysis.map_height_units if analysis else None,
                 )
             )
         return maps
+
+    async def _map_bounds(self, wad: WadFile, map_name: str, analysis) -> dict[str, int] | None:
+        bounds = _analysis_map_bounds(analysis)
+        if bounds:
+            return bounds
+        try:
+            return await asyncio.to_thread(map_bounds_for_wad, wad.stored_path, map_name)
+        except Exception:
+            return None
+
+
+def _analysis_map_bounds(analysis) -> dict[str, int] | None:
+    if analysis is None:
+        return None
+    features = (analysis.spawn_summary_by_skill or {}).get("_map_features")
+    if not isinstance(features, dict):
+        return None
+    bounds = features.get("bounds")
+    if not isinstance(bounds, dict):
+        return None
+    try:
+        min_x = int(bounds["min_x"])
+        max_x = int(bounds["max_x"])
+        min_y = int(bounds["min_y"])
+        max_y = int(bounds["max_y"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if min_x == max_x or min_y == max_y:
+        return None
+    return {"min_x": min_x, "max_x": max_x, "min_y": min_y, "max_y": max_y}
 
 
 async def reanalyze_wad_task(wad_id: uuid.UUID) -> None:

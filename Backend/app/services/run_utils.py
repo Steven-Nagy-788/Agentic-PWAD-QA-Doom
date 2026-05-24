@@ -28,8 +28,7 @@ def get_behavior_profile(run: Any | None):
             return get_profile(name)
         except KeyError:
             pass
-    from app.core.config import settings as _settings
-    return get_profile(_settings.DEFAULT_AGENT_BEHAVIOR)
+    return get_profile(get_settings().default_agent_behavior)
 
 
 def _ensure_aware(value: datetime | None) -> datetime | None:

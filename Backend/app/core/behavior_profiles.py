@@ -36,10 +36,10 @@ THOROUGH = BehaviorProfile(
     combat_stride=1,
     stuck_stride=2,
     throttle_delays={
-        "move": 0.5,
-        "turn": 0.3,
-        "use": 0.5,
-        "check_position": 0.3,
+        "combat": 0.5,
+        "low_health": 0.75,
+        "stuck": 2.0,
+        "default": 1.5,
     },
 )
 
@@ -60,10 +60,10 @@ FAST = BehaviorProfile(
     combat_stride=2,
     stuck_stride=10,
     throttle_delays={
-        "move": 0.1,
-        "turn": 0.1,
-        "use": 0.3,
-        "check_position": 0.8,
+        "combat": 0.1,
+        "low_health": 0.25,
+        "stuck": 0.8,
+        "default": 0.4,
     },
 )
 
@@ -84,10 +84,10 @@ EXPLOIT_FOCUSED = BehaviorProfile(
     combat_stride=1,
     stuck_stride=1,
     throttle_delays={
-        "move": 0.05,
-        "turn": 0.05,
-        "use": 0.05,
-        "check_position": 0.1,
+        "combat": 0.05,
+        "low_health": 0.1,
+        "stuck": 0.2,
+        "default": 0.1,
     },
 )
 

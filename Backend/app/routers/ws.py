@@ -11,6 +11,7 @@ router = APIRouter(tags=["Trace"])
 
 
 @router.websocket("/runs/{run_id}")
+@router.websocket("/ws/runs/{run_id}")
 async def run_websocket(run_id: UUID, websocket: WebSocket) -> None:
     await websocket_service.connect(run_id, websocket)
     try:

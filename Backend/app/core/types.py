@@ -27,6 +27,7 @@ class LockstepState(TypedDict, total=False):
     attempted_interactions: list[dict]
     hypotheses: list[str]
     new_cells_last_5_decisions: int
+    total_map_cells_estimate: int | None
     _new_cells_current: int
     _new_cells_decision_counts: list[int]
 

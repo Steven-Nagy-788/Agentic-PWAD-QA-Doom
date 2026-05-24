@@ -135,28 +135,39 @@ class RunMemoryService:
 
         stuck_cells = []
         death_cells = []
-        kill_cells = []
+        key_cells = []
+        secret_cells = []
         starve_cells = []
+        visited_count = 0
         for row in rows:
-            cell = f"cell ({row.cell_x},{row.cell_y})"
+            total = int(row.total_occurrences or 0)
+            cell = f"cell ({row.cell_x},{row.cell_y}) {total}x"
             if row.event_type == "stuck":
                 stuck_cells.append(cell)
             elif row.event_type == "death":
                 death_cells.append(cell)
-            elif row.event_type == "kill":
-                kill_cells.append(cell)
+            elif row.event_type == "key_found":
+                key_cells.append(cell)
+            elif row.event_type == "secret_found":
+                secret_cells.append(cell)
             elif row.event_type in {"ammo_starvation", "health_deficit"}:
                 starve_cells.append(cell)
+            elif row.event_type == "visited":
+                visited_count += 1
 
         parts = []
         if stuck_cells:
             parts.append(f"Stuck events recorded in {len(stuck_cells)} cell(s): {', '.join(stuck_cells[:6])}")
         if death_cells:
             parts.append(f"Deaths recorded in {len(death_cells)} cell(s): {', '.join(death_cells[:6])}")
-        if kill_cells:
-            parts.append(f"Kills recorded in {len(kill_cells)} cell(s): {', '.join(kill_cells[:6])}")
+        if key_cells:
+            parts.append(f"Keys found in {len(key_cells)} cell(s): {', '.join(key_cells[:6])}")
+        if secret_cells:
+            parts.append(f"Secrets found in {len(secret_cells)} cell(s): {', '.join(secret_cells[:6])}")
         if starve_cells:
             parts.append(f"Resource starvation in {len(starve_cells)} cell(s): {', '.join(starve_cells[:6])}")
+        if visited_count:
+            parts.append(f"Prior runs recorded visited coverage in {visited_count} coarse cell(s).")
         if not parts:
             return ""
         return "Spatial memory from prior runs:\n" + "\n".join(parts)
@@ -210,16 +221,26 @@ class RunMemoryService:
     ) -> None:
         CELL_SIZE = 128.0
         cell_events: dict[tuple[int, int, str], int] = defaultdict(int)
+        previous_secret_count = 0
         for event in events:
             cx = round(event.player_x / CELL_SIZE)
             cy = round(event.player_y / CELL_SIZE)
-            cell_events[(cx, cy, event.event_type)] += 1
+            cell_events[(cx, cy, "visited")] += 1
+            if event.event_type in {"stuck", "death", "kill", "secret_found"}:
+                cell_events[(cx, cy, event.event_type)] += 1
+            if int(event.secret_count or 0) > previous_secret_count:
+                cell_events[(cx, cy, "secret_found")] += 1
+            previous_secret_count = max(previous_secret_count, int(event.secret_count or 0))
 
         for defect in defects:
             if defect.position_x is not None and defect.position_y is not None:
                 cx = round(defect.position_x / CELL_SIZE)
                 cy = round(defect.position_y / CELL_SIZE)
                 etype = defect.defect_type
+                if etype not in {"stuck", "death", "ammo_starvation", "health_deficit", "softlock_navigation"}:
+                    continue
+                if etype == "softlock_navigation":
+                    etype = "stuck"
                 cell_events[(cx, cy, etype)] += 1
 
         now = datetime.now(UTC)
@@ -234,6 +255,7 @@ class RunMemoryService:
                     event_type=etype,
                     occurrence_count=count,
                     last_seen_run_id=run_id,
+                    created_at=now,
                     updated_at=now,
                 )
                 .on_conflict_do_update(

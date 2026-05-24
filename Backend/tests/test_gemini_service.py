@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.gemini_service import GeminiService
+from app.services.gemini_service import GeminiService, estimate_llm_cost_usd
 
 
 # ── _extract_json_balanced ───────────────────────────────────────────────────
@@ -138,3 +138,12 @@ def test_parse_decision_tool_is_mcp_tool_case_sensitive() -> None:
         '{"mcp_tool": "aim_and_shoot", "mcp_params": {"object_id": 3}, "reasoning_summary": "combat"}'
     )
     assert result["mcp_tool"] == "aim_and_shoot"
+
+
+def test_cost_estimate_uses_per_million_rates() -> None:
+    assert round(estimate_llm_cost_usd(
+        1_000_000,
+        500_000,
+        input_cost_per_million=0.10,
+        output_cost_per_million=0.40,
+    ), 6) == 0.30

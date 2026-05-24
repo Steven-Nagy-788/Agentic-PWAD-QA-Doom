@@ -36,14 +36,25 @@ def get_last_token_usage() -> dict[str, int]:
 
 
 class GeminiService:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        llm_model: str | None = None,
+        rate_limit_calls_per_minute: int | None = None,
+    ) -> None:
         self.settings = get_settings()
+        self.llm_model = llm_model or self.settings.llm_model
+        self.rate_limit_calls_per_minute = (
+            self.settings.gemini_rate_limit_calls_per_minute
+            if rate_limit_calls_per_minute is None
+            else rate_limit_calls_per_minute
+        )
 
     async def probe_model(self) -> dict[str, str]:
         if not self.settings.gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY is not configured")
         response = await self._generate_content("Return ok.", {})
-        return {"model": self.settings.llm_model, "response": response.text or ""}
+        return {"model": self.llm_model, "response": response.text or ""}
 
     async def decide(self, system_prompt: str, llm_input: dict[str, Any], screenshot_png: bytes | None = None) -> dict[str, Any]:
         if not self.settings.gemini_api_key:
@@ -84,7 +95,7 @@ class GeminiService:
         screenshot_png: bytes | None = None,
     ) -> dict[str, Any]:
         last_error = ""
-        await _throttle_local_rate()
+        await _throttle_local_rate(self.rate_limit_calls_per_minute)
         for attempt in range(3):
             try:
                 response = await self._call_gemini(system_prompt, llm_input, screenshot_png=screenshot_png)
@@ -143,12 +154,12 @@ class GeminiService:
                     types.Part.from_bytes(data=screenshot_png, mime_type="image/png"),
                 ]
                 return await async_client.models.generate_content(
-                    model=self.settings.llm_model,
+                    model=self.llm_model,
                     contents=types.Content(parts=parts, role="user"),
                 )
 
             if async_client is not None and hasattr(async_client, "models"):
-                return await async_client.models.generate_content(model=self.settings.llm_model, contents=text_part)
+                return await async_client.models.generate_content(model=self.llm_model, contents=text_part)
 
             def generate() -> Any:
                 if screenshot_png is not None:
@@ -157,10 +168,10 @@ class GeminiService:
                         types.Part.from_bytes(data=screenshot_png, mime_type="image/png"),
                     ]
                     return client.models.generate_content(
-                        model=self.settings.llm_model,
+                        model=self.llm_model,
                         contents=types.Content(parts=parts, role="user"),
                     )
-                return client.models.generate_content(model=self.settings.llm_model, contents=text_part)
+                return client.models.generate_content(model=self.llm_model, contents=text_part)
 
             return await asyncio.to_thread(generate)
 
@@ -434,13 +445,14 @@ class GeminiService:
         }
 
 
-async def _throttle_local_rate() -> None:
+async def _throttle_local_rate(max_calls: int) -> None:
     global _api_call_timestamps
+    if max_calls <= 0:
+        return
     now = time.monotonic()
     window = 60.0
     _api_call_timestamps = [t for t in _api_call_timestamps if now - t < window]
 
-    max_calls = 12
     if len(_api_call_timestamps) >= max_calls:
         oldest = _api_call_timestamps[0]
         wait = window - (now - oldest) + 1.0
@@ -452,6 +464,18 @@ def _record_api_call() -> None:
     global _api_call_timestamps
     _api_call_timestamps.append(time.monotonic())
     _api_call_timestamps = [t for t in _api_call_timestamps if time.monotonic() - t < 60.0]
+
+
+def estimate_llm_cost_usd(
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    *,
+    input_cost_per_million: float,
+    output_cost_per_million: float,
+) -> float:
+    input_cost = max(0, int(prompt_tokens or 0)) * input_cost_per_million / 1_000_000
+    output_cost = max(0, int(completion_tokens or 0)) * output_cost_per_million / 1_000_000
+    return input_cost + output_cost
 
 
 def _normalize_hypotheses(value: Any) -> list[str]:

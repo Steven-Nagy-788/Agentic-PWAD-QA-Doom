@@ -1,12 +1,14 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element */
+
 import { use } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { Activity, X } from "lucide-react";
-import { Run, Defect, Decision, PositionSample, TraceEntry, UsageStats, BenchmarkStats, WadMap, apiGet, apiSend, API_BASE } from "@/lib/api";
+import { Run, Defect, Decision, PositionSample, TraceEntry, UsageStats, BenchmarkStats, WadMap, ReportStatus, apiGet, apiSend, API_BASE } from "@/lib/api";
 import { useRunStream } from "@/hooks/useRunStream";
-import { Metric, OutcomeBadge, SkeletonRows, InlineError, errorMessage, formatTime } from "@/lib/components/shared";
+import { Metric, OutcomeBadge, SkeletonRows, formatTime } from "@/lib/components/shared";
 import { DefectBadge } from "@/components/DefectBadge";
 import { DecisionTimeline } from "@/components/DecisionTimeline";
 import { MapCanvas } from "@/components/MapCanvas";
@@ -65,7 +67,9 @@ function LiveRunContent({ runId }: { runId: string }) {
             {stream.frame ? (
               <img src={stream.frame} alt="Live game frame" role="img" aria-label="Live game frame" className="aspect-[4/3] max-h-full max-w-full object-contain" />
             ) : (
-              <div className="aspect-[4/3] w-full max-w-4xl bg-neutral-900" />
+              <div className="grid aspect-[4/3] w-full max-w-4xl place-items-center border border-neutral-800 bg-neutral-900 text-sm text-neutral-400">
+                Waiting for live frame
+              </div>
             )}
           </div>
         </div>
@@ -78,13 +82,14 @@ function LiveRunContent({ runId }: { runId: string }) {
 
 function RunDetailContent({ runId }: { runId: string }) {
   const router = useRouter();
-  const run = useQuery({ queryKey: ["run", runId], queryFn: () => apiGet<Run>(`/runs/${runId}`) });
+  const run = useQuery({ queryKey: ["run", runId], queryFn: () => apiGet<Run>(`/runs/${runId}`), refetchInterval: 5_000 });
   const defects = useQuery({ queryKey: ["run-defects", runId], queryFn: () => apiGet<Defect[]>(`/runs/${runId}/defects`) });
   const decisions = useQuery({ queryKey: ["run-decisions", runId], queryFn: () => apiGet<Decision[]>(`/runs/${runId}/decisions?page_size=500`) });
   const trail = useQuery({ queryKey: ["run-trail", runId], queryFn: () => apiGet<PositionSample[]>(`/runs/${runId}/position-trail`) });
   const events = useQuery({ queryKey: ["run-events", runId], queryFn: () => apiGet<TraceEntry[]>(`/runs/${runId}/events?type=kill,death,item_pickup,secret_found,stuck`) });
   const usage = useQuery({ queryKey: ["run-usage", runId], queryFn: () => apiGet<UsageStats>(`/runs/${runId}/usage`) });
   const benchmark = useQuery({ queryKey: ["run-benchmark", runId], queryFn: () => apiGet<BenchmarkStats>(`/runs/${runId}/benchmark`) });
+  const reportStatus = useQuery({ queryKey: ["run-report-status", runId], queryFn: () => apiGet<ReportStatus>(`/runs/${runId}/report/status`), refetchInterval: 3_000 });
   const maps = useQuery({
     queryKey: ["run-maps", run.data?.wad_file_id],
     queryFn: () => apiGet<WadMap[]>(`/wads/${run.data?.wad_file_id}/maps`),
@@ -223,10 +228,26 @@ function RunDetailContent({ runId }: { runId: string }) {
         </div>
         <div>
           <h2 className="mb-3 text-sm font-semibold">Recording</h2>
-          <video className="aspect-video w-full rounded border border-neutral-200 bg-black" controls src={`${API_BASE}/runs/${runId}/recording`} />
-          <a className="mt-3 inline-flex h-10 items-center rounded bg-neutral-950 px-4 text-sm font-semibold text-white" href={`${API_BASE}/runs/${runId}/report/pdf`}>
-            PDF Report
-          </a>
+          {run.data.recording_mp4_url ? (
+            <video className="aspect-video w-full rounded border border-neutral-200 bg-black" controls src={`${API_BASE}/runs/${runId}/recording`} />
+          ) : (
+            <div className="grid aspect-video w-full place-items-center rounded border border-neutral-200 bg-neutral-950 text-sm text-neutral-300">Recording not ready</div>
+          )}
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-neutral-500">
+            <span className="rounded border border-neutral-200 bg-white px-2 py-1">Report: {reportStatus.data?.status ?? "checking"}</span>
+            <span className="rounded border border-neutral-200 bg-white px-2 py-1">
+              Recording: {String(run.data.recording_metadata?.quality_status ?? (run.data.recording_mp4_url ? "available" : "pending"))}
+            </span>
+          </div>
+          {reportStatus.data?.pdf_available || run.data.report_pdf_url ? (
+            <a className="mt-3 inline-flex h-10 items-center rounded bg-neutral-950 px-4 text-sm font-semibold text-white" href={`${API_BASE}/runs/${runId}/report/pdf`}>
+              PDF Report
+            </a>
+          ) : (
+            <button disabled className="mt-3 inline-flex h-10 items-center rounded bg-neutral-200 px-4 text-sm font-semibold text-neutral-500">
+              PDF Report
+            </button>
+          )}
         </div>
       </section>
     </div>

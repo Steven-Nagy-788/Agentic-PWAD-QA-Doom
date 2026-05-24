@@ -38,9 +38,12 @@ class Settings(BaseSettings):
     iwad_used: str = "freedoom2"
     llm_model: str = "gemini-2.5-flash-lite"
     gemini_api_key: str = ""
-    llm_throttle_seconds: float = 12.0
+    llm_throttle_seconds: float = 2.0
     gemini_retry_max_delay_seconds: float = 20.0
     gemini_max_concurrency: int = 1
+    gemini_rate_limit_calls_per_minute: int = 15
+    llm_input_cost_per_million: float = 0.10
+    llm_output_cost_per_million: float = 0.40
     mcp_doom_sse_url: str = "http://localhost:8001/sse"
     mcp_probe_timeout_seconds: float = 3.0
     mcp_tool_timeout_seconds: float = 30.0
@@ -78,11 +81,20 @@ class Settings(BaseSettings):
             raise ValueError("must be greater than 0")
         return value
 
+    @field_validator("gemini_rate_limit_calls_per_minute")
+    @classmethod
+    def _non_negative_int(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("must be greater than or equal to 0")
+        return value
+
     @field_validator(
         "llm_throttle_seconds",
         "gemini_retry_max_delay_seconds",
         "mcp_probe_timeout_seconds",
         "mcp_tool_timeout_seconds",
+        "llm_input_cost_per_million",
+        "llm_output_cost_per_million",
         mode="after",
     )
     @classmethod

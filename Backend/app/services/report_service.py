@@ -17,11 +17,11 @@ from weasyprint import HTML
 from PIL import Image, ImageDraw
 
 from app.core.config import get_settings
-from app.models import AgentDecision, AgentPositionTrail, Defect, GameEvent, StaticAnalysisResult, TestReport, TestRun
+from app.models import AgentDecision, AgentPositionTrail, Defect, GameEvent, StaticAnalysisResult, TestReport, TestRun, WadFile
 from app.repositories.defect_repository import DefectRepository
 from app.repositories.report_repository import ReportRepository
 from app.repositories.run_repository import RunRepository
-from app.services.analysis_service import selected_skill_spawn_summary
+from app.services.analysis_service import map_bounds_for_wad, selected_skill_spawn_summary
 from app.services.prompt_service import report_prompt_path
 
 
@@ -43,6 +43,7 @@ class ReportService:
         if run is None:
             raise ValueError("Run not found")
         analysis = await self.db.get(StaticAnalysisResult, run.static_analysis_id) if run.static_analysis_id else None
+        map_bounds = await self._map_bounds_for_report(run, analysis)
         defects = await DefectRepository(self.db).list_by_run(run_id)
         events = list(
             (
@@ -86,11 +87,12 @@ class ReportService:
             "first_ticks": list(events[:5]),
             "last_ticks": list(events[-5:]),
             "position_trail": positions,
+            "map_bounds": map_bounds,
             "metrics": self._build_metrics(run, analysis, events, positions, decisions),
         }
         report_json = await self._call_gemini_or_fallback(payload)
         render_report = self._sanitize_report_voice(self._normalize_report_sections(report_json))
-        pdf_path = self._render_pdf(run_id, render_report, payload)
+        pdf_path = await asyncio.to_thread(self._render_pdf, run_id, render_report, payload)
         fields = self._report_fields(run, render_report, pdf_path)
         if existing is not None:
             created = await self.repo.update(existing, **fields)
@@ -98,6 +100,22 @@ class ReportService:
             created = await self.repo.create(TestReport(run_id=run_id, **fields))
         await RunRepository(self.db).update(run, report_pdf_path=str(pdf_path))
         return created
+
+    async def _map_bounds_for_report(
+        self,
+        run: TestRun,
+        analysis: StaticAnalysisResult | None,
+    ) -> dict[str, int] | None:
+        bounds = self._analysis_map_bounds(analysis)
+        if bounds:
+            return bounds
+        wad = await self.db.get(WadFile, run.wad_file_id)
+        if wad is None:
+            return None
+        try:
+            return await asyncio.to_thread(map_bounds_for_wad, wad.stored_path, run.map_name)
+        except Exception:
+            return None
 
     @staticmethod
     def _report_fields(run: TestRun, report_json: dict, pdf_path: Path) -> dict:
@@ -333,6 +351,7 @@ class ReportService:
         first_position = positions[0] if positions else None
         last_position = positions[-1] if positions else None
         skill_summary = selected_skill_spawn_summary(analysis, run.difficulty_level)
+        progress_metrics = run.progress_metrics or {}
         raw_enemy_count = int(analysis.thing_count_enemies or 0) if analysis else 0
         spawned_enemy_count = int(skill_summary.get("thing_count_enemies") or 0)
         raw_item_count = int(analysis.thing_count_items or 0) if analysis else 0
@@ -364,10 +383,12 @@ class ReportService:
             "max_kills": max((event.kill_count for event in events), default=run.total_kills),
             "max_items": max((event.item_count for event in events), default=run.total_items_collected),
             "max_secrets": max((event.secret_count for event in events), default=run.secrets_found),
+            "secret_sector_count": analysis.secret_sector_count if analysis else None,
             "recording_mp4_url": f"/runs/{run.id}/recording" if run.recording_mp4_path else None,
             "report_pdf_url": f"/runs/{run.id}/report/pdf" if run.report_pdf_path else None,
             "recording_metadata": run.recording_metadata or {},
-            "progress_metrics": run.progress_metrics or {},
+            "progress_metrics": progress_metrics,
+            "coverage_percent": progress_metrics.get("coverage_percent"),
             "agent_quality_flags": run.agent_quality_flags or {},
             "recording_file_size_bytes": ReportService._safe_file_size(run.recording_mp4_path),
         }
@@ -458,7 +479,16 @@ class ReportService:
         resource_pass = spawned_enemies == 0 or (health_ratio >= 0.15 and ammo_ratio >= 0.8 and not any(
             defect.defect_type in {"ammo_starvation", "health_deficit"} for defect in defects
         ))
-        secret_pass = bool((analysis and analysis.secret_sector_count == 0) or (run.secrets_found or 0) > 0)
+        coverage_percent = float(metrics.get("coverage_percent") or 0)
+        if analysis and analysis.secret_sector_count == 0:
+            secret_status = "PASS"
+        elif (run.secrets_found or 0) > 0:
+            secret_status = "PASS"
+        elif coverage_percent >= 60:
+            secret_status = "FAIL"
+        else:
+            secret_status = "LIMITED"
+        secret_pass = secret_status == "PASS"
         overall_verdict = (
             "PASS"
             if all([map_navigation_pass, combat_pass, resource_pass, secret_pass])
@@ -553,7 +583,7 @@ class ReportService:
                 "map_navigation": "PASS" if map_navigation_pass else "FAIL",
                 "combat_engagement": "PASS" if combat_pass else "FAIL",
                 "resource_balance": "PASS" if resource_pass else "FAIL",
-                "secret_coverage": "PASS" if secret_pass else "FAIL",
+                "secret_coverage": secret_status,
                 "overall_verdict": overall_verdict,
                 "navigation_rationale": (
                     "The map exit was reached."
@@ -573,7 +603,15 @@ class ReportService:
                 "secret_rationale": (
                     "No secret sectors exist in static analysis."
                     if analysis and analysis.secret_sector_count == 0
-                    else f"{run.secrets_found or 0} secret(s) found."
+                    else (
+                        f"{run.secrets_found or 0} secret(s) found."
+                        if (run.secrets_found or 0) > 0
+                        else (
+                            f"0 secrets found after {coverage_percent:.1f}% coarse cell coverage."
+                            if coverage_percent >= 60
+                            else f"0 secrets found, but only {coverage_percent:.1f}% coarse cell coverage was achieved."
+                        )
+                    )
                 ),
             },
             "risk_areas": ReportService._risk_areas(run, defects, metrics),
@@ -775,7 +813,12 @@ class ReportService:
         missing = []
         if run.outcome != "map_completed":
             missing.append("exit reliability")
-        if metrics["max_secrets"] in (None, 0):
+        secret_sector_count = int(metrics.get("secret_sector_count") or 0)
+        if (
+            secret_sector_count > 0
+            and metrics["max_secrets"] in (None, 0)
+            and float(metrics.get("coverage_percent") or 0) >= 60
+        ):
             missing.append("secret accessibility")
         if metrics["position_cluster_count"] < 3:
             missing.append("full-map traversal depth")
@@ -1045,6 +1088,7 @@ class ReportService:
         map_path: str | None,
         positions: list[AgentPositionTrail],
         events: list[GameEvent],
+        map_bounds: dict[str, int] | None = None,
     ) -> str | None:
         if not map_path or not positions:
             return None
@@ -1054,8 +1098,14 @@ class ReportService:
         try:
             image = Image.open(path).convert("RGBA")
             draw = ImageDraw.Draw(image, "RGBA")
-            all_points = [(position.x, position.y) for position in positions]
-            min_x, max_x, min_y, max_y = _point_bounds(all_points)
+            if map_bounds:
+                min_x = map_bounds["min_x"]
+                max_x = map_bounds["max_x"]
+                min_y = map_bounds["min_y"]
+                max_y = map_bounds["max_y"]
+            else:
+                all_points = [(position.x, position.y) for position in positions]
+                min_x, max_x, min_y, max_y = _point_bounds(all_points)
 
             def project(x: float, y: float) -> tuple[int, int]:
                 width, height = image.size
@@ -1063,9 +1113,17 @@ class ReportService:
                 py = int(height - 20 - ((y - min_y) / max(max_y - min_y, 1)) * (height - 40))
                 return px, py
 
-            for position in positions:
-                x, y = project(position.x, position.y)
-                draw.ellipse((x - 4, y - 4, x + 4, y + 4), fill=(80, 80, 80, 110))
+            trail_points = [project(position.x, position.y) for position in positions]
+            if len(trail_points) > 1:
+                draw.line(trail_points, fill=(37, 99, 235, 235), width=6, joint="curve")
+                draw.line(trail_points, fill=(147, 197, 253, 210), width=2, joint="curve")
+            for x, y in trail_points:
+                draw.ellipse((x - 4, y - 4, x + 4, y + 4), fill=(59, 130, 246, 180), outline=(255, 255, 255, 180), width=1)
+            if trail_points:
+                start_x, start_y = trail_points[0]
+                end_x, end_y = trail_points[-1]
+                draw.ellipse((start_x - 8, start_y - 8, start_x + 8, start_y + 8), fill=(22, 163, 74, 240), outline=(255, 255, 255, 230), width=2)
+                draw.ellipse((end_x - 9, end_y - 9, end_x + 9, end_y + 9), fill=(245, 158, 11, 245), outline=(255, 255, 255, 240), width=2)
             for event in events:
                 if event.event_type == "normal":
                     continue
@@ -1101,8 +1159,13 @@ class ReportService:
         verdict_keys = ["map_navigation", "combat_engagement", "resource_balance", "secret_coverage", "overall_verdict"]
         rationale_keys = ["navigation_rationale", "combat_rationale", "resource_rationale", "secret_rationale"]
         display_defects = payload["defects"][:25]
-        display_decisions = payload.get("decisions", [])[:40]
+        all_decisions = payload.get("decisions", [])
+        if len(all_decisions) > 16:
+            display_decisions = [*all_decisions[:8], *all_decisions[-8:]]
+        else:
+            display_decisions = all_decisions
         defect_omitted_count = max(len(payload["defects"]) - len(display_defects), 0)
+        decision_omitted_count = max(len(all_decisions) - len(display_decisions), 0)
         display_outcome = ReportService._display_outcome(payload["run"], payload["defects"])
         analysis = payload.get("analysis")
         run = payload["run"]
@@ -1111,6 +1174,7 @@ class ReportService:
             getattr(analysis, "map_overview_png_path", None),
             payload.get("position_trail") or [],
             payload.get("events") or [],
+            payload.get("map_bounds") or ReportService._analysis_map_bounds(analysis),
         )
         metric_cards = [
             {"label": "Duration", "value": getattr(run, "duration_seconds", None) or 0},
@@ -1136,6 +1200,19 @@ class ReportService:
                     "stop_reason": summary.get("stop_reason") if isinstance(summary, dict) else None,
                 }
             )
+        decision_rows = [
+            {
+                "sequence_number": decision.sequence_number,
+                "tick_before": decision.tick_before,
+                "tick_after": decision.tick_after,
+                "mcp_tool": decision.mcp_tool,
+                "mcp_stop_reason": decision.mcp_stop_reason,
+                "reasoning_summary": decision.reasoning_summary,
+                "mcp_input": ReportService._json_block(getattr(decision, "mcp_input", None), limit=700),
+                "mcp_output": ReportService._json_block(getattr(decision, "mcp_output", None), limit=900),
+            }
+            for decision in display_decisions
+        ]
         templates_dir = Path(__file__).resolve().parent.parent / "templates"
         env = Environment(loader=FileSystemLoader(str(templates_dir)))
         template = env.get_template("report.html.j2")
@@ -1143,8 +1220,9 @@ class ReportService:
             run=payload["run"],
             analysis=payload["analysis"],
             defects=display_defects,
-            decisions=display_decisions,
+            decisions=decision_rows,
             defect_omitted_count=defect_omitted_count,
+            decision_omitted_count=decision_omitted_count,
             event_rows=event_rows,
             metrics=payload["metrics"],
             report=report,
@@ -1156,6 +1234,37 @@ class ReportService:
             metric_cards=metric_cards,
             difficulty_rows=difficulty_rows,
         )
+
+    @staticmethod
+    def _json_block(value: Any, limit: int = 1800) -> str:
+        if value in (None, {}, []):
+            return ""
+        try:
+            text = json.dumps(value, indent=2, sort_keys=True, default=str)
+        except TypeError:
+            text = str(value)
+        return text if len(text) <= limit else f"{text[:limit]}..."
+
+    @staticmethod
+    def _analysis_map_bounds(analysis: StaticAnalysisResult | None) -> dict[str, int] | None:
+        if analysis is None:
+            return None
+        features = (getattr(analysis, "spawn_summary_by_skill", None) or {}).get("_map_features")
+        if not isinstance(features, dict):
+            return None
+        bounds = features.get("bounds")
+        if not isinstance(bounds, dict):
+            return None
+        try:
+            min_x = int(bounds["min_x"])
+            max_x = int(bounds["max_x"])
+            min_y = int(bounds["min_y"])
+            max_y = int(bounds["max_y"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if min_x == max_x or min_y == max_y:
+            return None
+        return {"min_x": min_x, "max_x": max_x, "min_y": min_y, "max_y": max_y}
 
 
 def _point_bounds(points: list[tuple[float, float]]) -> tuple[float, float, float, float]:

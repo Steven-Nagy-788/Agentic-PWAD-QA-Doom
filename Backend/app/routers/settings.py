@@ -17,6 +17,9 @@ router = APIRouter(tags=["Settings"])
 class SettingsUpdatePayload(BaseModel):
     llm_model: Optional[str] = None
     llm_throttle_seconds: Optional[float] = None
+    gemini_rate_limit_calls_per_minute: Optional[int] = None
+    llm_input_cost_per_million: Optional[float] = None
+    llm_output_cost_per_million: Optional[float] = None
     max_run_ticks: Optional[int] = None
     default_run_ticks: Optional[int] = None
     live_frame_fps: Optional[float] = None
@@ -32,6 +35,12 @@ def _merge_settings(env: Any, overrides: dict[str, Any]) -> dict[str, Any]:
         "app_env": env.app_env,
         "llm_model": overrides.get("llm_model", env.llm_model),
         "llm_throttle_seconds": overrides.get("llm_throttle_seconds", env.llm_throttle_seconds),
+        "gemini_rate_limit_calls_per_minute": overrides.get(
+            "gemini_rate_limit_calls_per_minute",
+            env.gemini_rate_limit_calls_per_minute,
+        ),
+        "llm_input_cost_per_million": overrides.get("llm_input_cost_per_million", env.llm_input_cost_per_million),
+        "llm_output_cost_per_million": overrides.get("llm_output_cost_per_million", env.llm_output_cost_per_million),
         "max_run_ticks": overrides.get("max_run_ticks", env.max_run_ticks),
         "default_run_ticks": overrides.get("default_run_ticks", env.default_run_ticks),
         "live_frame_fps": overrides.get("live_frame_fps", env.live_frame_fps),

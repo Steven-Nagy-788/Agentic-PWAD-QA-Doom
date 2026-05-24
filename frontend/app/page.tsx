@@ -1,14 +1,13 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element */
+
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type React from "react";
-import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Upload } from "lucide-react";
 import { WadFile, WadMap, apiGet, assetUrl, uploadWad } from "@/lib/api";
 import { Metric, SkeletonRows, InlineError, errorMessage, formatBytes } from "@/lib/components/shared";
-import { MapCanvas } from "@/components/MapCanvas";
-import { SkillHeatmap } from "@/components/SkillHeatmap";
 
 export default function WadLibraryPage() {
   const router = useRouter();

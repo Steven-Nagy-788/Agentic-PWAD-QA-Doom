@@ -144,6 +144,14 @@ def player_start_counts(wad_path: str, map_name: str) -> dict[str, int]:
     }
 
 
+def map_bounds_for_wad(wad_path: str, map_name: str) -> dict[str, int] | None:
+    wad = WAD(wad_path)
+    map_name = map_name.upper()
+    if map_name not in wad.maps:
+        return None
+    return AnalysisService._map_bounds_from_editor(MapEditor(wad.maps[map_name]))
+
+
 def map_has_single_player_start(wad_path: str, map_name: str) -> bool:
     return player_one_start_count(wad_path, map_name) == 1
 
@@ -234,13 +242,11 @@ class AnalysisService:
         item_breakdown, health_pts, armor_pts, ammo_score = self._item_breakdown(thing_counts)
         spawn_summary_by_skill = self._spawn_summary_by_skill(editor)
         map_features = self._extract_map_features(editor, thing_counts)
-
-        vertices = editor.vertexes
-        if vertices:
-            xs = [int(vertex.x) for vertex in vertices]
-            ys = [int(vertex.y) for vertex in vertices]
-            map_width = max(xs) - min(xs)
-            map_height = max(ys) - min(ys)
+        map_bounds = self._map_bounds_from_editor(editor)
+        if map_bounds:
+            map_features["bounds"] = map_bounds
+            map_width = map_bounds["max_x"] - map_bounds["min_x"]
+            map_height = map_bounds["max_y"] - map_bounds["min_y"]
         else:
             map_width = None
             map_height = None
@@ -388,6 +394,19 @@ class AnalysisService:
             "teleporter_count": teleporter_count,
             "lift_count": lift_count,
         }
+
+    @staticmethod
+    def _map_bounds_from_editor(editor: MapEditor) -> dict[str, int] | None:
+        vertices = editor.vertexes
+        if not vertices:
+            return None
+        xs = [int(vertex.x) for vertex in vertices]
+        ys = [int(vertex.y) for vertex in vertices]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        if min_x == max_x or min_y == max_y:
+            return None
+        return {"min_x": min_x, "max_x": max_x, "min_y": min_y, "max_y": max_y}
 
     @staticmethod
     def _difficulty(

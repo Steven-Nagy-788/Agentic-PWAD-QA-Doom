@@ -75,6 +75,9 @@ export default function SettingsPage() {
           <SettingsCard title="LLM Config">
             <SettingsRow label="Model" value={settings.data.llm_model} edit={editMode} inputValue={draft.llm_model} onChange={(v) => setDraft((d) => ({ ...d, llm_model: v }))} />
             <SettingsRow label="Throttle (s)" value={`${settings.data.llm_throttle_seconds}s`} edit={editMode} inputValue={String(draft.llm_throttle_seconds ?? "")} onChange={(v) => setDraft((d) => ({ ...d, llm_throttle_seconds: Number(v) }))} />
+            <SettingsRow label="Rate limit / min" value={String(settings.data.gemini_rate_limit_calls_per_minute)} edit={editMode} inputValue={String(draft.gemini_rate_limit_calls_per_minute ?? "")} onChange={(v) => setDraft((d) => ({ ...d, gemini_rate_limit_calls_per_minute: Number(v) }))} />
+            <SettingsRow label="Input $/1M" value={`$${settings.data.llm_input_cost_per_million}`} edit={editMode} inputValue={String(draft.llm_input_cost_per_million ?? "")} onChange={(v) => setDraft((d) => ({ ...d, llm_input_cost_per_million: Number(v) }))} />
+            <SettingsRow label="Output $/1M" value={`$${settings.data.llm_output_cost_per_million}`} edit={editMode} inputValue={String(draft.llm_output_cost_per_million ?? "")} onChange={(v) => setDraft((d) => ({ ...d, llm_output_cost_per_million: Number(v) }))} />
           </SettingsCard>
           <SettingsCard title="Run Config">
             <SettingsRow label="Default ticks" value={String(settings.data.default_run_ticks)} edit={editMode} inputValue={String(draft.default_run_ticks ?? "")} onChange={(v) => setDraft((d) => ({ ...d, default_run_ticks: Number(v) }))} />
@@ -87,7 +90,7 @@ export default function SettingsPage() {
             <SettingsRow label="Telemetry stride" value={String(settings.data.recording_telemetry_stride)} edit={editMode} inputValue={String(draft.recording_telemetry_stride ?? "")} onChange={(v) => setDraft((d) => ({ ...d, recording_telemetry_stride: Number(v) }))} />
           </SettingsCard>
           <SettingsCard title="General">
-            <SettingsRow label="App name" value={settings.data.app_name} edit={editMode} inputValue={draft.app_name} onChange={(v) => setDraft((d) => ({ ...d, app_name: v }))} />
+            <SettingsRow label="App name" value={settings.data.app_name} />
             <SettingsRow label="Environment" value={settings.data.app_env} />
             <SettingsRow label="IWAD" value={settings.data.iwad_used} edit={editMode} inputValue={draft.iwad_used} onChange={(v) => setDraft((d) => ({ ...d, iwad_used: v }))} />
           </SettingsCard>

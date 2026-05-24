@@ -106,11 +106,15 @@ export default function WadDetailPage({ params }: { params: Promise<{ id: string
             >
               {behaviorProfiles.data
                 ? Object.entries(behaviorProfiles.data).map(([key, profile]) => (
-                    <option key={key} value={key}>{profile.name} — {profile.description}</option>
+                    <option key={key} value={key}>{profile.name} - {profile.description}</option>
                   ))
-                : <option value="thorough">Thorough — Slow, methodical, every corner</option>}
-              <option value="fast">Fast — Cover ground quickly, breadth over depth</option>
-              <option value="exploit_focused">Exploit-focused — Aggressive boundary testing</option>
+                : (
+                  <>
+                    <option value="thorough">Thorough - Slow, methodical, every corner</option>
+                    <option value="fast">Fast - Cover ground quickly, breadth over depth</option>
+                    <option value="exploit_focused">Exploit-focused - Aggressive boundary testing</option>
+                  </>
+                )}
             </select>
           </label>
           {startRun.error ? <InlineError message={errorMessage(startRun.error) ?? "Failed to start run"} /> : null}

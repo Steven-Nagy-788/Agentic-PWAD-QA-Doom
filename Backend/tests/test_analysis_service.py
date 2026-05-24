@@ -104,6 +104,21 @@ def test_extract_map_features_secret_linedef_ignored_in_counts() -> None:
     assert result["door_count"] == 2
 
 
+def test_map_bounds_from_editor_returns_static_coordinate_space() -> None:
+    editor = MagicMock()
+    editor.vertexes = [
+        MagicMock(x=-128, y=-64),
+        MagicMock(x=512, y=384),
+    ]
+
+    assert AnalysisService._map_bounds_from_editor(editor) == {
+        "min_x": -128,
+        "max_x": 512,
+        "min_y": -64,
+        "max_y": 384,
+    }
+
+
 @patch("app.services.analysis_service.ImageDraw.Draw")
 @patch("app.services.analysis_service.Image.new")
 def test_render_overview_generates_png(

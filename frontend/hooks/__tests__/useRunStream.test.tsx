@@ -7,6 +7,7 @@ describe("useRunStream", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it("caps decisions at 500", async () => {
@@ -23,17 +24,19 @@ describe("useRunStream", () => {
 
     const { render } = await import("@testing-library/react");
     const wsMock = vi.fn();
-    (global as any).WebSocket = class {
+    class MockWebSocket {
+      onopen: (() => void) | null = null;
+      onmessage: ((event: MessageEvent<string>) => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+
       constructor(url: string) { wsMock(url); }
       close() {}
       send() {}
-      onopen: (() => void) | null = null;
-      onmessage: ((event: any) => void) | null = null;
-      onclose: (() => void) | null = null;
-      onerror: (() => void) | null = null;
-    };
+    }
+    vi.stubGlobal("WebSocket", MockWebSocket);
 
-    const { findByTestId } = render(<TestHarness />);
+    render(<TestHarness />);
     await vi.advanceTimersByTimeAsync(100);
 
     expect(wsMock).toHaveBeenCalledWith(expect.stringContaining("test-run-id"));
@@ -43,12 +46,10 @@ describe("useRunStream", () => {
     const { websocketUrl } = await import("@/lib/api");
     const url = websocketUrl("abc-123");
     expect(url).toContain("ws://");
-    expect(url).toContain("/api/v1/ws/runs/abc-123");
+    expect(url).toContain(":8000/v1/ws/runs/abc-123");
   });
 
   it("decisions array slicer truncates to 500", async () => {
-    const { useRunStream } = await import("@/hooks/useRunStream");
-
     const arr = Array.from({ length: 600 }, (_, i) => ({
       sequenceNumber: i,
       reasoning: `decision ${i}`,

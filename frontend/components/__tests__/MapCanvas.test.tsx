@@ -68,6 +68,27 @@ describe("MapCanvas", () => {
     expect(liveCircle).toBeInTheDocument();
   });
 
+  it("projects trail points against static map bounds when available", () => {
+    const boundedMap: WadMap = {
+      ...mockMap,
+      map_min_x: 0,
+      map_max_x: 1000,
+      map_min_y: 0,
+      map_max_y: 1000,
+    };
+    const trail: PositionSample[] = [
+      { id: 1, run_id: "r1", tick_number: 0, x: 500, y: 500, health: 100 },
+    ];
+
+    const { container } = render(<MapCanvas map={boundedMap} trail={trail} />);
+    const trailCircle = Array.from(container.querySelectorAll("circle")).find((circle) =>
+      circle.getAttribute("fill")?.includes("rgba"),
+    );
+
+    expect(trailCircle).toHaveAttribute("cx", "512");
+    expect(trailCircle).toHaveAttribute("cy", "512");
+  });
+
   it("is keyboard navigable", () => {
     const { container } = render(<MapCanvas map={mockMap} />);
     const svg = container.querySelector("svg");

@@ -2,6 +2,8 @@
 
 This document describes the current backend and MCP integration for the Agentic PWAD QA Doom project.
 
+Updated note (2026-05-24): the top-level `README.md` is the authoritative setup and operations guide. Older notes that name `run_service.py` as the loop implementation should be read as the current split modules: `run_loop.py`, `run_guards.py`, `run_utils.py`, and `run_telemetry.py`.
+
 The system accepts Doom PWAD uploads, performs static map analysis with `omgifol`, stores WAD metadata and analysis in PostgreSQL, launches autonomous ViZDoom runs through the persistent `mcp-doom` FastMCP SSE server, streams run state over WebSocket, records gameplay artifacts, detects defects, and generates PDF QA reports.
 
 ## Runtime Architecture
@@ -40,7 +42,7 @@ Important settings:
 
 - `DATABASE_URL` or `POSTGRES_*` values for PostgreSQL.
 - `STORAGE_BASE`, `WAD_STORAGE_DIR`, `ANALYSIS_STORAGE_DIR`, `SCREENSHOT_STORAGE_DIR`, `RECORDING_STORAGE_DIR`, `REPORT_STORAGE_DIR`.
-- `GEMINI_API_KEY`, `LLM_MODEL`, `LLM_THROTTLE_SECONDS` (base static throttle; overridden by dynamic throttle at runtime), `GEMINI_RETRY_MAX_DELAY_SECONDS`.
+- `GEMINI_API_KEY`, `LLM_MODEL`, `LLM_THROTTLE_SECONDS` (cap for dynamic throttle; `0` disables local sleep), `GEMINI_RATE_LIMIT_CALLS_PER_MINUTE`, `LLM_INPUT_COST_PER_MILLION`, `LLM_OUTPUT_COST_PER_MILLION`, `GEMINI_RETRY_MAX_DELAY_SECONDS`.
 - `MCP_DOOM_SSE_URL`.
 - `DEFAULT_RUN_TICKS`, `MAX_RUN_TICKS`, `LIVE_FRAME_FPS`, `RECORDING_FPS`, `RECORDING_TELEMETRY_STRIDE`.
 - `CORS_ORIGINS`.
@@ -200,7 +202,7 @@ The run task:
 6. Lets Gemini choose one tactical MCP tool. The screenshot PNG from `get_state` is sent alongside the structured JSON via Gemini's multimodal API, so the LLM can visually confirm geometry, door textures, enemy positions, and HUD readouts. If Gemini is unavailable, rate-limited, or returns unusable JSON, deterministic fallback chooses visible combat, visible pickup collection, weapon/ammo switching, direct USE probes, or exploration while respecting lockstep memory.
 7. Applies backend guards so combat tools only target currently visible monsters, completed pickups are not re-targeted, repeated failed targets are avoided, and out-of-ammo combat loops are broken.
 8. Executes the selected tool, records MCP input/output, stop reason, decision timings, gameplay event, telemetry frames, notable screenshots, and MP4 frames.
-9. Applies a **dynamic throttle** between decisions instead of a fixed 12s wait: 3s when enemies are visible, 6s when health < 25 or ammo = 0, 10s when progress is stalled, 12s by default. This gives the LLM faster reaction time during combat without wasting wall-clock time during quiet exploration.
+9. Applies a **dynamic throttle** between decisions from behavior-profile values (`combat`, `low_health`, `stuck`, `default`) capped by `LLM_THROTTLE_SECONDS`. The current default cap is 2s; paid-tier/local test setups can set it to 0.
 10. Broadcasts typed WebSocket messages: `llm_decision`, `mcp_call_start`, `mcp_call_result`, `state`, `frame`, `progress`, `defect`, `recording_status`, `quality_summary`, and `report_status`.
 11. Detects defects and generates a report when the run reaches completion, death, timeout, stuck stop, cancellation, or crash.
 
@@ -385,22 +387,24 @@ Report JSON omits meaningless null/empty sections while preserving explicit cras
 WebSocket:
 
 - `/ws/runs/{run_id}`
+- `/runs/{run_id}` legacy alias
 
-Live WebSocket messages are typed. Current message types include `llm_start`, `llm_decision`, `mcp_call_start`, `mcp_call_result`, `state`, `frame`, `progress`, `defect`, `recording_status`, `quality_summary`, `report_status`, and status updates. State messages include run status, health, armor, ammo, position, event type, QA-facing LLM reasoning, chosen MCP action, and optional notable screenshot.
+With the `/v1` router prefix, the frontend uses `/v1/ws/runs/{run_id}` for live monitoring. Live WebSocket messages are typed. Current message types include `llm_start`, `llm_decision`, `mcp_call_start`, `mcp_call_result`, `state`, `frame`, `progress`, `defect`, `recording_status`, `quality_summary`, `report_status`, and status updates. Decision/result messages include LLM reasoning, chosen MCP tool, MCP input, MCP output, token usage, cost estimate, and latency timings. State messages include run status, health, armor, ammo, position, event type, QA-facing LLM reasoning, chosen MCP action, and optional notable screenshot.
 
 ## Verification Status
 
 The current implementation has been checked with:
 
 - Backend compile check: `PYTHONPATH=. .venv/bin/python -m compileall -q app` from `Backend/`.
-- Backend test suite: `PYTHONPATH=. .venv/bin/pytest -q -p no:cacheprovider tests` from `Backend/` (`32 passed`).
-- MCP full suite: `PYTHONPATH=src .venv/bin/pytest -q -p no:cacheprovider tests` from `mcp-doom/` (`99 passed`).
+- Backend test suite: `cd Backend && .venv/bin/python -m pytest -q` (`194 passed` on 2026-05-24).
+- MCP full suite: `cd mcp-doom && .venv/bin/python -m pytest -q` (`100 passed` after the 2026-05-24 split).
 - Local `make db-schema` applied the additive `agent_decisions`, `game_events.agent_decision_id`, defect fingerprint schema, and run quality JSON fields.
 - Manual problem-map rerun on 2026-05-20 verified `recording_metadata`, `progress_metrics`, `agent_quality_flags`, WebSocket `progress`/`recording_status`/`quality_summary`, no duplicate defect fingerprints, no repeated completed-pickup targeting, no repeated out-of-ammo combat targeting, 15 FPS gameplay-time MP4s, and landscape evidence appendix pages in generated PDFs.
 - Lockstep smoke run `a58b4675-6f24-421f-81da-dac08e1297eb`: one LLM/MCP decision, one gameplay event, generated report JSON/PDF, and a 640x480 10 FPS MP4 with 61 frames.
 - Live endpoint check for run `7365a61c-4b01-4a0f-9b9b-91fb4194c638`: health, run detail, trace, defects, report status, PDF download, recording download, and stuck events.
 - Video/report review for run `7365a61c-4b01-4a0f-9b9b-91fb4194c638`: recording is a valid 81.3 second MP4; regenerated PDF is 3 pages, reports outcome `stuck`, and contains 2 de-duplicated defects instead of hundreds of repeated agent-observed rows.
 - Endpoint sweep covering health, WADs, maps, analysis, map PNG, run validation, run creation, run detail/list, trace, events, position trail, defects, recording, reports, PDF, cancel/force-stop, and WebSocket connection.
+- Production frontend E2E on 2026-05-24 verified live video, LLM reasoning, MCP input/output, aligned position trail, MP4 playback, report status, and generated PDF evidence for run `b9f3eb36-f733-4f15-8290-0c6243cf94de`.
 
 Representative manual product matrix:
 
@@ -440,7 +444,7 @@ Representative manual product matrix:
 **Problem**: The `_call_with_retry` method did one retry with a 20s capped delay, then fell back to deterministic decisions. No error logging meant the actual API failure reason was invisible. Under 15 RPM free-tier quotas and a 3-12s dynamic throttle, the effective request rate could exceed quota during combat-heavy maps.
 
 **Fixes** (`gemini_service.py`):
-- **Local rate limiter** (`_throttle_local_rate`): Tracks API calls in a sliding 60s window. Once 12 calls are reached (leaving 3 buffer for the 15 RPM quota), subsequent calls are delayed until older entries expire.
+- **Local rate limiter** (`_throttle_local_rate`): Tracks API calls in a sliding 60s window. The call ceiling comes from `GEMINI_RATE_LIMIT_CALLS_PER_MINUTE`; `0` disables local limiting when external/account limits are managed elsewhere.
 - **3 retry attempts** (up from 1): Non-rate-limit errors retry after 5s. Rate-limit retries respect the server's `retryDelay` (capped at 60s instead of 20s).
 - **Error logging** (`logger.warning`): All API failures are logged with exception type and message. Final fallback is also logged. This makes it possible to diagnose API issues from server logs.
 

@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 
 from app.models import StaticAnalysisResult, TestRun, WadFile
+from app.services.run_loop import _estimate_total_map_cells
 
 
 def _mock_run():
@@ -39,7 +40,16 @@ def _mock_analysis():
     an.id = uuid4()
     an.wad_file_id = uuid4()
     an.map_name = "MAP01"
+    an.map_width_units = 512
+    an.map_height_units = 512
     return an
+
+
+def test_estimate_total_map_cells_uses_static_analysis_dimensions() -> None:
+    analysis = MagicMock()
+    analysis.map_width_units = 513
+    analysis.map_height_units = 512
+    assert _estimate_total_map_cells(analysis) == 6
 
 
 def _base_patches():
@@ -75,6 +85,14 @@ def _make_session(db):
     sess = AsyncMock()
     sess.__aenter__.return_value = db
     return sess
+
+
+def _make_db():
+    db = AsyncMock()
+    db.add = MagicMock()
+    db.get = AsyncMock()
+    db.execute = AsyncMock(return_value=_empty_result())
+    return db
 
 
 def _empty_result():
@@ -172,9 +190,7 @@ async def test_normal_completion():
         patch("app.services.run_loop._lockstep_quality_flags", return_value={"quality_status": "unknown"}),
         patch("app.services.run_loop.get_last_token_usage", return_value={"prompt_tokens": 100, "completion_tokens": 50}),
     ):
-        db = AsyncMock()
-        db.get = AsyncMock()
-        db.execute = AsyncMock(return_value=_empty_result())
+        db = _make_db()
         db.get.side_effect = lambda cls, id: {TestRun: run, StaticAnalysisResult: analysis}.get(cls)
 
         mock_session_local.return_value = _make_session(db)
@@ -236,9 +252,7 @@ async def test_pwad_crash():
         patch("app.services.run_loop.render_agent_prompt") as mock_render_prompt,
         patch("app.services.run_loop.RUN_TASKS", {}),
     ):
-        db = AsyncMock()
-        db.get = AsyncMock()
-        db.execute = AsyncMock(return_value=_empty_result())
+        db = _make_db()
         db.get.side_effect = lambda cls, id: {TestRun: run, StaticAnalysisResult: analysis}.get(cls)
 
         mock_session_local.return_value = _make_session(db)
@@ -319,9 +333,7 @@ async def test_cancelled():
         patch("app.services.run_loop.websocket_service") as mock_ws,
         patch("app.services.run_loop.RUN_TASKS", {}),
     ):
-        db = AsyncMock()
-        db.get = AsyncMock()
-        db.execute = AsyncMock(return_value=_empty_result())
+        db = _make_db()
         db.get.side_effect = lambda cls, id: {TestRun: run, StaticAnalysisResult: analysis}.get(cls)
 
         mock_session_local.return_value = _make_session(db)

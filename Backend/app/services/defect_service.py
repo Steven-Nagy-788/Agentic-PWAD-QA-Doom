@@ -213,7 +213,13 @@ class DefectService:
         events: list[GameEvent],
         analysis: StaticAnalysisResult | None,
     ) -> None:
-        if analysis and analysis.secret_sector_count > 0 and max(event.secret_count for event in events) == 0:
+        coverage_percent = _coverage_percent(run)
+        if (
+            analysis
+            and analysis.secret_sector_count > 0
+            and max(event.secret_count for event in events) == 0
+            and coverage_percent >= 60.0
+        ):
             await self.repo.create(
                 Defect(
                     run_id=run.id,
@@ -221,7 +227,10 @@ class DefectService:
                     priority=3,
                     defect_type="unreachable_secret",
                     title="Secrets not reached",
-                    description="Static analysis found secret sectors, but the automated playthrough did not enter one.",
+                    description=(
+                        "Static analysis found secret sectors, but the automated playthrough did not enter one "
+                        f"after reaching {coverage_percent:.1f}% coarse cell coverage."
+                    ),
                     detected_at_tick=events[-1].tick_number,
                 )
             )
@@ -270,3 +279,12 @@ def _streak_episodes(
     if len(streak) >= minimum_length:
         episodes.append(streak)
     return episodes
+
+
+def _coverage_percent(run: TestRun) -> float:
+    metrics = run.progress_metrics if isinstance(getattr(run, "progress_metrics", None), dict) else {}
+    value = metrics.get("coverage_percent")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0

@@ -1,13 +1,13 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { apiGet } from "@/lib/api";
+import { apiGet, apiRootGet } from "@/lib/api";
 import { OutcomeBadge, errorMessage } from "@/lib/components/shared";
 
 export default function HealthPage() {
-  const health = useQuery({ queryKey: ["health"], queryFn: () => apiGet<Record<string, unknown>>("/health"), refetchInterval: 10_000 });
-  const gemini = useQuery({ queryKey: ["health-gemini"], queryFn: () => apiGet<Record<string, unknown>>("/health/gemini"), refetchInterval: 10_000 });
-  const mcp = useQuery({ queryKey: ["health-mcp"], queryFn: () => apiGet<Record<string, unknown>>("/health/mcp"), refetchInterval: 10_000 });
+  const health = useQuery({ queryKey: ["health"], queryFn: () => apiRootGet<Record<string, unknown>>("/health"), refetchInterval: 10_000 });
+  const gemini = useQuery({ queryKey: ["health-gemini"], queryFn: () => apiRootGet<Record<string, unknown>>("/health/gemini"), refetchInterval: 10_000 });
+  const mcp = useQuery({ queryKey: ["health-mcp"], queryFn: () => apiRootGet<Record<string, unknown>>("/health/mcp"), refetchInterval: 10_000 });
   const storage = useQuery({ queryKey: ["storage"], queryFn: () => apiGet<Record<string, unknown>>("/admin/storage/stats"), refetchInterval: 10_000 });
 
   return (

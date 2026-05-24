@@ -15,6 +15,12 @@ def _result(items: list[object]) -> MagicMock:
     return result
 
 
+def _rows(items: list[object]) -> MagicMock:
+    result = MagicMock()
+    result.all.return_value = items
+    return result
+
+
 @pytest.mark.asyncio
 async def test_recommend_behavior_profile_switches_thorough_to_fast_after_repeated_stuck() -> None:
     db = AsyncMock()
@@ -100,3 +106,21 @@ async def test_build_cross_run_memory_summarizes_last_run_and_warnings() -> None
     assert "move_to object 35 (ClipBox) -> blocked_by_collision" in prompt
     assert "1 previous run(s) had the same final outcome: stuck." in prompt
     assert "ammo starvation" in prompt.lower()
+
+
+@pytest.mark.asyncio
+async def test_build_spatial_memory_briefing_includes_counts_and_event_types() -> None:
+    db = AsyncMock()
+    db.execute.return_value = _rows(
+        [
+            SimpleNamespace(cell_x=14, cell_y=8, event_type="stuck", total_occurrences=3),
+            SimpleNamespace(cell_x=22, cell_y=4, event_type="secret_found", total_occurrences=1),
+            SimpleNamespace(cell_x=3, cell_y=6, event_type="ammo_starvation", total_occurrences=2),
+        ]
+    )
+    service = RunMemoryService(db)
+    briefing = await service.build_spatial_memory_briefing(uuid4(), "MAP01")
+    assert "Stuck events" in briefing
+    assert "cell (14,8) 3x" in briefing
+    assert "Secrets found" in briefing
+    assert "Resource starvation" in briefing

@@ -1,9 +1,6 @@
 # doom-mcp
 
-
-
-
-Agents receive structured game state (objects, depth, sectors, variables) plus screenshots, then send named actions back - no raw button arrays or pixel parsing required.
+FastMCP server that wraps ViZDoom for the Agentic PWAD QA backend. Agents receive structured game state (objects, depth, sectors, variables) plus screenshots, then send named actions back - no raw button arrays or pixel parsing required.
 
 ## Features
 
@@ -60,8 +57,8 @@ Add to `.vscode/mcp.json`:
 # stdio transport (for MCP clients)
 fastmcp run src/doom_mcp/server.py
 
-# SSE transport (for web clients)
-fastmcp run src/doom_mcp/server.py --transport sse
+# SSE transport (for the FastAPI backend)
+fastmcp run src/doom_mcp/server.py --transport sse --host 127.0.0.1 --port 8001 --path /sse
 ```
 
 ## Tools
@@ -225,7 +222,7 @@ Play through the full Doom game using the bundled Freedoom WADs:
 
 ```jsonc
 // Custom map PWAD (on top of Freedoom 1)
-{"wad": "freedoom1", "scenario_wad": "/media/steven/MaD/mcp-grad-proj/mcp-doom/DRKWRLD1.WAD", "map_name": "E1M1"}
+{"wad": "freedoom1", "scenario_wad": "/absolute/path/to/DRKWRLD1.WAD", "map_name": "E1M1"}
 
 // Doom II campaign (32 maps)
 {"wad": "freedoom2", "map_name": "MAP01"}
@@ -256,12 +253,13 @@ AI Agent <──MCP──> FastMCP Server <──Python API──> ViZDoom Engin
           server.py  game_manager  executor.py
           (tools)    (lifecycle)   (async player)
               │         │         │
-          actions.py  state.py     objects.py
-          (buttons)   (extraction) (enemy DB)
+          actions.py  game_setup.py state.py objects.py
+          (buttons)   (WAD setup)  (extract) (enemy DB)
 ```
 
 - **`server.py`** -MCP tool definitions (thin wrappers)
 - **`game_manager.py`** -game lifecycle, action execution, state management
+- **`game_setup.py`** -IWAD/PWAD validation, map discovery, player-start checks, preflight load isolation
 - **`executor.py`** -autonomous async-player movement, combat, pickups, objectives, and strategy
 - **`state.py`** -screenshot conversion, object enrichment, depth/sector extraction
 - **`actions.py`** -button name-to-enum mapping
@@ -291,6 +289,7 @@ mcp-doom/
 │   ├── __init__.py
 │   ├── server.py          # MCP tool definitions
 │   ├── game_manager.py    # Core game lifecycle
+│   ├── game_setup.py      # WAD/map setup and load preflight
 │   ├── actions.py         # Button mapping
 │   ├── scenarios.py       # Scenario registry
 │   ├── state.py           # State extraction

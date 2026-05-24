@@ -17,10 +17,12 @@ class SmokeService:
         mcp_client: McpDoomClient | None = None
 
         try:
-            stages.append(await self._stage_check_mcp())
-            stages.append(await self._stage_check_gemini_key())
+            mcp_stage = await self._stage_check_mcp()
+            stages.append(mcp_stage)
+            gemini_stage = await self._stage_check_gemini_key()
+            stages.append(gemini_stage)
 
-            if stages[-1]["pass"]:
+            if mcp_stage["pass"]:
                 stage3 = await self._stage_start_game()
                 stages.append(stage3)
                 mcp_client = stage3.get("_mcp_client")
@@ -29,10 +31,12 @@ class SmokeService:
 
             if mcp_client is not None:
                 stages.append(await self._stage_get_state(mcp_client))
-                stages.append(await self._stage_test_gemini())
             else:
                 stages.append(self._skip_stage("Get game state", "Skipped: game not started"))
-                stages.append(self._skip_stage("Test Gemini API", "Skipped: MCP not reachable"))
+            if gemini_stage["pass"]:
+                stages.append(await self._stage_test_gemini())
+            else:
+                stages.append(self._skip_stage("Test Gemini API", "Skipped: GEMINI_API_KEY is not set"))
         finally:
             stages.append(await self._stage_cleanup(mcp_client))
 
@@ -69,7 +73,7 @@ class SmokeService:
             await client.__aenter__()
             result = await client.start_game(
                 wad=self.settings.iwad_used,
-                scenario_wad="",
+                scenario_wad=None,
                 map_name="MAP01",
                 difficulty=3,
                 episode_timeout=100,

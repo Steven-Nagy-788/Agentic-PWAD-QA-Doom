@@ -54,8 +54,8 @@ CREATE TABLE IF NOT EXISTS test_runs (
     map_name                VARCHAR(16)     NOT NULL,
     difficulty_level        SMALLINT        NOT NULL DEFAULT 3 CHECK (difficulty_level BETWEEN 1 AND 5),
     iwad_used               VARCHAR(64)     NOT NULL DEFAULT 'freedoom2',
-    llm_model               VARCHAR(128)    NOT NULL DEFAULT 'gemini-2.5-flash',
-    behavior_profile        VARCHAR(32)     DEFAULT 'safety',
+    llm_model               VARCHAR(128)    NOT NULL DEFAULT 'gemini-2.5-flash-lite',
+    behavior_profile        VARCHAR(32)     DEFAULT 'thorough',
     max_ticks               INTEGER         NOT NULL DEFAULT 3000,
     status                  VARCHAR(16)     NOT NULL DEFAULT 'pending',
     started_at              TIMESTAMPTZ,
@@ -243,6 +243,54 @@ CREATE TABLE IF NOT EXISTS defects (
 CREATE INDEX IF NOT EXISTS idx_defects_run_id ON defects(run_id);
 CREATE INDEX IF NOT EXISTS idx_defects_severity ON defects(run_id, severity);
 CREATE INDEX IF NOT EXISTS idx_defects_fingerprint ON defects(run_id, fingerprint);
+
+CREATE TABLE IF NOT EXISTS wad_spatial_memory (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    wad_file_id         UUID        NOT NULL REFERENCES wad_files(id) ON DELETE CASCADE,
+    map_name            VARCHAR(16) NOT NULL,
+    cell_x              SMALLINT    NOT NULL,
+    cell_y              SMALLINT    NOT NULL,
+    event_type          VARCHAR(32) NOT NULL,
+    occurrence_count    BIGINT      NOT NULL DEFAULT 1,
+    last_seen_run_id    UUID        REFERENCES test_runs(id) ON DELETE SET NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_spatial_cell_event UNIQUE (wad_file_id, map_name, cell_x, cell_y, event_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_spatial_wad_map ON wad_spatial_memory(wad_file_id, map_name);
+
+CREATE TABLE IF NOT EXISTS wad_hypotheses (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    wad_file_id         UUID        NOT NULL REFERENCES wad_files(id) ON DELETE CASCADE,
+    map_name            VARCHAR(16) NOT NULL,
+    tag                 VARCHAR(32) NOT NULL,
+    content             TEXT        NOT NULL,
+    confidence          REAL        NOT NULL DEFAULT 0.5,
+    confirmed_at        TIMESTAMPTZ,
+    refuted_at          TIMESTAMPTZ,
+    last_seen_run_id    UUID        REFERENCES test_runs(id) ON DELETE SET NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_hypotheses_wad_map ON wad_hypotheses(wad_file_id, map_name);
+CREATE INDEX IF NOT EXISTS idx_hypotheses_tag ON wad_hypotheses(wad_file_id, map_name, tag);
+
+CREATE TABLE IF NOT EXISTS wad_knowledge_base (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    wad_file_id         UUID        NOT NULL REFERENCES wad_files(id) ON DELETE CASCADE,
+    map_name            VARCHAR(16) NOT NULL,
+    document_text       TEXT        NOT NULL DEFAULT '',
+    version             INTEGER     NOT NULL DEFAULT 0,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_knowledge_wad_map UNIQUE (wad_file_id, map_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_wad_map ON wad_knowledge_base(wad_file_id, map_name);
 
 ALTER TABLE IF EXISTS wad_files
     ADD COLUMN IF NOT EXISTS iwad_required VARCHAR(16) NOT NULL DEFAULT 'freedoom2';

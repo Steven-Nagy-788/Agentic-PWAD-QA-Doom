@@ -17,8 +17,8 @@ function GuardBadge({ status }: { status?: "kept" | "modified" | "blocked" }) {
   );
 }
 
-function DecisionCard({ decision }: { decision: LiveDecision }) {
-  const [expanded, setExpanded] = useState(false);
+function DecisionCard({ decision, defaultExpanded = false }: { decision: LiveDecision; defaultExpanded?: boolean }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
 
   return (
     <article className="rounded border border-neutral-200 bg-neutral-50 p-3">
@@ -80,9 +80,17 @@ function DecisionCard({ decision }: { decision: LiveDecision }) {
           )}
           {decision.params && Object.keys(decision.params).length > 0 && (
             <div>
-              <span className="mb-0.5 block font-medium">MCP params</span>
+              <span className="mb-0.5 block font-medium">MCP input</span>
               <pre className="overflow-x-auto rounded bg-neutral-100 p-2 text-[10px] leading-4">
                 {JSON.stringify(decision.params, null, 2)}
+              </pre>
+            </div>
+          )}
+          {decision.mcpOutput && Object.keys(decision.mcpOutput).length > 0 && (
+            <div>
+              <span className="mb-0.5 block font-medium">MCP output</span>
+              <pre className="max-h-64 overflow-auto rounded bg-neutral-100 p-2 text-[10px] leading-4">
+                {JSON.stringify(decision.mcpOutput, null, 2)}
               </pre>
             </div>
           )}
@@ -123,8 +131,8 @@ export function ReasoningLog({ decisions, live = false }: { decisions: LiveDecis
         <span className="text-xs text-neutral-500">{decisions.length}</span>
       </div>
       <div className="space-y-2 p-3">
-        {decisions.map((decision) => (
-          <DecisionCard key={decision.sequenceNumber} decision={decision} />
+        {decisions.map((decision, index) => (
+          <DecisionCard key={decision.sequenceNumber} decision={decision} defaultExpanded={live && index === decisions.length - 1} />
         ))}
         <div ref={endRef} />
       </div>

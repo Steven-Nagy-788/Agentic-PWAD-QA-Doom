@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -8,7 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.models import WadFile
-from app.services.wad_service import WadService
+from app.services.wad_service import WadService, _analysis_map_bounds
 
 
 @pytest.mark.asyncio
@@ -206,7 +207,11 @@ async def test_schedule_reanalysis_returns_wad() -> None:
     mock_repo.get_by_id.return_value = wad
     service.repo = mock_repo
 
-    with patch("asyncio.create_task") as mock_create_task:
+    def _close_scheduled(coro):
+        coro.close()
+        return MagicMock()
+
+    with patch("asyncio.create_task", side_effect=_close_scheduled) as mock_create_task:
         result = await service.schedule_reanalysis(wad_id)
 
     assert result == wad
@@ -291,3 +296,15 @@ async def test_map_png_path_raises_404_when_no_png() -> None:
             await service.map_png_path(wad_id, "E1M1")
 
         assert exc.value.status_code == 404
+
+
+def test_analysis_map_bounds_reads_static_analysis_features() -> None:
+    analysis = SimpleNamespace(
+        spawn_summary_by_skill={
+            "_map_features": {
+                "bounds": {"min_x": -128, "max_x": 512, "min_y": -256, "max_y": 384}
+            }
+        }
+    )
+
+    assert _analysis_map_bounds(analysis) == {"min_x": -128, "max_x": 512, "min_y": -256, "max_y": 384}

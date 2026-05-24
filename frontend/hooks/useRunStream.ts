@@ -11,6 +11,8 @@ export type RunStreamMessage = {
   reasoning_summary?: string;
   mcp_tool?: string;
   mcp_params?: Record<string, unknown>;
+  mcp_input?: Record<string, unknown>;
+  mcp_output?: Record<string, unknown>;
   mcp_stop_reason?: string;
   frame_b64?: string;
   mime_type?: string;
@@ -45,6 +47,7 @@ export type LiveDecision = {
   tool?: string;
   stopReason?: string;
   params?: Record<string, unknown>;
+  mcpOutput?: Record<string, unknown>;
   llmInput?: Record<string, unknown>;
   llmOutput?: Record<string, unknown>;
   guardStatus?: "kept" | "modified" | "blocked";
@@ -76,7 +79,7 @@ export function useRunStream(runId?: string) {
   const [tokenTotals, setTokenTotals] = useState<SessionTokenTotals>({ totalPrompt: 0, totalCompletion: 0, totalTokens: 0, totalCost: 0, decisionCount: 0 });
   const retryRef = useRef(0);
   const socketRef = useRef<WebSocket | null>(null);
-  const lastFrameLengthRef = useRef(0);
+  const lastFrameRef = useRef("");
 
   useEffect(() => {
     if (!runId) {
@@ -103,8 +106,8 @@ export function useRunStream(runId?: string) {
         }
         setMessages((current) => [...current.slice(-250), payload]);
         if (payload.type === "frame" && payload.frame_b64) {
-          if (payload.frame_b64.length === lastFrameLengthRef.current) return;
-          lastFrameLengthRef.current = payload.frame_b64.length;
+          if (payload.frame_b64 === lastFrameRef.current) return;
+          lastFrameRef.current = payload.frame_b64;
           setFrame(`data:${payload.mime_type ?? "image/jpeg"};base64,${payload.frame_b64}`);
         }
         if (payload.type === "state") {
@@ -144,6 +147,8 @@ export function useRunStream(runId?: string) {
               decision.sequenceNumber === payload.sequence_number
                 ? {
                     ...decision,
+                    params: payload.mcp_input ?? decision.params,
+                    mcpOutput: payload.mcp_output,
                     stopReason: payload.mcp_stop_reason,
                     mcpDurationMs: payload.mcp_duration_ms,
                     guardStatus: (payload.guard_status ?? "kept") as "kept" | "modified" | "blocked",

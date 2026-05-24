@@ -169,3 +169,64 @@ def test_pwad_crash_report_is_first_class_qa_output() -> None:
     assert report["pass_fail_summary"]["overall_verdict"] == "FAIL"
     assert "valid QA outcome" in report["report_purpose"]
     assert "No recording is expected" in str(report["objectives_omitted"])
+
+
+def test_pdf_html_marks_recording_available_from_url_even_with_warning_status() -> None:
+    run = SimpleNamespace(
+        id=uuid4(),
+        map_name="MAP01",
+        outcome="timeout",
+        status="completed",
+        duration_seconds=10,
+        total_actions_taken=2,
+        total_llm_calls=2,
+        final_hp=50,
+        total_kills=0,
+        secrets_found=0,
+        recording_mp4_path="/tmp/run.mp4",
+        recording_metadata={"quality_status": "warning", "frame_count": 5},
+        progress_metrics={},
+        agent_quality_flags={},
+        difficulty_level=3,
+    )
+    payload = {
+        "run": run,
+        "analysis": None,
+        "defects": [],
+        "notable_events": [],
+        "metrics": {
+            "recording_mp4_url": f"/runs/{run.id}/recording",
+            "recording_metadata": run.recording_metadata,
+            "progress_metrics": {},
+            "agent_quality_flags": {},
+            "spawned_enemy_count": 0,
+        },
+        "decisions": [],
+    }
+    html = ReportService._render_pdf_html({"test_items_summary": "Run summary"}, payload)
+    assert "available via API" in html
+    assert "Not produced" not in html
+
+
+def test_uncovered_attributes_do_not_flag_secrets_when_map_has_none() -> None:
+    run = SimpleNamespace(outcome="map_completed")
+    metrics = {
+        "max_secrets": 0,
+        "secret_sector_count": 0,
+        "coverage_percent": 95.0,
+        "position_cluster_count": 4,
+    }
+
+    assert ReportService._uncovered_attributes(run, metrics) == "No major attributes remained uncovered by this run."
+
+
+def test_uncovered_attributes_flag_unfound_secrets_after_high_coverage() -> None:
+    run = SimpleNamespace(outcome="map_completed")
+    metrics = {
+        "max_secrets": 0,
+        "secret_sector_count": 2,
+        "coverage_percent": 95.0,
+        "position_cluster_count": 4,
+    }
+
+    assert ReportService._uncovered_attributes(run, metrics) == "secret accessibility"

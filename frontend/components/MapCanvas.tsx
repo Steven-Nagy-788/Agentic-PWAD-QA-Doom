@@ -14,13 +14,15 @@ type MapCanvasProps = {
 };
 
 const STEP = 15;
+const VIEW_SIZE = 1024;
+const MAP_MARGIN = 20;
 
 export function MapCanvas({ map, trail = [], events = [], livePosition, className = "" }: MapCanvasProps) {
   const imageUrl = assetUrl(map?.map_overview_png_url);
   const points = livePosition ? [...trail, { id: -1, run_id: "", tick_number: 0, x: livePosition.x, y: livePosition.y, health: 0 }] : trail;
-  const bounds = getBounds(points);
-  const [focusX, setFocusX] = useState(500);
-  const [focusY, setFocusY] = useState(500);
+  const bounds = getBounds(points, map);
+  const [focusX, setFocusX] = useState(VIEW_SIZE / 2);
+  const [focusY, setFocusY] = useState(VIEW_SIZE / 2);
 
   const onKeyDown = useCallback((event: React.KeyboardEvent<SVGSVGElement>) => {
     switch (event.key) {
@@ -30,7 +32,7 @@ export function MapCanvas({ map, trail = [], events = [], livePosition, classNam
         break;
       case "ArrowDown":
         event.preventDefault();
-        setFocusY((prev) => Math.min(1000, prev + STEP));
+        setFocusY((prev) => Math.min(VIEW_SIZE, prev + STEP));
         break;
       case "ArrowLeft":
         event.preventDefault();
@@ -38,7 +40,7 @@ export function MapCanvas({ map, trail = [], events = [], livePosition, classNam
         break;
       case "ArrowRight":
         event.preventDefault();
-        setFocusX((prev) => Math.min(1000, prev + STEP));
+        setFocusX((prev) => Math.min(VIEW_SIZE, prev + STEP));
         break;
     }
   }, []);
@@ -53,16 +55,43 @@ export function MapCanvas({ map, trail = [], events = [], livePosition, classNam
       <span className="sr-only">Map overview with player position trail</span>
       <svg
         className="absolute inset-0 h-full w-full"
-        viewBox="0 0 1000 1000"
+        viewBox={`0 0 ${VIEW_SIZE} ${VIEW_SIZE}`}
         tabIndex={0}
         role="application"
         aria-label={`${map?.map_name ?? "Map"} overview with player position trail. Use arrow keys to navigate.`}
         onKeyDown={onKeyDown}
       >
+        {points.length > 1 ? (
+          <polyline
+            points={points.map((sample) => {
+              const p = project(sample.x, sample.y, bounds);
+              return `${p.x},${p.y}`;
+            }).join(" ")}
+            fill="none"
+            stroke="#2563eb"
+            strokeWidth="7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            opacity="0.78"
+          />
+        ) : null}
         {trail.map((sample, index) => {
           const p = project(sample.x, sample.y, bounds);
           return <circle key={`${sample.tick_number}-${index}`} cx={p.x} cy={p.y} r="5" fill="rgba(59,130,246,0.62)" />;
         })}
+        {trail.length ? (
+          <>
+            <circle cx={project(trail[0].x, trail[0].y, bounds).x} cy={project(trail[0].x, trail[0].y, bounds).y} r="11" fill="#16a34a" stroke="white" strokeWidth="3" />
+            <circle
+              cx={project(trail[trail.length - 1].x, trail[trail.length - 1].y, bounds).x}
+              cy={project(trail[trail.length - 1].x, trail[trail.length - 1].y, bounds).y}
+              r="12"
+              fill="#f59e0b"
+              stroke="white"
+              strokeWidth="3"
+            />
+          </>
+        ) : null}
         {events.map((event) => {
           const p = project(event.player_x, event.player_y, bounds);
           const color = event.event_type === "kill" ? "#dc2626" : event.event_type === "item_pickup" ? "#16a34a" : "#f59e0b";
@@ -93,7 +122,11 @@ export function MapCanvas({ map, trail = [], events = [], livePosition, classNam
   );
 }
 
-function getBounds(points: { x: number; y: number }[]) {
+function getBounds(points: { x: number; y: number }[], map?: WadMap | null) {
+  const mapBounds = mapBoundsFromMetadata(map);
+  if (mapBounds) {
+    return mapBounds;
+  }
   if (!points.length) {
     return { minX: -1, maxX: 1, minY: -1, maxY: 1 };
   }
@@ -111,8 +144,24 @@ function getBounds(points: { x: number; y: number }[]) {
   };
 }
 
+function mapBoundsFromMetadata(map?: WadMap | null) {
+  const minX = numberOrNull(map?.map_min_x);
+  const maxX = numberOrNull(map?.map_max_x);
+  const minY = numberOrNull(map?.map_min_y);
+  const maxY = numberOrNull(map?.map_max_y);
+  if (minX == null || maxX == null || minY == null || maxY == null || minX === maxX || minY === maxY) {
+    return null;
+  }
+  return { minX, maxX, minY, maxY };
+}
+
+function numberOrNull(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function project(x: number, y: number, bounds: ReturnType<typeof getBounds>) {
-  const px = 50 + ((x - bounds.minX) / (bounds.maxX - bounds.minX)) * 900;
-  const py = 950 - ((y - bounds.minY) / (bounds.maxY - bounds.minY)) * 900;
+  const drawable = VIEW_SIZE - MAP_MARGIN * 2;
+  const px = MAP_MARGIN + ((x - bounds.minX) / (bounds.maxX - bounds.minX)) * drawable;
+  const py = VIEW_SIZE - MAP_MARGIN - ((y - bounds.minY) / (bounds.maxY - bounds.minY)) * drawable;
   return { x: px, y: py };
 }

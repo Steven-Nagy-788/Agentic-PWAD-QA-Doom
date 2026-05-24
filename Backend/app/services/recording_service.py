@@ -37,12 +37,6 @@ class RecordingService:
         height, width = frame.shape[:2]
         self.width = int(width)
         self.height = int(height)
-        fourcc = cv2.VideoWriter_fourcc(*"avc1")
-        self.writer = cv2.VideoWriter(str(self.path), fourcc, self.fps, (width, height))
-        self._needs_transcode = False
-        if self.writer.isOpened():
-            return
-        self.writer.release()
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         self.writer = cv2.VideoWriter(str(self.source_path), fourcc, self.fps, (width, height))
         self._needs_transcode = True

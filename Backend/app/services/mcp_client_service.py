@@ -68,7 +68,7 @@ class McpDoomClient:
     async def start_game(
         self,
         wad: str,
-        scenario_wad: str,
+        scenario_wad: str | None,
         map_name: str,
         difficulty: int,
         episode_timeout: int,

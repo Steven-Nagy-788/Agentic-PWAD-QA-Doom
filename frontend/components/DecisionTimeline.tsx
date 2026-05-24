@@ -40,6 +40,24 @@ export function DecisionTimeline({ decisions }: { decisions: Decision[] }) {
                 <span>Cost: ${decision.llm_cost_estimate_usd.toFixed(8)}</span>
               ) : null}
             </div>
+            <div className="grid gap-2 text-xs lg:grid-cols-2">
+              {decision.mcp_input ? (
+                <div>
+                  <div className="mb-1 font-semibold text-neutral-700">MCP input</div>
+                  <pre className="max-h-48 overflow-auto rounded bg-neutral-50 p-2 text-[10px] leading-4 text-neutral-700">
+                    {JSON.stringify(decision.mcp_input, null, 2)}
+                  </pre>
+                </div>
+              ) : null}
+              {decision.mcp_output ? (
+                <div>
+                  <div className="mb-1 font-semibold text-neutral-700">MCP output</div>
+                  <pre className="max-h-48 overflow-auto rounded bg-neutral-50 p-2 text-[10px] leading-4 text-neutral-700">
+                    {JSON.stringify(decision.mcp_output, null, 2)}
+                  </pre>
+                </div>
+              ) : null}
+            </div>
           </div>
         </details>
       ))}

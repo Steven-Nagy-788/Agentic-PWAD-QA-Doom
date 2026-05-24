@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { Search } from "lucide-react";
 import { Run, RunList, WadFile, apiGet } from "@/lib/api";
-import { OutcomeBadge, errorMessage } from "@/lib/components/shared";
+import { OutcomeBadge } from "@/lib/components/shared";
 import { HealthSparkline } from "@/lib/components/HealthSparkline";
 
 type RunFilters = { wad: string; map: string; outcome: string; difficulty: string; after: string; before: string };

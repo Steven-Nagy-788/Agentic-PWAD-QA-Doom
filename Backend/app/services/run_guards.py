@@ -21,6 +21,7 @@ from app.services.run_constants import (
 from app.services.run_utils import (
     _bounded_float,
     _bounded_int,
+    _compute_unvisited_quadrants,
     _int_like,
     _json_safe,
     _lockstep_progress_signature,
@@ -442,6 +443,11 @@ def _lockstep_stop_outcome(lockstep_state: LockstepState) -> str:
 
 
 def _lockstep_progress_metrics(lockstep_state: LockstepState) -> dict[str, Any]:
+    visited_cells_count = len(lockstep_state.get("visited_cells") or {})
+    total_cells = lockstep_state.get("total_map_cells_estimate")
+    coverage_percent = None
+    if total_cells:
+        coverage_percent = round((visited_cells_count / max(int(total_cells), 1)) * 100, 1)
     return {
         "progress_score": int(lockstep_state.get("progress_score") or 0),
         "meaningful_progress_events": int(lockstep_state.get("meaningful_progress_events") or 0),
@@ -451,6 +457,11 @@ def _lockstep_progress_metrics(lockstep_state: LockstepState) -> dict[str, Any]:
         "blocked_decision_count": int(lockstep_state.get("blocked_decision_count") or 0),
         "low_value_explore_count": int(lockstep_state.get("low_value_explore_cumulative") or 0),
         "recovery_count": int(lockstep_state.get("recovery_count") or 0),
+        "visited_cells_count": visited_cells_count,
+        "total_map_cells_estimate": total_cells,
+        "coverage_percent": coverage_percent,
+        "new_cells_last_5_decisions": int(lockstep_state.get("new_cells_last_5_decisions") or 0),
+        "unvisited_quadrants": _compute_unvisited_quadrants(lockstep_state),
     }
 
 

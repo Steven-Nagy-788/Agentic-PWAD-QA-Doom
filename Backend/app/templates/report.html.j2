@@ -3,9 +3,9 @@
   <style>
     @page { size: A4; margin: 18mm 16mm; }
     @page appendix { size: A4 landscape; margin: 12mm; }
-    body { font-family: sans-serif; color: #1f2933; font-size: 11px; line-height: 1.45; }
-    h1 { font-size: 24px; margin: 0 0 4px; page-break-after: avoid; }
-    h2 { font-size: 15px; margin: 18px 0 8px; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; page-break-after: avoid; }
+    body { font-family: sans-serif; color: #111827; font-size: 11px; line-height: 1.45; background: white; }
+    h1 { font-size: 25px; margin: 0 0 4px; page-break-after: avoid; letter-spacing: 0; }
+    h2 { font-size: 15px; margin: 18px 0 8px; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; page-break-after: avoid; color: #0f172a; }
     h3 { font-size: 12px; margin: 10px 0 4px; page-break-after: avoid; }
     p { margin: 0 0 7px; }
     table { border-collapse: collapse; width: 100%; margin: 8px 0 12px; font-size: 10px; table-layout: fixed; }
@@ -14,17 +14,18 @@
     th, td { border: 1px solid #d7dee8; padding: 5px; vertical-align: top; overflow-wrap: anywhere; }
     th { background: #eef2f7; text-align: left; }
     .muted { color: #52606d; font-size: 10px; }
-    .badge { display: inline-block; padding: 2px 6px; border: 1px solid #9fb3c8; border-radius: 3px; font-size: 10px; margin: 0 3px 4px 0; }
-    .verdict-PASS { border-color: #39a35b; }
-    .verdict-FAIL { border-color: #c94b4b; }
-    .verdict-PARTIAL, .verdict-LIMITED { border-color: #c3912f; }
+    .badge { display: inline-block; padding: 2px 6px; border: 1px solid #9fb3c8; border-radius: 3px; font-size: 10px; margin: 0 3px 4px 0; background: #f8fafc; }
+    .verdict-PASS { border-color: #15803d; color: #166534; background: #f0fdf4; }
+    .verdict-FAIL { border-color: #b91c1c; color: #991b1b; background: #fef2f2; }
+    .verdict-PARTIAL, .verdict-LIMITED { border-color: #b45309; color: #92400e; background: #fffbeb; }
     ul { margin-top: 4px; padding-left: 16px; }
     li { margin-bottom: 4px; }
     .section { page-break-inside: avoid; }
     .score-grid { display: grid; grid-template-columns: 220px 1fr; gap: 14px; margin-bottom: 12px; align-items: stretch; }
     .map-thumb { width: 200px; height: 200px; object-fit: contain; background: #111827; border: 1px solid #cbd5e1; }
-    .score-card { border: 1px solid #cbd5e1; padding: 10px; background: #f8fafc; }
-    .outcome { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+    .score-card { border: 1px solid #cbd5e1; padding: 12px; background: #f8fafc; }
+    .report-kicker { color: #475569; font-size: 9px; font-weight: 700; text-transform: uppercase; margin-bottom: 2px; }
+    .outcome { display: inline-block; font-size: 16px; font-weight: 700; margin: 4px 0 8px; padding: 3px 8px; border: 1px solid #94a3b8; background: white; }
     .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
     .metric-card { border: 1px solid #d7dee8; background: white; padding: 6px; min-height: 38px; }
     .metric-label { color: #52606d; font-size: 8px; text-transform: uppercase; }
@@ -34,9 +35,11 @@
     .appendix { page: appendix; page-break-before: always; }
     .appendix table { table-layout: fixed; font-size: 8.5px; page-break-inside: auto; }
     .appendix td, .appendix th { padding: 4px; word-break: break-word; overflow-wrap: anywhere; }
-    .decision-card { border: 1px solid #d7dee8; padding: 6px; margin: 0 0 6px; break-inside: avoid; page-break-inside: avoid; }
+    .decision-card { border: 1px solid #d7dee8; padding: 7px; margin: 0 0 7px; background: white; }
     .decision-meta { color: #52606d; font-size: 8.5px; margin-bottom: 2px; }
-    .mono { font-family: monospace; font-size: 8.5px; }
+    .mono { font-family: monospace; font-size: 8.5px; white-space: pre-wrap; }
+    .json-block { margin-top: 4px; padding: 5px; border: 1px solid #e2e8f0; background: #f8fafc; color: #334155; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   </style>
 </head>
 <body>
@@ -47,6 +50,7 @@
       {% endif %}
     </div>
     <div class="score-card">
+      <div class="report-kicker">Automated gameplay evidence package</div>
       <h1>Doom PWAD QA Report</h1>
       <div class="outcome">{{ display_outcome }}</div>
       <p class="muted">Run {{ run.id }} | Map {{ run.map_name }} | Difficulty {{ run.difficulty_level }}</p>
@@ -93,7 +97,7 @@
     <tr><td>Actions</td><td>{{ run.total_actions_taken }}</td><td>LLM calls</td><td>{{ run.total_llm_calls }}</td></tr>
     <tr><td>Final HP</td><td>{{ run.final_hp }}</td><td>Kills</td><td>{{ run.total_kills }}</td></tr>
     <tr><td>Position samples</td><td>{{ metrics.position_sample_count }}</td><td>Movement units</td><td>{{ metrics.movement_distance_units }}</td></tr>
-    <tr><td>Recording</td><td colspan="3">{% if metrics.recording_metadata.get("quality_status") == "ok" %}{{ run.id }} — available via API{% else %}Not produced{% endif %}</td></tr>
+    <tr><td>Recording</td><td colspan="3">{% if metrics.recording_mp4_url %}{{ run.id }} — available via API{% else %}Not produced{% endif %}</td></tr>
   </table>
   {% endif %}
 
@@ -235,10 +239,29 @@
 
   {% if decisions %}
   <h3>LLM/MCP Decision Trace</h3>
+    {% if decision_omitted_count %}
+    <p class="muted">Showing a representative sample of {{ decisions|length }} decision record(s); {{ decision_omitted_count }} middle decision record(s) are available through the API trace.</p>
+    {% endif %}
     {% for decision in decisions %}
     <div class="decision-card">
       <div class="decision-meta">#{{ decision.sequence_number }} | ticks {{ decision.tick_before }} -> {{ decision.tick_after }} | tool <span class="mono">{{ decision.mcp_tool or "" }}</span> | stop <span class="mono">{{ decision.mcp_stop_reason or "" }}</span></div>
       <div>{{ decision.reasoning_summary or "" }}</div>
+      {% if decision.mcp_input or decision.mcp_output %}
+      <div class="two-col">
+        {% if decision.mcp_input %}
+        <div>
+          <strong>MCP input</strong>
+          <pre class="mono json-block">{{ decision.mcp_input }}</pre>
+        </div>
+        {% endif %}
+        {% if decision.mcp_output %}
+        <div>
+          <strong>MCP output</strong>
+          <pre class="mono json-block">{{ decision.mcp_output }}</pre>
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
     </div>
     {% endfor %}
   {% endif %}

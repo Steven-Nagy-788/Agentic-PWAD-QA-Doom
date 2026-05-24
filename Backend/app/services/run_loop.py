@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -19,7 +20,9 @@ from app.repositories.run_repository import RunRepository
 from app.repositories.wad_repository import WadRepository
 from app.services.collector_service import CollectorService
 from app.services.defect_service import DefectService
-from app.services.gemini_service import GeminiService, get_last_token_usage
+from app.repositories.config_repository import ConfigRepository
+from app.services.analysis_constants import CELL_SIZE
+from app.services.gemini_service import GeminiService, estimate_llm_cost_usd, get_last_token_usage
 from app.services.mcp_client_service import McpDoomClient, McpStartupError, McpToolTimeoutError, normalize_mcp_state
 from app.services.prompt_service import render_agent_prompt
 from app.services.recording_service import RecordingService, jpeg_b64, png_bytes_to_frame
@@ -90,6 +93,12 @@ async def agent_run_task(run_id: UUID) -> None:
             await db.commit()
             return
         memory_svc = RunMemoryService(db)
+        settings = get_settings()
+        runtime_overrides = await ConfigRepository(db).get_all()
+
+        def runtime_value(key: str, fallback: Any = None) -> Any:
+            return runtime_overrides.get(key, getattr(settings, key, fallback))
+
         cross_run_memory = await memory_svc.build_cross_run_memory(
             run.wad_file_id,
             run.map_name,
@@ -104,6 +113,10 @@ async def agent_run_task(run_id: UUID) -> None:
             run.map_name,
         )
         profile = get_behavior_profile(run)
+        lockstep_state: LockstepState = _initial_lockstep_state()
+        total_map_cells_estimate = _estimate_total_map_cells(analysis)
+        if total_map_cells_estimate is not None:
+            lockstep_state["total_map_cells_estimate"] = total_map_cells_estimate
         prompt = (
             render_agent_prompt(
                 wad, analysis, run,
@@ -115,8 +128,29 @@ async def agent_run_task(run_id: UUID) -> None:
             + profile.system_prompt_addendum
         )
         collector = CollectorService(db)
-        recorder = RecordingService(str(run.id), fps=max(15.0, get_settings().recording_fps))
-        gemini = GeminiService()
+        recording_fps = max(15.0, _bounded_float(runtime_value("recording_fps", settings.recording_fps), settings.recording_fps))
+        recorder = RecordingService(str(run.id), fps=recording_fps)
+        gemini = GeminiService(
+            llm_model=run.llm_model,
+            rate_limit_calls_per_minute=_bounded_int(
+                runtime_value("gemini_rate_limit_calls_per_minute", settings.gemini_rate_limit_calls_per_minute),
+                settings.gemini_rate_limit_calls_per_minute,
+                lower=0,
+            ),
+        )
+        llm_input_cost_per_million = _bounded_float(
+            runtime_value("llm_input_cost_per_million", settings.llm_input_cost_per_million),
+            settings.llm_input_cost_per_million,
+        )
+        llm_output_cost_per_million = _bounded_float(
+            runtime_value("llm_output_cost_per_million", settings.llm_output_cost_per_million),
+            settings.llm_output_cost_per_million,
+        )
+        llm_throttle_cap_seconds = _bounded_float(
+            runtime_value("llm_throttle_seconds", settings.llm_throttle_seconds),
+            settings.llm_throttle_seconds,
+        )
+        live_frame_fps = max(0.1, _bounded_float(runtime_value("live_frame_fps", settings.live_frame_fps), settings.live_frame_fps))
         total_actions = 0
         total_llm_calls = 0
         last_frame_at = 0.0
@@ -126,7 +160,6 @@ async def agent_run_task(run_id: UUID) -> None:
         runtime_stage = "startup"
         failure_fields: dict[str, Any] = {}
         last_record_frame: Any = None
-        lockstep_state: LockstepState = _initial_lockstep_state()
 
         try:
             async with McpDoomClient() as mcp:
@@ -179,7 +212,10 @@ async def agent_run_task(run_id: UUID) -> None:
                         "lockstep_state": _lockstep_state_snapshot(lockstep_state),
                         "exploration_coverage": {
                             "visited_cells_count": visited_count,
+                            "total_map_cells_estimate": total_cells,
                             "coverage_percent": coverage_percent,
+                            "new_cells_last_5_decisions": lockstep_state.get("new_cells_last_5_decisions", 0),
+                            "unvisited_quadrants": _lockstep_state_snapshot(lockstep_state).get("unvisited_quadrants"),
                             "coverage_warning": coverage_warning,
                         },
                     }
@@ -248,6 +284,15 @@ async def agent_run_task(run_id: UUID) -> None:
                     total_llm_calls += 1
                     llm_duration_ms = (time.monotonic() - llm_started) * 1000
                     token_usage = get_last_token_usage()
+                    cost_estimate_usd = round(
+                        estimate_llm_cost_usd(
+                            token_usage.get("prompt_tokens"),
+                            token_usage.get("completion_tokens"),
+                            input_cost_per_million=llm_input_cost_per_million,
+                            output_cost_per_million=llm_output_cost_per_million,
+                        ),
+                        6,
+                    )
                     raw_decision = dict(decision)
                     _merge_hypotheses(lockstep_state, raw_decision)
                     decision = _apply_lockstep_recovery(decision, state, navigation_info, lockstep_state)
@@ -266,7 +311,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         llm_duration_ms=llm_duration_ms,
                         llm_input_tokens=token_usage.get("prompt_tokens"),
                         llm_output_tokens=token_usage.get("completion_tokens"),
-                        llm_cost_estimate_usd=round(token_usage.get("completion_tokens", 0) * 0.00000015 + token_usage.get("prompt_tokens", 0) * 0.000000075, 6),
+                        llm_cost_estimate_usd=cost_estimate_usd,
                     )
                     await websocket_service.broadcast(
                         run.id,
@@ -282,11 +327,7 @@ async def agent_run_task(run_id: UUID) -> None:
                             "llm_raw_output": _json_safe(raw_decision),
                             "llm_input_tokens": token_usage.get("prompt_tokens"),
                             "llm_output_tokens": token_usage.get("completion_tokens"),
-                            "llm_cost_estimate_usd": round(
-                                token_usage.get("completion_tokens", 0) * 0.00000015
-                                + token_usage.get("prompt_tokens", 0) * 0.000000075,
-                                6,
-                            ),
+                            "llm_cost_estimate_usd": cost_estimate_usd,
                         },
                     )
 
@@ -359,6 +400,7 @@ async def agent_run_task(run_id: UUID) -> None:
                             "tick": result_tick,
                             "mcp_tool": mcp_call.get("tool") or decision.get("mcp_tool"),
                             "mcp_stop_reason": summary.get("stop_reason"),
+                            "mcp_input": _json_safe(mcp_call.get("input") or {}),
                             "mcp_output": _json_safe(mcp_call.get("output") or {}),
                             "mcp_duration_ms": round(mcp_duration_ms, 1),
                             "guard_status": guard_status,
@@ -376,7 +418,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         event_screenshot_b64 = jpeg_b64(record_frame)
                     await _broadcast_state(run, latest_event, decision, event_screenshot_b64)
                     now = time.monotonic()
-                    if record_frame is not None and now - last_frame_at >= 1 / max(get_settings().live_frame_fps, 0.1):
+                    if record_frame is not None and now - last_frame_at >= 1 / live_frame_fps:
                         encoded = jpeg_b64(record_frame)
                         if encoded:
                             await websocket_service.broadcast(
@@ -410,6 +452,10 @@ async def agent_run_task(run_id: UUID) -> None:
                         "default": profile.throttle_delays.get("default", 1.5),
                     }
                     throttle_seconds = _compute_dynamic_throttle(raw_state, lockstep_state, throttle_delays=profile_throttle)
+                    if llm_throttle_cap_seconds <= 0:
+                        throttle_seconds = 0
+                    else:
+                        throttle_seconds = min(throttle_seconds, llm_throttle_cap_seconds)
                     if throttle_seconds:
                         await websocket_service.broadcast(
                             run.id,
@@ -661,3 +707,16 @@ async def _recent_trace(db: AsyncSession, run_id: UUID) -> list[dict[str, Any]]:
         {"tick": event.tick_number, "event_type": event.event_type, "reasoning": event.llm_reasoning}
         for event in meaningful
     ]
+
+
+def _estimate_total_map_cells(analysis: Any) -> int | None:
+    width = getattr(analysis, "map_width_units", None)
+    height = getattr(analysis, "map_height_units", None)
+    try:
+        parsed_width = float(width)
+        parsed_height = float(height)
+    except (TypeError, ValueError):
+        return None
+    if parsed_width <= 0 or parsed_height <= 0:
+        return None
+    return max(1, math.ceil(parsed_width / CELL_SIZE) * math.ceil(parsed_height / CELL_SIZE))

@@ -1,4 +1,6 @@
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "/api/v1";
+export const API_ROOT = process.env.NEXT_PUBLIC_API_ROOT ?? apiRootFromBase(API_BASE);
+export const WS_BASE = process.env.NEXT_PUBLIC_WS_BASE ?? "";
 
 export type WadFile = {
   id: string;
@@ -25,6 +27,12 @@ export type WadMap = {
   estimated_difficulty?: string | null;
   spawn_summary_by_skill?: Record<string, SkillSummary> | null;
   map_overview_png_url?: string | null;
+  map_min_x?: number | null;
+  map_max_x?: number | null;
+  map_min_y?: number | null;
+  map_max_y?: number | null;
+  map_width_units?: number | null;
+  map_height_units?: number | null;
 };
 
 export type SkillSummary = {
@@ -108,6 +116,8 @@ export type Decision = {
   status: string;
   reasoning_summary?: string | null;
   mcp_tool?: string | null;
+  mcp_input?: Record<string, unknown> | null;
+  mcp_output?: Record<string, unknown> | null;
   mcp_stop_reason?: string | null;
   llm_duration_ms?: number | null;
   mcp_duration_ms?: number | null;
@@ -140,6 +150,9 @@ export type AppSettings = {
   app_env: string;
   llm_model: string;
   llm_throttle_seconds: number;
+  gemini_rate_limit_calls_per_minute: number;
+  llm_input_cost_per_million: number;
+  llm_output_cost_per_million: number;
   max_run_ticks: number;
   default_run_ticks: number;
   live_frame_fps: number;
@@ -177,6 +190,14 @@ export type BenchmarkStats = {
   tools_used: Record<string, number>;
 };
 
+export type ReportStatus = {
+  status: string;
+  report_id?: string | null;
+  pdf_available?: boolean | null;
+  pdf_url?: string | null;
+  generation_error?: string | null;
+};
+
 export type BehaviorProfile = {
   name: string;
   description: string;
@@ -187,6 +208,14 @@ export type BehaviorProfile = {
 
 export async function apiGet<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(await errorText(response));
+  }
+  return response.json() as Promise<T>;
+}
+
+export async function apiRootGet<T>(path: string): Promise<T> {
+  const response = await fetch(`${API_ROOT}${path}`, { cache: "no-store" });
   if (!response.ok) {
     throw new Error(await errorText(response));
   }
@@ -218,15 +247,40 @@ export function assetUrl(path?: string | null): string | undefined {
 }
 
 export function websocketUrl(runId: string): string {
-  const origin = API_BASE.startsWith("http")
-    ? API_BASE
-    : typeof window !== "undefined"
-      ? window.location.origin
-      : "http://localhost:3000";
-  const base = new URL(origin);
+  const base = websocketBaseUrl();
+  const apiPrefix = base.pathname.replace(/\/$/, "");
   base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
-  base.pathname = `/api/v1/ws/runs/${runId}`;
+  base.pathname = `${apiPrefix}/ws/runs/${runId}`;
   return base.toString();
+}
+
+function websocketBaseUrl(): URL {
+  if (WS_BASE) {
+    return new URL(WS_BASE);
+  }
+  if (API_BASE.startsWith("http")) {
+    return new URL(API_BASE);
+  }
+  const fallbackOrigin = typeof window !== "undefined" ? window.location.origin : "http://localhost:3000";
+  const base = new URL(fallbackOrigin);
+  if (isLocalFrontendOrigin(base) && API_BASE.startsWith("/api/")) {
+    base.port = "8000";
+    base.pathname = API_BASE.replace(/^\/api/, "").replace(/\/$/, "");
+    return base;
+  }
+  base.pathname = API_BASE.replace(/\/$/, "");
+  return base;
+}
+
+function isLocalFrontendOrigin(base: URL): boolean {
+  return ["localhost", "127.0.0.1", "0.0.0.0"].includes(base.hostname) && ["3000", "3001"].includes(base.port);
+}
+
+function apiRootFromBase(base: string): string {
+  if (base.endsWith("/v1")) {
+    return base.slice(0, -3);
+  }
+  return base.replace(/\/v1\/?$/, "");
 }
 
 async function errorText(response: Response): Promise<string> {
