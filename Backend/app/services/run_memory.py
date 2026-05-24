@@ -1,13 +1,24 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AgentDecision, Defect, GameEvent, TestRun
+from app.models import (
+    AgentDecision,
+    Defect,
+    GameEvent,
+    TestRun,
+    WadHypothesis,
+    WadKnowledgeBase,
+    WadSpatialMemory,
+)
+from app.services.gemini_service import GeminiService
 
 
 STUCK_OUTCOMES = {"stuck"}
@@ -22,6 +33,7 @@ FAILED_STOP_REASONS = {
     "target_lost",
     "target_not_visible",
 }
+HYPOTHESIS_TAGS = {"BLOCKED_PATH", "KEY_LOCATION", "RESOURCE_CACHE", "VISUAL_GLITCH", "ENCOUNTER_HOTSPOT", "NAVIGATION_GAP"}
 
 
 class RunMemoryService:
@@ -99,6 +111,267 @@ class RunMemoryService:
         }
         memory["prompt"] = format_cross_run_memory(memory)
         return memory
+
+    async def build_spatial_memory_briefing(
+        self, wad_file_id: UUID, map_name: str
+    ) -> str:
+        result = await self.db.execute(
+            select(
+                WadSpatialMemory.cell_x,
+                WadSpatialMemory.cell_y,
+                WadSpatialMemory.event_type,
+                func.sum(WadSpatialMemory.occurrence_count).label("total_occurrences"),
+            )
+            .where(
+                WadSpatialMemory.wad_file_id == wad_file_id,
+                WadSpatialMemory.map_name == map_name.upper(),
+            )
+            .group_by(WadSpatialMemory.cell_x, WadSpatialMemory.cell_y, WadSpatialMemory.event_type)
+            .order_by(func.sum(WadSpatialMemory.occurrence_count).desc())
+        )
+        rows = result.all()
+        if not rows:
+            return ""
+
+        stuck_cells = []
+        death_cells = []
+        kill_cells = []
+        starve_cells = []
+        for row in rows:
+            cell = f"cell ({row.cell_x},{row.cell_y})"
+            if row.event_type == "stuck":
+                stuck_cells.append(cell)
+            elif row.event_type == "death":
+                death_cells.append(cell)
+            elif row.event_type == "kill":
+                kill_cells.append(cell)
+            elif row.event_type in {"ammo_starvation", "health_deficit"}:
+                starve_cells.append(cell)
+
+        parts = []
+        if stuck_cells:
+            parts.append(f"Stuck events recorded in {len(stuck_cells)} cell(s): {', '.join(stuck_cells[:6])}")
+        if death_cells:
+            parts.append(f"Deaths recorded in {len(death_cells)} cell(s): {', '.join(death_cells[:6])}")
+        if kill_cells:
+            parts.append(f"Kills recorded in {len(kill_cells)} cell(s): {', '.join(kill_cells[:6])}")
+        if starve_cells:
+            parts.append(f"Resource starvation in {len(starve_cells)} cell(s): {', '.join(starve_cells[:6])}")
+        if not parts:
+            return ""
+        return "Spatial memory from prior runs:\n" + "\n".join(parts)
+
+    async def build_hypotheses_briefing(
+        self, wad_file_id: UUID, map_name: str
+    ) -> str:
+        result = await self.db.execute(
+            select(WadHypothesis)
+            .where(
+                WadHypothesis.wad_file_id == wad_file_id,
+                WadHypothesis.map_name == map_name.upper(),
+                WadHypothesis.refuted_at.is_(None),
+            )
+            .order_by(WadHypothesis.confidence.desc())
+            .limit(10)
+        )
+        hypotheses = list(result.scalars().all())
+        if not hypotheses:
+            return ""
+        lines = ["Persistent hypotheses about this map (accumulated across runs):"]
+        for h in hypotheses:
+            tag = h.tag
+            confidence = f"{h.confidence:.0%}" if h.confidence <= 1 else f"{h.confidence:.0%}"
+            lines.append(f"  [{tag}] (confidence {confidence}) {h.content}")
+        return "\n".join(lines)
+
+    async def build_knowledge_briefing(
+        self, wad_file_id: UUID, map_name: str
+    ) -> str:
+        result = await self.db.execute(
+            select(WadKnowledgeBase)
+            .where(
+                WadKnowledgeBase.wad_file_id == wad_file_id,
+                WadKnowledgeBase.map_name == map_name.upper(),
+            )
+            .limit(1)
+        )
+        kb = result.scalar_one_or_none()
+        if kb is None or not kb.document_text.strip():
+            return ""
+        return f"Accumulated knowledge about this map (v{kb.version}):\n{kb.document_text[:2000]}"
+
+    async def persist_spatial_memory(
+        self,
+        run_id: UUID,
+        wad_file_id: UUID,
+        map_name: str,
+        events: list[GameEvent],
+        defects: list[Defect],
+    ) -> None:
+        CELL_SIZE = 128.0
+        cell_events: dict[tuple[int, int, str], int] = defaultdict(int)
+        for event in events:
+            cx = round(event.player_x / CELL_SIZE)
+            cy = round(event.player_y / CELL_SIZE)
+            cell_events[(cx, cy, event.event_type)] += 1
+
+        for defect in defects:
+            if defect.position_x is not None and defect.position_y is not None:
+                cx = round(defect.position_x / CELL_SIZE)
+                cy = round(defect.position_y / CELL_SIZE)
+                etype = defect.defect_type
+                cell_events[(cx, cy, etype)] += 1
+
+        now = datetime.now(UTC)
+        for (cx, cy, etype), count in cell_events.items():
+            stmt = (
+                pg_insert(WadSpatialMemory)
+                .values(
+                    wad_file_id=wad_file_id,
+                    map_name=map_name.upper(),
+                    cell_x=cx,
+                    cell_y=cy,
+                    event_type=etype,
+                    occurrence_count=count,
+                    last_seen_run_id=run_id,
+                    updated_at=now,
+                )
+                .on_conflict_do_update(
+                    index_elements=["wad_file_id", "map_name", "cell_x", "cell_y", "event_type"],
+                    set_={
+                        "occurrence_count": WadSpatialMemory.occurrence_count + count,
+                        "last_seen_run_id": run_id,
+                        "updated_at": now,
+                    },
+                )
+            )
+            await self.db.execute(stmt)
+
+    async def persist_hypotheses(
+        self,
+        run_id: UUID,
+        wad_file_id: UUID,
+        map_name: str,
+        in_run_hypotheses: list[str],
+        agent_quality_flags: dict[str, Any] | None,
+    ) -> None:
+        existing_result = await self.db.execute(
+            select(WadHypothesis).where(
+                WadHypothesis.wad_file_id == wad_file_id,
+                WadHypothesis.map_name == map_name.upper(),
+                WadHypothesis.refuted_at.is_(None),
+            )
+        )
+        existing = list(existing_result.scalars().all())
+        matched_any = False
+        for hyp_text in in_run_hypotheses:
+            text_lower = hyp_text.lower()
+            match = None
+            for existing_hyp in existing:
+                if _similar_text(text_lower, existing_hyp.content.lower()):
+                    match = existing_hyp
+                    break
+            if match:
+                match.last_seen_run_id = run_id
+                match.confidence = min(1.0, match.confidence + 0.15)
+                match.updated_at = datetime.now(UTC)
+                matched_any = True
+            else:
+                tag = _infer_tag(hyp_text)
+                new_hyp = WadHypothesis(
+                    wad_file_id=wad_file_id,
+                    map_name=map_name.upper(),
+                    tag=tag,
+                    content=hyp_text[:500],
+                    confidence=0.3,
+                    confirmed_at=datetime.now(UTC),
+                    last_seen_run_id=run_id,
+                )
+                self.db.add(new_hyp)
+
+        if agent_quality_flags:
+            for warning in agent_quality_flags.get("warnings") or []:
+                text_lower = warning.lower()
+                tag = _infer_tag(warning)
+                match = None
+                for existing_hyp in existing:
+                    if _similar_text(text_lower, existing_hyp.content.lower()):
+                        match = existing_hyp
+                        break
+                if not match:
+                    self.db.add(WadHypothesis(
+                        wad_file_id=wad_file_id,
+                        map_name=map_name.upper(),
+                        tag=tag,
+                        content=warning[:500],
+                        confidence=0.6,
+                        confirmed_at=datetime.now(UTC),
+                        last_seen_run_id=run_id,
+                    ))
+
+    async def update_knowledge_document(
+        self,
+        run_id: UUID,
+        wad_file_id: UUID,
+        map_name: str,
+        outcome: str | None,
+        duration: int | None,
+        defect_count: int,
+        action_count: int,
+        game_tick_count: int,
+        defects: list[Defect],
+    ) -> str:
+        result = await self.db.execute(
+            select(WadKnowledgeBase).where(
+                WadKnowledgeBase.wad_file_id == wad_file_id,
+                WadKnowledgeBase.map_name == map_name.upper(),
+            ).limit(1)
+        )
+        kb = result.scalar_one_or_none()
+        current_doc = kb.document_text if kb else ""
+        version = (kb.version if kb else 0) + 1
+
+        change_log = []
+        if outcome:
+            change_log.append(f"Outcome: {outcome}")
+        if duration:
+            change_log.append(f"Duration: {duration}s")
+        change_log.append(f"Actions: {action_count}")
+        change_log.append(f"Game ticks: {game_tick_count}")
+        change_log.append(f"Defects found: {defect_count}")
+        for defect in defects:
+            change_log.append(f"  - {defect.defect_type}: {defect.title}")
+            if defect.position_x is not None:
+                change_log.append(f"    at ({round(defect.position_x, 1)}, {round(defect.position_y, 1)})")
+
+        if current_doc:
+            new_text = (
+                f"=== Update from run completed at {datetime.now(UTC).isoformat()} ===\n"
+                f"Run: {run_id}\n"
+                + "\n".join(change_log)
+                + "\n\n"
+                + current_doc
+            )
+        else:
+            new_text = (
+                f"Knowledge document for {map_name} (v{version})\n"
+                f"Created from run {run_id}\n"
+                + "\n".join(change_log)
+            )
+        new_text = new_text[:10000]
+
+        if kb:
+            kb.document_text = new_text
+            kb.version = version
+            kb.updated_at = datetime.now(UTC)
+        else:
+            self.db.add(WadKnowledgeBase(
+                wad_file_id=wad_file_id,
+                map_name=map_name.upper(),
+                document_text=new_text,
+                version=version,
+            ))
+        return new_text
 
     async def _recent_runs(
         self,
@@ -294,3 +567,29 @@ def _interaction_result(stop_reason: str) -> str:
     if stop_reason == "out_of_ammo":
         return "out_of_ammo"
     return stop_reason or "unknown"
+
+
+def _similar_text(a: str, b: str) -> bool:
+    words_a = set(a.split())
+    words_b = set(b.split())
+    if not words_a or not words_b:
+        return a == b
+    intersection = words_a & words_b
+    return len(intersection) / max(len(words_a), len(words_b)) >= 0.4
+
+
+def _infer_tag(text: str) -> str:
+    lower = text.lower()
+    if "blocked" in lower or "collision" in lower or "unreachable" in lower:
+        return "BLOCKED_PATH"
+    if "key" in lower:
+        return "KEY_LOCATION"
+    if "ammo" in lower or "starvation" in lower or "resource" in lower:
+        return "RESOURCE_CACHE"
+    if "visual" in lower or "texture" in lower or "glitch" in lower:
+        return "VISUAL_GLITCH"
+    if "encounter" in lower or "combat" in lower or "monster" in lower:
+        return "ENCOUNTER_HOTSPOT"
+    if "navigation" in lower or "path" in lower or "door" in lower:
+        return "NAVIGATION_GAP"
+    return "NAVIGATION_GAP"

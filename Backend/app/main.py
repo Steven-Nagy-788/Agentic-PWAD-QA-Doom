@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse, Response
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, REGISTRY
 
 from app.core.config import get_settings
-from app.core.database import SessionLocal
+from app.core.database import Base, SessionLocal, engine
 from app.routers import admin_storage, analysis, patterns, reports, runs, settings as settings_router, wads, ws
 from app.services.gemini_service import GeminiService
 import app.core.metrics
@@ -34,6 +34,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.analysis_storage_dir,
     ]:
         path.mkdir(parents=True, exist_ok=True)
+    import app.models
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     async with SessionLocal() as db:
         await fail_orphaned_active_runs(db, reason="Orphaned by server restart")
         await db.commit()

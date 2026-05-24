@@ -8,6 +8,9 @@ from app.models.static_analysis_result import StaticAnalysisResult
 from app.models.test_report import TestReport
 from app.models.test_run import TestRun
 from app.models.wad_file import WadFile
+from app.models.wad_spatial_memory import WadSpatialMemory
+from app.models.wad_hypothesis import WadHypothesis
+from app.models.wad_knowledge_base import WadKnowledgeBase
 
 __all__ = [
     "AgentPositionTrail",
@@ -20,4 +23,7 @@ __all__ = [
     "TestReport",
     "TestRun",
     "WadFile",
+    "WadSpatialMemory",
+    "WadHypothesis",
+    "WadKnowledgeBase",
 ]

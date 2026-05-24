@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.core.types import LockstepState
-from app.models import AgentDecision, GameEvent, TestRun
+from app.models import AgentDecision, Defect, GameEvent, TestRun
 from app.repositories.agent_decision_repository import AgentDecisionRepository
 from app.repositories.defect_repository import DefectRepository
 from app.repositories.run_repository import RunRepository
@@ -89,14 +89,28 @@ async def agent_run_task(run_id: UUID) -> None:
             )
             await db.commit()
             return
-        cross_run_memory = await RunMemoryService(db).build_cross_run_memory(
+        memory_svc = RunMemoryService(db)
+        cross_run_memory = await memory_svc.build_cross_run_memory(
             run.wad_file_id,
             run.map_name,
             current_run_id=run.id,
         )
+        spatial_briefing = await memory_svc.build_spatial_memory_briefing(
+            run.wad_file_id,
+            run.map_name,
+        )
+        knowledge_document = await memory_svc.build_knowledge_briefing(
+            run.wad_file_id,
+            run.map_name,
+        )
         profile = get_behavior_profile(run)
         prompt = (
-            render_agent_prompt(wad, analysis, run, cross_run_memory=cross_run_memory["prompt"])
+            render_agent_prompt(
+                wad, analysis, run,
+                cross_run_memory=cross_run_memory["prompt"],
+                spatial_briefing=spatial_briefing,
+                knowledge_document=knowledge_document,
+            )
             + "\n\n"
             + profile.system_prompt_addendum
         )
@@ -486,6 +500,45 @@ async def agent_run_task(run_id: UUID) -> None:
                             "detected_at_tick": defect.detected_at_tick,
                         },
                     )
+                try:
+                    events_result = await db.execute(select(GameEvent).where(GameEvent.run_id == run.id))
+                    run_events = list(events_result.scalars().all())
+                    defects_result = await db.execute(select(Defect).where(Defect.run_id == run.id))
+                    run_defects = list(defects_result.scalars().all())
+                    await memory_svc.persist_spatial_memory(
+                        run_id=run.id,
+                        wad_file_id=run.wad_file_id,
+                        map_name=run.map_name,
+                        events=run_events,
+                        defects=run_defects,
+                    )
+                    hyp_list = list(lockstep_state.get("hypotheses") or [])
+                    await memory_svc.persist_hypotheses(
+                        run_id=run.id,
+                        wad_file_id=run.wad_file_id,
+                        map_name=run.map_name,
+                        in_run_hypotheses=hyp_list,
+                        agent_quality_flags=agent_quality_flags,
+                    )
+                    if run.started_at:
+                        dur = int((completed_at - run.started_at).total_seconds())
+                    else:
+                        dur = None
+                    tick_count = run_events[-1].tick_number if run_events else 0
+                    await memory_svc.update_knowledge_document(
+                        run_id=run.id,
+                        wad_file_id=run.wad_file_id,
+                        map_name=run.map_name,
+                        outcome=outcome,
+                        duration=dur,
+                        defect_count=len(run_defects),
+                        action_count=total_actions,
+                        game_tick_count=tick_count,
+                        defects=run_defects,
+                    )
+                    await db.commit()
+                except Exception as exc:
+                    await db.rollback()
                 try:
                     await websocket_service.broadcast(run.id, {"type": "report_status", "status": "generating"})
                     await ReportService(db).generate(run.id)

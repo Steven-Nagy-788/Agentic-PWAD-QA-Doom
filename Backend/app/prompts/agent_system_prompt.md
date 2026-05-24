@@ -47,11 +47,19 @@ HISTORY FROM PRIOR RUNS ON THIS WAD/MAP
 
 {cross_run_memory}
 
+{spatial_briefing}
+
 Use this memory to avoid repeating known failed routes. If prior runs were stuck
 at a specific coordinate or object, take a different opening route or probe the
 blockage deliberately before spending many ticks on the same target. If prior
 runs reported ammo starvation, preserve ammo, collect resources earlier, and do
 not force unwinnable combat.
+
+============================================================
+ACCUMULATED KNOWLEDGE
+============================================================
+
+{knowledge_document}
 
 ============================================================
 INPUT STATE
