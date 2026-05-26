@@ -244,13 +244,40 @@ def aim_and_shoot(
         max_tics: Maximum game tics before giving up (default 100).
 
     Returns screenshot + state with action_summary containing:
-        shots_fired, hits_landed, kills, ammo_spent, target_name, stop_reason.
+        shots_fired, hits_landed, kills, ammo_spent, target_name, weapon_state,
+        weapon_switch, stop_reason.
     Stop reasons: shots_complete, target_killed, target_lost, target_not_visible,
-        player_died, out_of_ammo, episode_finished, max_tics.
+        player_died, selected_weapon_empty, no_usable_weapon,
+        no_usable_ranged_weapon, melee_target_out_of_range, weapon_switch_failed,
+        episode_finished, max_tics.
     """
     result = manager.aim_and_shoot(
         object_id,
         shots=shots,
+        max_tics=max_tics,
+        capture_telemetry=capture_telemetry,
+        telemetry_stride=telemetry_stride,
+    )
+    screenshot_png = result.pop("screenshot_png", None)
+    if screenshot_png is not None:
+        return [Image(data=screenshot_png, format="png"), result]
+    return [result]
+
+
+@mcp.tool
+def select_weapon(
+    weapon_slot: int,
+    max_tics: int = 12,
+    capture_telemetry: bool = False,
+    telemetry_stride: int = 1,
+):
+    """Select a specific weapon slot and return the resulting game state.
+
+    Prefer this over SELECT_NEXT_WEAPON when the agent knows which slot is usable
+    from weapon_state.best_viable_weapon or weapon_state.usable_weapons.
+    """
+    result = manager.select_weapon(
+        weapon_slot,
         max_tics=max_tics,
         capture_telemetry=capture_telemetry,
         telemetry_stride=telemetry_stride,
@@ -362,9 +389,11 @@ def strafe_and_shoot(
 
     Returns screenshot + state with action_summary containing:
         shots_fired, hits_landed, kills, ammo_spent, target_name, strafe_direction,
-        damage_taken, stop_reason.
+        weapon_state, weapon_switch, damage_taken, stop_reason.
     Stop reasons: shots_complete, target_killed, target_lost, target_not_visible,
-        player_died, out_of_ammo, episode_finished, max_tics.
+        player_died, selected_weapon_empty, no_usable_weapon,
+        no_usable_ranged_weapon, melee_target_out_of_range, weapon_switch_failed,
+        episode_finished, max_tics.
     """
     result = manager.strafe_and_shoot(
         object_id,

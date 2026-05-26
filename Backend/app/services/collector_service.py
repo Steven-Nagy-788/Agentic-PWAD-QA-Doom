@@ -46,6 +46,13 @@ class CollectorService:
             "mcp_service": mcp_call.get("service", "mcp-doom"),
             "mcp_input": mcp_call.get("input"),
             "mcp_output": mcp_output,
+            "resource_state": {
+                "raw_ammo_slots": variables.get("raw_ammo_slots"),
+                "selected_weapon_ammo": variables.get("selected_weapon_ammo"),
+                "usable_attack_ammo": variables.get("usable_attack_ammo"),
+                "usable_weapons": variables.get("usable_weapons"),
+                "best_viable_weapon": variables.get("best_viable_weapon"),
+            },
         }
         if isinstance(action_summary, dict):
             action_taken["mcp_action_summary"] = action_summary
@@ -172,6 +179,7 @@ class CollectorService:
 
 def normalize_variables(state: dict[str, Any]) -> dict[str, Any]:
     variables = state.get("game_variables") or state.get("variables") or state
+    weapon_state = state.get("weapon_state") if isinstance(state.get("weapon_state"), dict) else {}
 
     def num(*keys: str, default: float = 0) -> float:
         for key in keys:
@@ -179,16 +187,48 @@ def normalize_variables(state: dict[str, Any]) -> dict[str, Any]:
                 return variables[key]
         return default
 
+    has_raw_ammo_slots = any(f"AMMO{i}" in variables for i in range(10))
+    raw_ammo_slots = {f"AMMO{i}": num(f"AMMO{i}") for i in range(10)}
+    selected_weapon_ammo = num("SELECTED_WEAPON_AMMO", "selected_weapon_ammo")
+    usable_attack_ammo = weapon_state.get("usable_attack_ammo")
+    if usable_attack_ammo is None:
+        if has_raw_ammo_slots:
+            usable_attack_ammo = max(float(value or 0) for value in raw_ammo_slots.values())
+        elif "ammo_total" in variables:
+            usable_attack_ammo = num("ammo_total")
+        else:
+            usable_attack_ammo = (
+                num("ammo_bullets", "bullets")
+                + num("ammo_shells", "shells")
+                + num("ammo_rockets", "rockets")
+                + num("ammo_cells", "cells")
+            )
+
     normalized = {
         "x": num("POSITION_X", "position_x", "x"),
         "y": num("POSITION_Y", "position_y", "y"),
         "angle": num("ANGLE", "angle", "player_angle"),
         "health": num("HEALTH", "health"),
         "armor": num("ARMOR", "armor"),
+        "ammo_slot_0": raw_ammo_slots["AMMO0"],
+        "ammo_slot_1": raw_ammo_slots["AMMO1"],
+        "ammo_slot_2": raw_ammo_slots["AMMO2"],
+        "ammo_slot_3": raw_ammo_slots["AMMO3"],
+        "ammo_slot_4": raw_ammo_slots["AMMO4"],
+        "ammo_slot_5": raw_ammo_slots["AMMO5"],
+        "ammo_slot_6": raw_ammo_slots["AMMO6"],
+        "ammo_slot_7": raw_ammo_slots["AMMO7"],
+        "ammo_slot_8": raw_ammo_slots["AMMO8"],
+        "ammo_slot_9": raw_ammo_slots["AMMO9"],
+        "raw_ammo_slots": raw_ammo_slots,
         "ammo_bullets": num("AMMO0", "ammo_bullets", "bullets"),
         "ammo_shells": num("AMMO1", "ammo_shells", "shells"),
         "ammo_rockets": num("AMMO2", "ammo_rockets", "rockets"),
         "ammo_cells": num("AMMO3", "ammo_cells", "cells"),
+        "selected_weapon_ammo": selected_weapon_ammo,
+        "usable_attack_ammo": usable_attack_ammo,
+        "usable_weapons": list(weapon_state.get("usable_weapons") or []),
+        "best_viable_weapon": weapon_state.get("best_viable_weapon"),
         "kill_count": num("KILLCOUNT", "kill_count", "kills"),
         "item_count": num("ITEMCOUNT", "item_count", "items"),
         "secret_count": num("SECRETCOUNT", "secret_count", "secrets"),
@@ -196,12 +236,7 @@ def normalize_variables(state: dict[str, Any]) -> dict[str, Any]:
     }
     normalized["level_completed"] = bool(state.get("level_completed") or state.get("next_map"))
     normalized["map_exit"] = bool(state.get("map_exit"))
-    normalized["ammo_total"] = (
-        normalized["ammo_bullets"]
-        + normalized["ammo_shells"]
-        + normalized["ammo_rockets"]
-        + normalized["ammo_cells"]
-    )
+    normalized["ammo_total"] = usable_attack_ammo
     return normalized
 
 

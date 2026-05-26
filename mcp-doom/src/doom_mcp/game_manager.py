@@ -125,6 +125,16 @@ DEFAULT_BUTTONS = [
     "SPEED",
     "SELECT_NEXT_WEAPON",
     "SELECT_PREV_WEAPON",
+    "SELECT_WEAPON0",
+    "SELECT_WEAPON1",
+    "SELECT_WEAPON2",
+    "SELECT_WEAPON3",
+    "SELECT_WEAPON4",
+    "SELECT_WEAPON5",
+    "SELECT_WEAPON6",
+    "SELECT_WEAPON7",
+    "SELECT_WEAPON8",
+    "SELECT_WEAPON9",
     "JUMP",
     "CROUCH",
 ]
@@ -155,6 +165,9 @@ DEFAULT_VARIABLES = [
     "AMMO4",
     "AMMO5",
     "AMMO6",
+    "AMMO7",
+    "AMMO8",
+    "AMMO9",
     # Weapons inventory
     "WEAPON0",
     "WEAPON1",
@@ -164,6 +177,8 @@ DEFAULT_VARIABLES = [
     "WEAPON5",
     "WEAPON6",
     "WEAPON7",
+    "WEAPON8",
+    "WEAPON9",
     # Stats
     "KILLCOUNT",
     "ITEMCOUNT",
@@ -184,6 +199,61 @@ DELTA_BUTTONS = {
     "MOVE_LEFT_RIGHT_DELTA",
     "MOVE_UP_DOWN_DELTA",
 }
+
+_WEAPON_SLOTS = tuple(range(10))
+_MELEE_WEAPON_SLOTS = {0, 1}
+_WEAPON_NAMES = {
+    0: "fist",
+    1: "chainsaw",
+    2: "pistol",
+    3: "shotgun",
+    4: "chaingun",
+    5: "rocket_launcher",
+    6: "plasma_rifle",
+    7: "bfg9000",
+    8: "weapon8",
+    9: "weapon9",
+}
+_RANGED_WEAPON_PRIORITY = (7, 6, 5, 4, 3, 2, 8, 9)
+_MELEE_RANGE = 128.0
+
+
+def _direct_weapon_button_slot(button_name: str) -> int | None:
+    prefix = "SELECT_WEAPON"
+    upper = button_name.upper()
+    if not upper.startswith(prefix):
+        return None
+    suffix = upper[len(prefix):]
+    if not suffix.isdigit():
+        return None
+    slot = int(suffix)
+    return slot if 0 <= slot <= 9 else None
+
+
+def _requested_direct_weapon_slot(actions: dict[str, float] | None) -> int | None:
+    if not actions:
+        return None
+    for name, value in actions.items():
+        slot = _direct_weapon_button_slot(str(name))
+        if slot is None:
+            continue
+        try:
+            pressed = float(value) > 0
+        except (TypeError, ValueError):
+            pressed = False
+        if pressed:
+            return slot
+    return None
+
+
+def _without_direct_weapon_buttons(actions: dict[str, float] | None) -> dict[str, float] | None:
+    if not actions:
+        return actions
+    return {
+        name: value
+        for name, value in actions.items()
+        if _direct_weapon_button_slot(str(name)) is None
+    }
 
 
 class GameManager:
@@ -336,6 +406,81 @@ class GameManager:
         pa = game.get_game_variable(vzd.GameVariable.ANGLE)
         return px, py, pa
 
+    def _weapon_state(self, game: vzd.DoomGame) -> dict:
+        """Return normalized weapon inventory and combat resource state."""
+        selected_weapon = int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON))
+        selected_ammo = int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO))
+        weapons = []
+        usable_weapons = []
+        usable_ranged_weapons = []
+        usable_melee_weapons = []
+        raw_ammo_slots = {}
+
+        for slot in _WEAPON_SLOTS:
+            weapon_var = getattr(vzd.GameVariable, f"WEAPON{slot}")
+            ammo_var = getattr(vzd.GameVariable, f"AMMO{slot}")
+            owned = bool(game.get_game_variable(weapon_var))
+            ammo = int(game.get_game_variable(ammo_var))
+            effective_ammo = selected_ammo if slot == selected_weapon else ammo
+            requires_ammo = slot not in _MELEE_WEAPON_SLOTS
+            usable = owned and (not requires_ammo or effective_ammo > 0)
+            entry = {
+                "slot": slot,
+                "name": _WEAPON_NAMES.get(slot, f"weapon{slot}"),
+                "owned": owned,
+                "ammo": ammo,
+                "effective_ammo": effective_ammo,
+                "requires_ammo": requires_ammo,
+                "usable": usable,
+                "selected": slot == selected_weapon,
+            }
+            weapons.append(entry)
+            raw_ammo_slots[f"AMMO{slot}"] = ammo
+            if usable:
+                usable_weapons.append(slot)
+                if requires_ammo:
+                    usable_ranged_weapons.append(slot)
+                else:
+                    usable_melee_weapons.append(slot)
+
+        best_viable_weapon = None
+        if selected_weapon in usable_ranged_weapons:
+            best_viable_weapon = selected_weapon
+        else:
+            for slot in _RANGED_WEAPON_PRIORITY:
+                if slot in usable_ranged_weapons:
+                    best_viable_weapon = slot
+                    break
+        if best_viable_weapon is None and selected_weapon in usable_melee_weapons:
+            best_viable_weapon = selected_weapon
+        elif best_viable_weapon is None and usable_melee_weapons:
+            best_viable_weapon = max(usable_melee_weapons)
+
+        usable_attack_ammo = max(
+            (weapon["effective_ammo"] for weapon in weapons if weapon["slot"] in usable_ranged_weapons),
+            default=0,
+        )
+        return {
+            "selected_weapon": selected_weapon,
+            "selected_weapon_name": _WEAPON_NAMES.get(selected_weapon, f"weapon{selected_weapon}"),
+            "selected_weapon_ammo": selected_ammo,
+            "weapon_inventory": weapons,
+            "usable_weapons": usable_weapons,
+            "usable_ranged_weapons": usable_ranged_weapons,
+            "usable_melee_weapons": usable_melee_weapons,
+            "usable_attack_ammo": usable_attack_ammo,
+            "raw_ammo_slots": raw_ammo_slots,
+            "best_viable_weapon": best_viable_weapon,
+            "melee_available": bool(usable_melee_weapons),
+        }
+
+    def _current_usable_attack_ammo(self, game: vzd.DoomGame) -> int:
+        return int(self._weapon_state(game).get("usable_attack_ammo") or 0)
+
+    def _selected_weapon_is_melee(self, game: vzd.DoomGame) -> bool:
+        selected = int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON))
+        return selected in _MELEE_WEAPON_SLOTS
+
     def _extract_full_state(
         self,
         game: vzd.DoomGame,
@@ -358,6 +503,7 @@ class GameManager:
             "episode_finished": False,
             "tic": state.tic,
             "game_variables": variables,
+            "weapon_state": self._weapon_state(game),
             "objects": objects,
             "total_reward": game.get_total_reward(),
             "screenshot_png": screenshot_png,
@@ -383,6 +529,7 @@ class GameManager:
             "episode_timeout": (not bool(dead)) and not level_completed,
             "total_reward": game.get_total_reward(),
             "game_variables": variables,
+            "weapon_state": self._weapon_state(game),
         }
         if reward is not None:
             result["reward"] = reward
@@ -441,7 +588,11 @@ class GameManager:
         if self._game is not None:
             self.stop()
 
-        button_names = buttons or DEFAULT_BUTTONS
+        button_names = list(buttons or DEFAULT_BUTTONS)
+        for slot in _WEAPON_SLOTS:
+            direct_button = f"SELECT_WEAPON{slot}"
+            if direct_button not in button_names:
+                button_names.append(direct_button)
         variable_names = variables or DEFAULT_VARIABLES
 
         # Validate button names
@@ -726,6 +877,7 @@ class GameManager:
         sample = {
             "tic": getattr(state, "tic", None),
             "game_variables": variables,
+            "weapon_state": self._weapon_state(game),
             "episode_finished": game.is_episode_finished(),
             "level_completed": False,
             "map_exit": False,
@@ -761,9 +913,11 @@ class GameManager:
         self._begin_telemetry(capture_telemetry, telemetry_stride)
 
         # Validate button names for the public API
+        requested_weapon_slot = _requested_direct_weapon_slot(actions)
+        executable_actions = _without_direct_weapon_buttons(actions)
         if actions:
             button_index = {b.name: i for i, b in enumerate(self._buttons)}
-            for name in actions:
+            for name in executable_actions or {}:
                 upper = name.upper()
                 if upper not in BUTTON_NAMES:
                     raise ToolError(
@@ -776,12 +930,24 @@ class GameManager:
                         f"Configured: {sorted(button_index.keys())}"
                     )
 
-        action_list = self._build_action_list(actions)
+        action_list = self._build_action_list(executable_actions)
 
         with self._with_executor_paused():
             with self._game_lock:
                 reward = 0.0
                 tics_used = 0
+                weapon_switch_summary = None
+                if requested_weapon_slot is not None:
+                    before_weapon = int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON))
+                    success, switch_tics = self._select_weapon_slot(game, requested_weapon_slot)
+                    tics_used += switch_tics
+                    weapon_switch_summary = {
+                        "requested_weapon": requested_weapon_slot,
+                        "previous_weapon": before_weapon,
+                        "selected_weapon": int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)),
+                        "success": success,
+                        "tics": switch_tics,
+                    }
                 for _ in range(max(1, int(tics))):
                     if game.is_episode_finished() or self._is_dead(game):
                         break
@@ -793,6 +959,8 @@ class GameManager:
                     "tics": tics_used,
                     "actions": actions or {},
                 }
+                if weapon_switch_summary is not None:
+                    summary["weapon_switch"] = weapon_switch_summary
 
                 if game.is_episode_finished():
                     result = self._finished_state(game, reward=reward)
@@ -801,6 +969,41 @@ class GameManager:
 
                 result = self._extract_full_state(game, include_sectors=include_sectors, include_depth=include_depth)
                 result["reward"] = reward
+                result["action_summary"] = summary
+                return self._attach_telemetry(result)
+
+    def select_weapon(
+        self,
+        weapon_slot: int,
+        max_tics: int = 12,
+        capture_telemetry: bool = False,
+        telemetry_stride: int = 1,
+    ) -> dict:
+        """Select a weapon slot deterministically and return the resulting state."""
+        game = self._require_episode()
+        self._begin_telemetry(capture_telemetry, telemetry_stride)
+        slot = max(0, min(9, int(weapon_slot)))
+
+        with self._with_executor_paused():
+            with self._game_lock:
+                before = self._weapon_state(game)
+                success, tics_used = self._select_weapon_slot(game, slot, max_tics=max_tics)
+                after = self._weapon_state(game)
+                summary = {
+                    "requested_weapon": slot,
+                    "requested_weapon_name": _WEAPON_NAMES.get(slot, f"weapon{slot}"),
+                    "previous_weapon": before["selected_weapon"],
+                    "selected_weapon": after["selected_weapon"],
+                    "success": success,
+                    "tics": tics_used,
+                    "stop_reason": "selected" if success else "weapon_switch_failed",
+                    "weapon_state_before": before,
+                    "weapon_state_after": after,
+                }
+                if game.is_episode_finished():
+                    result = self._finished_state(game)
+                else:
+                    result = self._extract_full_state(game, include_depth=True)
                 result["action_summary"] = summary
                 return self._attach_telemetry(result)
 
@@ -858,6 +1061,107 @@ class GameManager:
     # ------------------------------------------------------------------
     # Compound action helpers
     # ------------------------------------------------------------------
+
+    def _select_weapon_slot(self, game: vzd.DoomGame, weapon_slot: int, max_tics: int = 12) -> tuple[bool, int]:
+        """Select a weapon slot with SELECT_WEAPONn when configured, otherwise cycle."""
+        target = max(0, min(9, int(weapon_slot)))
+        if int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) == target:
+            return True, 0
+
+        button_names = {button.name for button in self._buttons}
+        direct_button = f"SELECT_WEAPON{target}"
+        tics_used = 0
+
+        if direct_button in button_names:
+            self._make_action(game, self._build_action_list({direct_button: 1}), 1)
+            tics_used += 1
+            for _ in range(max(0, int(max_tics) - 1)):
+                if game.is_episode_finished():
+                    break
+                if int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) == target:
+                    self._clear_action(game)
+                    return True, tics_used
+                self._make_action(game, self._build_action_list(), 1)
+                tics_used += 1
+            self._clear_action(game)
+            return int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) == target, tics_used
+
+        if "SELECT_NEXT_WEAPON" not in button_names:
+            return False, 0
+
+        for _ in range(max(1, int(max_tics))):
+            if game.is_episode_finished():
+                break
+            self._make_action(game, self._build_action_list({"SELECT_NEXT_WEAPON": 1}), 1)
+            tics_used += 1
+            if int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) == target:
+                self._clear_action(game)
+                return True, tics_used
+        self._clear_action(game)
+        return int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) == target, tics_used
+
+    def _ensure_attack_capable_weapon(
+        self,
+        game: vzd.DoomGame,
+        target_distance: float | None = None,
+    ) -> tuple[bool, str, dict, int]:
+        """Ensure the selected weapon can attack the current target."""
+        before = self._weapon_state(game)
+        selected = int(before["selected_weapon"])
+        selected_ammo = int(before["selected_weapon_ammo"])
+        target_dist = float(target_distance or 999999.0)
+        switch_summary: dict = {
+            "attempted": False,
+            "from_weapon": selected,
+            "to_weapon": None,
+            "success": False,
+        }
+
+        if selected not in _MELEE_WEAPON_SLOTS and selected_ammo > 0:
+            return True, "selected_weapon_ready", switch_summary, 0
+        if selected in _MELEE_WEAPON_SLOTS and target_dist <= _MELEE_RANGE:
+            return True, "melee_weapon_ready", switch_summary, 0
+
+        best_weapon = before.get("best_viable_weapon")
+        if (
+            best_weapon is not None
+            and int(best_weapon) not in _MELEE_WEAPON_SLOTS
+            and int(best_weapon) != selected
+        ):
+            switch_summary["attempted"] = True
+            switch_summary["to_weapon"] = int(best_weapon)
+            success, tics_used = self._select_weapon_slot(game, int(best_weapon))
+            after = self._weapon_state(game)
+            switch_summary["success"] = success and int(after["selected_weapon"]) == int(best_weapon)
+            switch_summary["selected_weapon_after"] = after["selected_weapon"]
+            switch_summary["selected_weapon_ammo_after"] = after["selected_weapon_ammo"]
+            if switch_summary["success"] and int(after["selected_weapon_ammo"]) > 0:
+                return True, "weapon_switched", switch_summary, tics_used
+            return False, "weapon_switch_failed", switch_summary, tics_used
+
+        if (
+            best_weapon is not None
+            and int(best_weapon) in _MELEE_WEAPON_SLOTS
+            and int(best_weapon) != selected
+            and target_dist <= _MELEE_RANGE
+        ):
+            switch_summary["attempted"] = True
+            switch_summary["to_weapon"] = int(best_weapon)
+            success, tics_used = self._select_weapon_slot(game, int(best_weapon))
+            after = self._weapon_state(game)
+            switch_summary["success"] = success and int(after["selected_weapon"]) == int(best_weapon)
+            switch_summary["selected_weapon_after"] = after["selected_weapon"]
+            switch_summary["selected_weapon_ammo_after"] = after["selected_weapon_ammo"]
+            if switch_summary["success"]:
+                return True, "weapon_switched", switch_summary, tics_used
+            return False, "weapon_switch_failed", switch_summary, tics_used
+
+        if selected in _MELEE_WEAPON_SLOTS:
+            reason = "melee_target_out_of_range" if target_dist > _MELEE_RANGE else "melee_weapon_ready"
+            return target_dist <= _MELEE_RANGE, reason, switch_summary, 0
+        if before.get("usable_melee_weapons"):
+            return False, "no_usable_ranged_weapon", switch_summary, 0
+        return False, "no_usable_weapon", switch_summary, 0
 
     def _find_object_by_id(self, game: vzd.DoomGame, object_id: int) -> dict | None:
         """Find a specific object by numeric ID in the current state."""
@@ -939,6 +1243,9 @@ class GameManager:
             "kills": 0,
             "ammo_spent": 0,
             "target_name": None,
+            "weapon_state_before": None,
+            "weapon_state_after": None,
+            "weapon_switch": None,
         }
         tics_used = 0
 
@@ -946,7 +1253,8 @@ class GameManager:
             with self._game_lock:
                 initial_killcount = game.get_game_variable(vzd.GameVariable.KILLCOUNT)
                 initial_hitcount = game.get_game_variable(vzd.GameVariable.HITCOUNT)
-                initial_ammo = game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO)
+                initial_attack_ammo = self._current_usable_attack_ammo(game)
+                summary["weapon_state_before"] = self._weapon_state(game)
 
                 # Find initial target to get its name
                 target = self._find_object_by_id(game, object_id)
@@ -955,9 +1263,7 @@ class GameManager:
 
                 while tics_used < max_tics and summary["shots_fired"] < shots:
                     if game.is_episode_finished() or self._is_dead(game):
-                        summary["kills"] = int(game.get_game_variable(vzd.GameVariable.KILLCOUNT) - initial_killcount)
-                        summary["hits_landed"] = int(game.get_game_variable(vzd.GameVariable.HITCOUNT) - initial_hitcount)
-                        summary["ammo_spent"] = int(initial_ammo - game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO))
+                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
                         reason = "player_died" if self._is_dead(game) else "episode_finished"
                         return self._compound_result(game, summary, reason)
 
@@ -965,27 +1271,33 @@ class GameManager:
                     target = self._find_object_by_id(game, object_id)
                     if target is None:
                         # Target gone - check if we killed it
-                        kills = int(game.get_game_variable(vzd.GameVariable.KILLCOUNT) - initial_killcount)
-                        summary["kills"] = kills
-                        summary["hits_landed"] = int(game.get_game_variable(vzd.GameVariable.HITCOUNT) - initial_hitcount)
-                        summary["ammo_spent"] = int(initial_ammo - game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO))
+                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
+                        kills = summary["kills"]
                         reason = "target_killed" if kills > 0 else "target_lost"
                         return self._compound_result(game, summary, reason)
                     if not target.get("is_visible"):
-                        summary["kills"] = int(game.get_game_variable(vzd.GameVariable.KILLCOUNT) - initial_killcount)
-                        summary["hits_landed"] = int(game.get_game_variable(vzd.GameVariable.HITCOUNT) - initial_hitcount)
-                        summary["ammo_spent"] = int(initial_ammo - game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO))
+                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
                         return self._compound_result(game, summary, "target_not_visible")
+
+                    ready, weapon_reason, switch_summary, switch_tics = self._ensure_attack_capable_weapon(
+                        game,
+                        target.get("distance"),
+                    )
+                    tics_used += switch_tics
+                    if switch_summary.get("attempted"):
+                        summary["weapon_switch"] = switch_summary
+                        initial_attack_ammo = self._current_usable_attack_ammo(game)
+                    if not ready:
+                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
+                        return self._compound_result(game, summary, weapon_reason)
 
                     angle = target["angle_to_aim"]
 
                     # Check ammo
                     current_ammo = game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO)
-                    if current_ammo <= 0:
-                        summary["kills"] = int(game.get_game_variable(vzd.GameVariable.KILLCOUNT) - initial_killcount)
-                        summary["hits_landed"] = int(game.get_game_variable(vzd.GameVariable.HITCOUNT) - initial_hitcount)
-                        summary["ammo_spent"] = int(initial_ammo - current_ammo)
-                        return self._compound_result(game, summary, "out_of_ammo")
+                    if current_ammo <= 0 and not self._selected_weapon_is_melee(game):
+                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
+                        return self._compound_result(game, summary, "selected_weapon_empty")
 
                     # Clamp turn to avoid overshooting
                     clamped = max(-45.0, min(45.0, angle))
@@ -1018,9 +1330,7 @@ class GameManager:
                             self._make_action(game, self._build_action_list(), 1)
                             tics_used += 1
 
-                summary["kills"] = int(game.get_game_variable(vzd.GameVariable.KILLCOUNT) - initial_killcount)
-                summary["hits_landed"] = int(game.get_game_variable(vzd.GameVariable.HITCOUNT) - initial_hitcount)
-                summary["ammo_spent"] = int(initial_ammo - game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO))
+                self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
 
                 reason = "shots_complete" if summary["shots_fired"] >= shots else "max_tics"
                 return self._compound_result(game, summary, reason)
@@ -1483,6 +1793,9 @@ class GameManager:
             "target_name": None,
             "strafe_direction": direction,
             "damage_taken": 0,
+            "weapon_state_before": None,
+            "weapon_state_after": None,
+            "weapon_switch": None,
         }
         tics_used = 0
         strafe_sign = -1.0  # start left
@@ -1491,8 +1804,9 @@ class GameManager:
             with self._game_lock:
                 initial_killcount = game.get_game_variable(vzd.GameVariable.KILLCOUNT)
                 initial_hitcount = game.get_game_variable(vzd.GameVariable.HITCOUNT)
-                initial_ammo = game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO)
+                initial_attack_ammo = self._current_usable_attack_ammo(game)
                 initial_damage_taken = game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN)
+                summary["weapon_state_before"] = self._weapon_state(game)
 
                 target = self._find_object_by_id(game, object_id)
                 if target is not None:
@@ -1500,30 +1814,43 @@ class GameManager:
 
                 while tics_used < max_tics and summary["shots_fired"] < shots:
                     if game.is_episode_finished() or self._is_dead(game):
-                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_ammo)
+                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
                         summary["damage_taken"] = int(game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN) - initial_damage_taken)
                         reason = "player_died" if self._is_dead(game) else "episode_finished"
                         return self._compound_result(game, summary, reason)
 
                     target = self._find_object_by_id(game, object_id)
                     if target is None:
-                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_ammo)
+                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
                         summary["damage_taken"] = int(game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN) - initial_damage_taken)
                         kills = summary["kills"]
                         reason = "target_killed" if kills > 0 else "target_lost"
                         return self._compound_result(game, summary, reason)
                     if not target.get("is_visible"):
-                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_ammo)
+                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
                         summary["damage_taken"] = int(game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN) - initial_damage_taken)
                         return self._compound_result(game, summary, "target_not_visible")
 
                     angle = target["angle_to_aim"]
 
-                    current_ammo = game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO)
-                    if current_ammo <= 0:
-                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_ammo)
+                    ready, weapon_reason, switch_summary, switch_tics = self._ensure_attack_capable_weapon(
+                        game,
+                        target.get("distance"),
+                    )
+                    tics_used += switch_tics
+                    if switch_summary.get("attempted"):
+                        summary["weapon_switch"] = switch_summary
+                        initial_attack_ammo = self._current_usable_attack_ammo(game)
+                    if not ready:
+                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
                         summary["damage_taken"] = int(game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN) - initial_damage_taken)
-                        return self._compound_result(game, summary, "out_of_ammo")
+                        return self._compound_result(game, summary, weapon_reason)
+
+                    current_ammo = game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO)
+                    if current_ammo <= 0 and not self._selected_weapon_is_melee(game):
+                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
+                        summary["damage_taken"] = int(game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN) - initial_damage_taken)
+                        return self._compound_result(game, summary, "selected_weapon_empty")
 
                     # Auto-alternate strafe direction every ~15 tics
                     if direction == "auto" and tics_used % 15 == 0 and tics_used > 0:
@@ -1564,19 +1891,20 @@ class GameManager:
                         self._make_action(game, action, 1)
                         tics_used += 1
 
-                self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_ammo)
+                self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
                 summary["damage_taken"] = int(game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN) - initial_damage_taken)
                 reason = "shots_complete" if summary["shots_fired"] >= shots else "max_tics"
                 return self._compound_result(game, summary, reason)
 
     def _update_combat_summary(
         self, game: vzd.DoomGame, summary: dict,
-        initial_killcount: float, initial_hitcount: float, initial_ammo: float,
+        initial_killcount: float, initial_hitcount: float, initial_attack_ammo: float,
     ) -> None:
         """Update kills/hits/ammo in a combat summary dict."""
         summary["kills"] = int(game.get_game_variable(vzd.GameVariable.KILLCOUNT) - initial_killcount)
         summary["hits_landed"] = int(game.get_game_variable(vzd.GameVariable.HITCOUNT) - initial_hitcount)
-        summary["ammo_spent"] = int(initial_ammo - game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO))
+        summary["ammo_spent"] = max(0, int(initial_attack_ammo - self._current_usable_attack_ammo(game)))
+        summary["weapon_state_after"] = self._weapon_state(game)
 
     # ------------------------------------------------------------------
     # Threat assessment (no tics consumed)
@@ -1592,7 +1920,7 @@ class GameManager:
 
         Returns:
             threat_level, threats (sorted by priority), incoming_projectiles,
-            tactical_advice, player_health, player_armor, selected_weapon_ammo.
+            tactical_advice, player_health, player_armor, and weapon_state.
         """
         game = self._require_episode()
 
@@ -1601,13 +1929,14 @@ class GameManager:
             if state is None:
                 return {"threat_level": "none", "threats": [], "incoming_projectiles": [],
                         "tactical_advice": [], "player_health": 0, "player_armor": 0,
-                        "selected_weapon_ammo": 0}
+                        "selected_weapon_ammo": 0, "weapon_state": {}}
 
             px, py, pa = self._get_player_pos(game)
             all_objects = extract_objects(state, player_x=px, player_y=py, player_angle=pa)
             health = game.get_game_variable(vzd.GameVariable.HEALTH)
             armor = game.get_game_variable(vzd.GameVariable.ARMOR)
-            ammo = game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO)
+            weapon_state = self._weapon_state(game)
+            ammo = weapon_state["selected_weapon_ammo"]
 
         threats = []
         projectiles = []
@@ -1688,8 +2017,12 @@ class GameManager:
         elif health <= 50:
             advice.append("Low health - consider retreating")
 
-        if ammo <= 0:
-            advice.append("NO AMMO - switch weapon or retreat")
+        if ammo <= 0 and weapon_state.get("usable_ranged_weapons"):
+            advice.append(
+                f"SELECTED WEAPON EMPTY - switch to weapon {weapon_state.get('best_viable_weapon')} before firing"
+            )
+        elif not weapon_state.get("usable_weapons"):
+            advice.append("NO USABLE WEAPON - retreat or find ammo/weapon pickup")
 
         if projectiles:
             advice.append(f"DODGE: {len(projectiles)} incoming projectile(s)")
@@ -1706,6 +2039,10 @@ class GameManager:
             "player_health": health,
             "player_armor": armor,
             "selected_weapon_ammo": ammo,
+            "usable_attack_ammo": weapon_state.get("usable_attack_ammo", 0),
+            "usable_weapons": weapon_state.get("usable_weapons", []),
+            "best_viable_weapon": weapon_state.get("best_viable_weapon"),
+            "weapon_state": weapon_state,
         }
 
     # ------------------------------------------------------------------

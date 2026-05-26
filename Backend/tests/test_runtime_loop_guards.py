@@ -228,9 +228,16 @@ def test_lockstep_guard_blocks_retargeting_completed_pickup() -> None:
     assert "already reached or collected" in guarded["reasoning_summary"]
 
 
-def test_lockstep_guard_blocks_repeated_out_of_ammo_combat() -> None:
+def test_lockstep_guard_does_not_block_target_after_selected_weapon_ammo_failure() -> None:
     decision = {"mcp_tool": "aim_and_shoot", "mcp_params": {"object_id": 7}}
     state = {
+        "weapon_state": {
+            "selected_weapon": 1,
+            "selected_weapon_ammo": 0,
+            "usable_weapons": [1, 2],
+            "usable_attack_ammo": 50,
+            "best_viable_weapon": 2,
+        },
         "objects": [
             {"id": 7, "type": "monster", "name": "FormerHuman", "is_visible": True, "distance": 160},
             {"id": 8, "type": "ammo", "name": "Clip", "is_visible": True, "distance": 96},
@@ -245,9 +252,26 @@ def test_lockstep_guard_blocks_repeated_out_of_ammo_combat() -> None:
 
     guarded = _guard_lockstep_decision(decision, state, lockstep_state, {})
 
+    assert guarded["mcp_tool"] == "aim_and_shoot"
+    assert guarded["mcp_params"]["object_id"] == 7
+
+
+def test_lockstep_guard_seeks_resources_when_no_usable_weapon_exists() -> None:
+    decision = {"mcp_tool": "aim_and_shoot", "mcp_params": {"object_id": 7}}
+    state = {
+        "weapon_state": {"usable_weapons": [], "usable_attack_ammo": 0},
+        "objects": [
+            {"id": 7, "type": "monster", "name": "FormerHuman", "is_visible": True, "distance": 160},
+            {"id": 8, "type": "ammo", "name": "Clip", "is_visible": True, "distance": 96},
+        ],
+    }
+    lockstep_state = {"completed_object_ids": {}, "failed_object_ids": {}, "action_signature_counts": {}}
+
+    guarded = _guard_lockstep_decision(decision, state, lockstep_state, {})
+
     assert guarded["mcp_tool"] == "move_to"
     assert guarded["mcp_params"]["object_id"] == 8
-    assert "out_of_ammo" in guarded["reasoning_summary"]
+    assert "No usable attack weapon" in guarded["reasoning_summary"]
 
 
 def test_lockstep_guard_marks_strict_stop_after_repeated_blocked_decisions() -> None:
@@ -327,7 +351,16 @@ def test_lockstep_progress_and_quality_flags_capture_guard_evidence() -> None:
         {
             "tool": "aim_and_shoot",
             "input": {"object_id": 9},
-            "output": {"action_summary": {"stop_reason": "out_of_ammo"}},
+            "output": {
+                "action_summary": {
+                    "stop_reason": "selected_weapon_empty",
+                    "weapon_state_after": {
+                        "selected_weapon": 1,
+                        "selected_weapon_ammo": 0,
+                        "usable_attack_ammo": 50,
+                    },
+                }
+            },
         },
         lockstep_state,
     )
@@ -337,10 +370,12 @@ def test_lockstep_progress_and_quality_flags_capture_guard_evidence() -> None:
 
     assert metrics["progress_score"] == 2
     assert metrics["completed_object_count"] == 1
-    assert metrics["out_of_ammo_target_count"] == 1
+    assert metrics["out_of_ammo_target_count"] == 0
+    assert metrics["weapon_resource_failure_count"] == 1
     assert flags["quality_status"] == "warning"
     assert "4" in flags["completed_object_ids"]
-    assert "9" in flags["out_of_ammo_targets"]
+    assert flags["out_of_ammo_targets"] == {}
+    assert flags["weapon_resource_failures"]
 
 
 def test_lockstep_tool_params_are_bounded_for_trace_and_mcp_call() -> None:
@@ -363,3 +398,5 @@ def test_lockstep_tool_params_are_bounded_for_trace_and_mcp_call() -> None:
         "actions": {"TURN_LEFT_RIGHT_DELTA": 45.0, "MOVE_FORWARD_BACKWARD_DELTA": 50.0, "USE": 1},
         "tics": 8,
     }
+    select_weapon = _normalize_mcp_params("select_weapon", {"weapon_slot": 99, "max_tics": 999})
+    assert select_weapon == {"weapon_slot": 9, "max_tics": 20}

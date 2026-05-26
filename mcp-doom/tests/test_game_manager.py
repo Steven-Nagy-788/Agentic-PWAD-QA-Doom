@@ -34,6 +34,8 @@ def test_get_state(manager):
     assert state["episode_finished"] is False
     assert "screenshot_png" in state
     assert state["game_variables"]["HEALTH"] == 100.0
+    assert "weapon_state" in state
+    assert "usable_attack_ammo" in state["weapon_state"]
     assert "objects" in state
     assert "depth" in state
     assert "sectors" not in state  # excluded by default (too large)
@@ -141,6 +143,22 @@ def test_get_available_actions(manager):
     assert delta["type"] == "delta"
     binary = next(b for b in buttons if b["name"] == "ATTACK")
     assert binary["type"] == "binary"
+
+
+def test_start_augments_custom_buttons_with_direct_weapon_select(manager):
+    manager.start(scenario="basic", seed=42, buttons=["ATTACK", "SELECT_NEXT_WEAPON"])
+    names = manager.start(scenario="basic", seed=43, buttons=["ATTACK", "SELECT_NEXT_WEAPON"])["buttons"]
+    assert "SELECT_WEAPON1" in names
+
+
+def test_take_action_direct_weapon_select_falls_back_when_button_not_configured(manager):
+    manager.start(scenario="basic", seed=42)
+    manager._buttons = [button for button in manager._buttons if not button.name.startswith("SELECT_WEAPON")]
+
+    result = manager.take_action({"SELECT_WEAPON1": 1}, tics=1)
+
+    assert result["action_summary"]["weapon_switch"]["requested_weapon"] == 1
+    assert result["action_summary"]["stop_reason"] in {"tics_complete", "player_died", "episode_finished"}
 
 
 def test_require_running_raises():
@@ -259,8 +277,11 @@ def test_aim_and_shoot_kills_enemy(manager):
     assert summary["target_name"] is not None
     assert summary["stop_reason"] in (
         "target_killed", "target_lost", "shots_complete",
-        "player_died", "out_of_ammo", "max_tics", "episode_finished",
+        "player_died", "selected_weapon_empty", "no_usable_weapon",
+        "no_usable_ranged_weapon", "melee_target_out_of_range",
+        "weapon_switch_failed", "max_tics", "episode_finished",
     )
+    assert "weapon_state_after" in summary
 
 
 def test_aim_and_shoot_target_lost(manager):
@@ -343,7 +364,9 @@ def test_strafe_and_shoot_fires(manager):
     assert "damage_taken" in summary
     assert summary["stop_reason"] in (
         "shots_complete", "target_killed", "target_lost",
-        "player_died", "out_of_ammo", "max_tics", "episode_finished",
+        "player_died", "selected_weapon_empty", "no_usable_weapon",
+        "no_usable_ranged_weapon", "melee_target_out_of_range",
+        "weapon_switch_failed", "max_tics", "episode_finished",
     )
 
 
@@ -386,7 +409,75 @@ def test_threat_assessment_format(manager):
     assert "player_health" in result
     assert "player_armor" in result
     assert "selected_weapon_ammo" in result
+    assert "weapon_state" in result
+    assert "usable_attack_ammo" in result
     assert result["threat_level"] in ("none", "low", "medium", "high", "critical")
+
+
+def test_select_weapon_switches_to_owned_weapon(manager):
+    manager.start(wad="freedoom2", map_name="MAP01", seed=42)
+    result = manager.select_weapon(0, max_tics=12)
+    summary = result["action_summary"]
+    assert summary["requested_weapon"] == 0
+    assert summary["stop_reason"] in {"selected", "weapon_switch_failed"}
+    assert "weapon_state" in result
+
+
+def test_ensure_attack_capable_weapon_switches_from_empty_selected_weapon(monkeypatch):
+    manager = GameManager()
+
+    class FakeGame:
+        def __init__(self):
+            self.variables = {
+                "SELECTED_WEAPON": 1,
+                "SELECTED_WEAPON_AMMO": 0,
+                **{f"WEAPON{i}": 0 for i in range(10)},
+                **{f"AMMO{i}": 0 for i in range(10)},
+            }
+            self.variables["WEAPON1"] = 1
+            self.variables["WEAPON2"] = 1
+            self.variables["AMMO2"] = 50
+
+        def get_game_variable(self, variable):
+            return self.variables.get(variable.name, 0)
+
+        def is_episode_finished(self):
+            return False
+
+    fake_game = FakeGame()
+
+    def fake_select_weapon(game, weapon_slot, max_tics=12):
+        game.variables["SELECTED_WEAPON"] = weapon_slot
+        game.variables["SELECTED_WEAPON_AMMO"] = game.variables[f"AMMO{weapon_slot}"]
+        return True, 2
+
+    monkeypatch.setattr(manager, "_select_weapon_slot", fake_select_weapon)
+
+    ready, reason, switch_summary, tics_used = manager._ensure_attack_capable_weapon(fake_game, target_distance=400)
+
+    assert ready is True
+    assert reason == "weapon_switched"
+    assert switch_summary["to_weapon"] == 2
+    assert switch_summary["success"] is True
+    assert tics_used == 2
+    assert fake_game.variables["SELECTED_WEAPON"] == 2
+
+
+def test_combat_auto_switches_from_empty_selected_weapon_when_ranged_ammo_exists(manager):
+    manager.start(scenario="defend_the_center", seed=42)
+    manager.select_weapon(0, max_tics=12)
+    state = manager.get_state()
+    if state["weapon_state"]["selected_weapon"] != 0:
+        pytest.skip("Scenario did not allow selecting the melee weapon slot")
+    monster = next((o for o in state["objects"] if o["type"] == "monster"), None)
+    assert monster is not None
+
+    result = manager.aim_and_shoot(monster["id"], shots=1, max_tics=80)
+    summary = result["action_summary"]
+
+    assert summary["stop_reason"] != "selected_weapon_empty"
+    assert summary["stop_reason"] != "out_of_ammo"
+    assert summary.get("weapon_state_after") is not None
 
 
 def test_threat_assessment_has_threats(manager):

@@ -212,6 +212,7 @@ def test_stop_outcome_defaults_to_stuck() -> None:
 def test_stop_outcome_passthrough_valid() -> None:
     assert _lockstep_stop_outcome({"stop_outcome": "stuck"}) == "stuck"
     assert _lockstep_stop_outcome({"stop_outcome": "incomplete_coverage"}) == "incomplete_coverage"
+    assert _lockstep_stop_outcome({"stop_outcome": "inconclusive_agent_stall"}) == "inconclusive_agent_stall"
 
 
 def test_stop_outcome_invalid_falls_back_to_stuck() -> None:

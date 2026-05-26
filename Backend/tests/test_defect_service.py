@@ -41,6 +41,7 @@ def make_event(
     ammo_cells: int = 0,
     kill_count: int = 0,
     secret_count: int = 0,
+    action_taken: dict | None = None,
 ) -> GameEvent:
     event = MagicMock(spec=GameEvent)
     event.tick_number = tick
@@ -54,6 +55,7 @@ def make_event(
     event.ammo_cells = ammo_cells
     event.kill_count = kill_count
     event.secret_count = secret_count
+    event.action_taken = action_taken
     return event
 
 
@@ -157,6 +159,23 @@ async def test_ammo_starvation_gap_resets_two_episodes(service, mock_db):
     assert service.repo.create.await_count == 2
 
 
+@pytest.mark.asyncio
+async def test_ammo_starvation_uses_usable_attack_ammo_not_legacy_slots(service, mock_db):
+    events = [
+        make_event(
+            i,
+            ammo_bullets=0,
+            ammo_shells=0,
+            ammo_rockets=0,
+            ammo_cells=0,
+            action_taken={"resource_state": {"usable_attack_ammo": 50}},
+        )
+        for i in range(70)
+    ]
+    await service._ammo_starvation(uuid4(), events)
+    service.repo.create.assert_not_called()
+
+
 # ── _health_deficit ───────────────────────────────────────
 
 
@@ -197,6 +216,32 @@ async def test_softlock_timeout_little_movement(service, mock_db):
     events = [make_event(i, x=0, y=0) for i in range(20)]
     await service._softlock(run, events)
     service.repo.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_softlock_reclassifies_guard_injected_take_action_stuck_as_inconclusive(service, mock_db):
+    run = MagicMock(spec=TestRun)
+    run.outcome = "timeout"
+    run.id = uuid4()
+    events = [
+        make_event(
+            i,
+            event_type="stuck",
+            action_taken={
+                "mcp_tool": "take_action",
+                "mcp_executed_tool": "take_action",
+                "mcp_action_summary": {"stop_reason": "tics_complete"},
+            },
+        )
+        for i in range(5, 10)
+    ]
+
+    await service._softlock(run, events)
+
+    service.repo.create.assert_awaited_once()
+    args = service.repo.create.call_args[0][0]
+    assert args.defect_type == "inconclusive_agent_stall"
+    assert run.outcome == "inconclusive_agent_stall"
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ class LockstepState(TypedDict, total=False):
     completed_object_ids: dict[str, dict[str, object]]
     failed_object_ids: dict[str, int]
     out_of_ammo_targets: dict[str, int]
+    weapon_resource_failures: dict[str, int]
     action_signature_counts: dict[str, int]
     blocked_decision_count: int
     progress_score: int

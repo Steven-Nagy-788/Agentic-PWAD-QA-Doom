@@ -510,7 +510,9 @@ class ReportService:
             f" Recording quality status: {recording_meta.get('quality_status', 'unknown')}; "
             f"{recording_meta.get('frame_count', 0)} frames, "
             f"{recording_meta.get('unique_frame_count', 0)} unique frames, "
-            f"{recording_meta.get('duration_seconds', 0)} seconds at {recording_meta.get('fps', 'unknown')} FPS."
+            f"{recording_meta.get('duration_seconds', 0)} recording seconds at {recording_meta.get('fps', 'unknown')} FPS. "
+            f"Wall-clock run duration was {run.duration_seconds or 0} seconds; "
+            f"gameplay advanced {recording_meta.get('advanced_game_ticks', 'unknown')} tics."
         )
         progress_note = (
             f" Agent progress score: {progress_metrics.get('progress_score', 0)} with "
@@ -533,7 +535,8 @@ class ReportService:
             ),
             "test_environment_summary": (
                 f"The run used IWAD {run.iwad_used}, difficulty {run.difficulty_level}, "
-                f"model {run.llm_model}, and a maximum budget of {run.max_ticks} game ticks."
+                f"model {run.llm_model}, and a maximum budget of {run.max_ticks} game ticks. "
+                f"Duration values distinguish wall-clock orchestration time from recorded gameplay time."
             ),
             "hardware_spec": {
                 "runner": "Local backend host",
@@ -771,6 +774,8 @@ class ReportService:
 
     @staticmethod
     def _display_outcome(run: TestRun, defects: list[Defect]) -> str:
+        if any(defect.defect_type == "inconclusive_agent_stall" for defect in defects):
+            return "inconclusive_agent_stall"
         if run.outcome == "timeout" and any(defect.defect_type == "softlock_navigation" for defect in defects):
             return "stuck"
         return run.outcome or run.status
@@ -1177,7 +1182,8 @@ class ReportService:
             payload.get("map_bounds") or ReportService._analysis_map_bounds(analysis),
         )
         metric_cards = [
-            {"label": "Duration", "value": getattr(run, "duration_seconds", None) or 0},
+            {"label": "Wall-clock sec", "value": getattr(run, "duration_seconds", None) or 0},
+            {"label": "Gameplay sec", "value": (getattr(run, "recording_metadata", None) or {}).get("duration_seconds", 0)},
             {"label": "Actions", "value": getattr(run, "total_actions_taken", None) or 0},
             {"label": "Final HP", "value": getattr(run, "final_hp", None) or 0},
             {"label": "Kills/Spawned", "value": f"{getattr(run, 'total_kills', None) or 0}/{payload['metrics'].get('spawned_enemy_count', 0)}"},

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.collector_service import normalize_observed_issue
+from app.services.collector_service import normalize_observed_issue, normalize_variables
 
 
 def test_string_input_uses_bracket_category() -> None:
@@ -80,3 +80,30 @@ def test_dict_empty_category_falls_back() -> None:
 def test_title_contains_readable_category_name() -> None:
     _, title = normalize_observed_issue({"category": "progression", "description": "stuck"})
     assert "progression" in title.lower()
+
+
+def test_normalize_variables_uses_usable_attack_ammo_for_ammo_total() -> None:
+    state = {
+        "game_variables": {
+            "AMMO0": 0,
+            "AMMO1": 0,
+            "AMMO2": 150,
+            "AMMO3": 40,
+            "SELECTED_WEAPON": 1,
+            "SELECTED_WEAPON_AMMO": 0,
+        },
+        "weapon_state": {
+            "selected_weapon": 1,
+            "selected_weapon_ammo": 0,
+            "usable_weapons": [1, 2, 3],
+            "usable_attack_ammo": 150,
+            "best_viable_weapon": 2,
+        },
+    }
+
+    variables = normalize_variables(state)
+
+    assert variables["ammo_total"] == 150
+    assert variables["selected_weapon_ammo"] == 0
+    assert variables["usable_weapons"] == [1, 2, 3]
+    assert variables["raw_ammo_slots"]["AMMO2"] == 150

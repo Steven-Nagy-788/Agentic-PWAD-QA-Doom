@@ -138,6 +138,7 @@ def _lockstep_state_snapshot(state: LockstepState) -> LockstepState:
         "completed_object_ids": dict(state.get("completed_object_ids") or {}),
         "failed_object_ids": dict(state.get("failed_object_ids") or {}),
         "out_of_ammo_targets": dict(state.get("out_of_ammo_targets") or {}),
+        "weapon_resource_failures": dict(state.get("weapon_resource_failures") or {}),
         "blocked_decision_count": int(state.get("blocked_decision_count") or 0),
         "progress_score": int(state.get("progress_score") or 0),
         "quality_warnings": list(state.get("quality_warnings") or [])[-8:],
@@ -174,6 +175,7 @@ def _initial_lockstep_state() -> LockstepState:
         "completed_object_ids": {},
         "failed_object_ids": {},
         "out_of_ammo_targets": {},
+        "weapon_resource_failures": {},
         "action_signature_counts": {},
         "blocked_decision_count": 0,
         "progress_score": 0,
@@ -449,6 +451,9 @@ def _bound_mcp_tool_params(tool: str, params: dict[str, Any]) -> dict[str, Any]:
         params["tics"] = _bounded_int(params.get("tics"), default=35, lower=8, upper=70)
         if "backpedal" in params:
             params["backpedal"] = bool(params["backpedal"])
+    elif tool == "select_weapon":
+        params["weapon_slot"] = _bounded_int(params.get("weapon_slot"), default=2, lower=0, upper=9)
+        params["max_tics"] = _bounded_int(params.get("max_tics"), default=12, lower=1, upper=20)
     if tool in COMPOUND_TELEMETRY_TOOLS and "telemetry_stride" in params:
         params["telemetry_stride"] = _bounded_int(params.get("telemetry_stride"), default=2, lower=1, upper=10)
     return params

@@ -12,6 +12,16 @@ from app.repositories.defect_repository import DefectRepository
 from app.services.analysis_service import selected_skill_spawn_summary
 
 
+_RESOURCE_STOP_REASONS = {
+    "out_of_ammo",
+    "selected_weapon_empty",
+    "no_usable_weapon",
+    "no_usable_ranged_weapon",
+    "melee_target_out_of_range",
+    "weapon_switch_failed",
+}
+
+
 class DefectService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -116,7 +126,7 @@ class DefectService:
     async def _ammo_starvation(self, run_id: UUID, events: list[GameEvent]) -> None:
         episodes = _streak_episodes(
             events,
-            lambda event: event.ammo_bullets + event.ammo_shells + event.ammo_rockets + event.ammo_cells == 0,
+            lambda event: _event_usable_attack_ammo(event) == 0,
             minimum_length=61,
         )
         for episode in episodes:
@@ -129,7 +139,10 @@ class DefectService:
                     defect_type="ammo_starvation",
                     fingerprint=f"ammo_starvation:{first.tick_number}",
                     title="Ammo starvation",
-                    description="The automated playthrough had no ammo for more than 60 consecutive ticks.",
+                    description=(
+                        "The automated playthrough had no usable attack ammo or usable ranged weapon for more "
+                        "than 60 consecutive ticks."
+                    ),
                     detected_at_tick=first.tick_number,
                     position_x=first.player_x,
                     position_y=first.player_y,
@@ -164,26 +177,47 @@ class DefectService:
     async def _softlock(self, run: TestRun, events: list[GameEvent]) -> None:
         stuck_events = [event for event in events if event.event_type == "stuck"]
         if run.outcome in {"stuck", "timeout"} and len(stuck_events) >= 3:
-            first = stuck_events[0]
-            if run.outcome == "timeout":
-                run.outcome = "stuck"
-            await self.repo.create(
-                Defect(
-                    run_id=run.id,
-                    severity=1,
-                    priority=1,
-                    defect_type="softlock_navigation",
-                    title="Run stalled after repeated stuck decisions",
-                    description=(
-                        "The run produced repeated stuck events with no meaningful progress. "
-                        "This usually indicates blocked navigation, unreachable objectives, or an automated control loop "
-                        "that should be reviewed with the recording and action trace."
-                    ),
-                    detected_at_tick=first.tick_number,
-                    position_x=first.player_x,
-                    position_y=first.player_y,
+            confirmed_stuck = [event for event in stuck_events if _is_confirmed_map_stuck_event(event)]
+            if len(confirmed_stuck) >= 3:
+                first = confirmed_stuck[0]
+                if run.outcome == "timeout":
+                    run.outcome = "stuck"
+                await self.repo.create(
+                    Defect(
+                        run_id=run.id,
+                        severity=1,
+                        priority=1,
+                        defect_type="softlock_navigation",
+                        title="Run stalled after repeated confirmed navigation blocks",
+                        description=(
+                            "The run produced repeated movement/collision stuck evidence with no meaningful progress. "
+                            "Review the recording and action trace for blocked navigation or unreachable objectives."
+                        ),
+                        detected_at_tick=first.tick_number,
+                        position_x=first.player_x,
+                        position_y=first.player_y,
+                    )
                 )
-            )
+            else:
+                first = stuck_events[0]
+                run.outcome = "inconclusive_agent_stall"
+                await self.repo.create(
+                    Defect(
+                        run_id=run.id,
+                        severity=3,
+                        priority=3,
+                        defect_type="inconclusive_agent_stall",
+                        title="Run stalled with inconclusive agent/tool evidence",
+                        description=(
+                            "The run produced repeated stuck-classified events, but the trace does not contain enough "
+                            "collision or blocked-geometry evidence to call this a map softlock. Treat this as an "
+                            "agent/tool limitation and review the action trace before filing a map defect."
+                        ),
+                        detected_at_tick=first.tick_number,
+                        position_x=first.player_x,
+                        position_y=first.player_y,
+                    )
+                )
             return
 
         if run.outcome != "timeout" or len(events) < 10:
@@ -193,6 +227,25 @@ class DefectService:
         moved += max(event.player_y for event in tail) - min(event.player_y for event in tail)
         if moved < 20:
             first = tail[0]
+            if _has_agent_or_resource_limitation(tail):
+                run.outcome = "inconclusive_agent_stall"
+                await self.repo.create(
+                    Defect(
+                        run_id=run.id,
+                        severity=3,
+                        priority=3,
+                        defect_type="inconclusive_agent_stall",
+                        title="Timeout with little movement and inconclusive agent/tool evidence",
+                        description=(
+                            "The run timed out with little final-window movement, but resource/tool recovery evidence "
+                            "makes the map softlock conclusion inconclusive."
+                        ),
+                        detected_at_tick=first.tick_number,
+                        position_x=first.player_x,
+                        position_y=first.player_y,
+                    )
+                )
+                return
             await self.repo.create(
                 Defect(
                     run_id=run.id,
@@ -279,6 +332,67 @@ def _streak_episodes(
     if len(streak) >= minimum_length:
         episodes.append(streak)
     return episodes
+
+
+def _event_usable_attack_ammo(event: GameEvent) -> int:
+    action_taken = getattr(event, "action_taken", None)
+    if isinstance(action_taken, dict):
+        resource_state = action_taken.get("resource_state")
+        if isinstance(resource_state, dict) and resource_state.get("usable_attack_ammo") is not None:
+            return _safe_int(resource_state.get("usable_attack_ammo"))
+        mcp_output = action_taken.get("mcp_output")
+        if isinstance(mcp_output, dict):
+            weapon_state = mcp_output.get("weapon_state")
+            if isinstance(weapon_state, dict) and weapon_state.get("usable_attack_ammo") is not None:
+                return _safe_int(weapon_state.get("usable_attack_ammo"))
+    return int(event.ammo_bullets or 0) + int(event.ammo_shells or 0) + int(event.ammo_rockets or 0) + int(event.ammo_cells or 0)
+
+
+def _is_confirmed_map_stuck_event(event: GameEvent) -> bool:
+    action_taken = getattr(event, "action_taken", None)
+    if not isinstance(action_taken, dict):
+        return True
+    summary = action_taken.get("mcp_action_summary")
+    if not isinstance(summary, dict):
+        output = action_taken.get("mcp_output")
+        summary = output.get("action_summary") if isinstance(output, dict) else {}
+    stop_reason = str(summary.get("stop_reason") or action_taken.get("mcp_stop_reason") or "")
+    tool = str(action_taken.get("mcp_executed_tool") or action_taken.get("mcp_tool") or "")
+    if stop_reason in {"stuck", "arrival_blocked"}:
+        return True
+    if stop_reason in _RESOURCE_STOP_REASONS or str(getattr(event, "event_type", "")) == "resource_recovery":
+        return False
+    if tool == "take_action" and stop_reason in {"tics_complete", ""}:
+        return False
+    return stop_reason == ""
+
+
+def _has_agent_or_resource_limitation(events: list[GameEvent]) -> bool:
+    return any(
+        str(getattr(event, "event_type", "")) == "resource_recovery"
+        or _event_stop_reason(event) in _RESOURCE_STOP_REASONS
+        for event in events
+    )
+
+
+def _event_stop_reason(event: GameEvent) -> str:
+    action_taken = getattr(event, "action_taken", None)
+    if not isinstance(action_taken, dict):
+        return ""
+    if action_taken.get("mcp_stop_reason") is not None:
+        return str(action_taken["mcp_stop_reason"])
+    output = action_taken.get("mcp_output")
+    summary = output.get("action_summary") if isinstance(output, dict) else None
+    if isinstance(summary, dict) and summary.get("stop_reason") is not None:
+        return str(summary["stop_reason"])
+    return ""
+
+
+def _safe_int(value: object) -> int:
+    try:
+        return int(float(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
 
 
 def _coverage_percent(run: TestRun) -> float:

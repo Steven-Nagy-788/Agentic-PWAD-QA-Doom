@@ -29,6 +29,15 @@ from app.services.run_utils import (
     _normalize_mcp_params,
 )
 
+_RESOURCE_STOP_REASONS = {
+    "out_of_ammo",
+    "selected_weapon_empty",
+    "no_usable_weapon",
+    "no_usable_ranged_weapon",
+    "melee_target_out_of_range",
+    "weapon_switch_failed",
+}
+
 
 def _apply_lockstep_recovery(
     decision: dict[str, Any],
@@ -197,10 +206,9 @@ def _guard_lockstep_decision(
                 lockstep_state,
             )
     if tool in COMBAT_TOOLS:
-        out_of_ammo_targets = lockstep_state.get("out_of_ammo_targets") or {}
-        if object_id is not None and str(object_id) in out_of_ammo_targets:
+        if not _state_has_usable_attack_weapon(state):
             return _blocked_decision_fallback(
-                f"Combat target {object_id} already returned out_of_ammo, so I need resources or another tactic first.",
+                "No usable attack weapon is currently available, so I need resources or space before forcing combat.",
                 state,
                 navigation_info or {},
                 lockstep_state,
@@ -244,7 +252,7 @@ def _blocked_decision_fallback(
     lockstep_state["quality_warnings"] = warnings[-20:]
     if int(lockstep_state["blocked_decision_count"]) >= BLOCKED_DECISION_ABORT_THRESHOLD:
         lockstep_state["should_stop_stuck"] = True
-        lockstep_state["stop_outcome"] = "stuck"
+        lockstep_state["stop_outcome"] = "inconclusive_agent_stall" if prefer_resources else "stuck"
 
     pickup = _nearest_available_pickup(state, lockstep_state, prefer_resources=prefer_resources)
     if pickup is not None:
@@ -252,15 +260,24 @@ def _blocked_decision_fallback(
             "reasoning_summary": f"{reason} I am switching to available pickup {pickup.get('name', 'object')} first.",
             "mcp_tool": "move_to",
             "mcp_params": {"object_id": pickup["id"], "max_tics": 80, "stop_on_enemy": True},
-            "event_type_override": "stuck",
             "observed_issue": None,
         }
     if prefer_resources:
+        weapon_state = state.get("weapon_state") if isinstance(state, dict) else {}
+        best_weapon = weapon_state.get("best_viable_weapon") if isinstance(weapon_state, dict) else None
+        if best_weapon is not None:
+            return {
+                "reasoning_summary": f"{reason} A usable weapon is known, so I am selecting weapon {best_weapon} before reassessing.",
+                "mcp_tool": "select_weapon",
+                "mcp_params": {"weapon_slot": best_weapon, "max_tics": 12},
+                "event_type_override": "resource_recovery",
+                "observed_issue": None,
+            }
         return {
-            "reasoning_summary": f"{reason} No visible pickup is available, so I am switching weapon before reassessing.",
+            "reasoning_summary": f"{reason} No visible pickup is available, so I am cycling weapons before reassessing.",
             "mcp_tool": "take_action",
             "mcp_params": {"actions": {"SELECT_NEXT_WEAPON": 1}, "tics": 2},
-            "event_type_override": "stuck",
+            "event_type_override": "resource_recovery",
             "observed_issue": None,
         }
     return _qa_probe_decision(state, navigation_info, lockstep_state, reason)
@@ -290,6 +307,58 @@ def _nearest_available_pickup(
     if not candidates:
         return None
     return min(candidates, key=lambda obj: float(obj.get("distance") or 999999))
+
+
+def _state_has_usable_attack_weapon(state: dict[str, Any]) -> bool:
+    weapon_state = state.get("weapon_state") if isinstance(state, dict) else None
+    if isinstance(weapon_state, dict):
+        usable_weapons = weapon_state.get("usable_weapons")
+        if isinstance(usable_weapons, list):
+            return bool(usable_weapons)
+        if _bounded_float(weapon_state.get("usable_attack_ammo"), 0.0) > 0:
+            return True
+    variables = state.get("game_variables") if isinstance(state, dict) else {}
+    if not isinstance(variables, dict) or not variables:
+        return True
+    selected_weapon = _bounded_int(variables.get("SELECTED_WEAPON"), 2)
+    selected_ammo = _bounded_float(variables.get("SELECTED_WEAPON_AMMO"), 0.0)
+    if selected_weapon in {0, 1}:
+        return True
+    if selected_ammo > 0:
+        return True
+    return any(_bounded_float(variables.get(f"AMMO{slot}"), 0.0) > 0 for slot in range(10))
+
+
+def _weapon_resource_signature(mcp_call: dict[str, Any], stop_reason: str) -> str:
+    state = _weapon_state_from_call(mcp_call)
+    selected = state.get("selected_weapon", "unknown")
+    selected_ammo = state.get("selected_weapon_ammo", "unknown")
+    usable_attack_ammo = state.get("usable_attack_ammo", "unknown")
+    return f"{stop_reason}:weapon={selected}:selected_ammo={selected_ammo}:usable_attack_ammo={usable_attack_ammo}"
+
+
+def _weapon_resource_warning(object_id: Any, mcp_call: dict[str, Any], stop_reason: str) -> str:
+    state = _weapon_state_from_call(mcp_call)
+    selected = state.get("selected_weapon", "unknown")
+    usable_attack_ammo = state.get("usable_attack_ammo", "unknown")
+    target = f" against target {object_id}" if object_id is not None else ""
+    return (
+        f"Combat{target} stopped with {stop_reason} on weapon {selected}; "
+        f"usable_attack_ammo={usable_attack_ammo}."
+    )
+
+
+def _weapon_state_from_call(mcp_call: dict[str, Any]) -> dict[str, Any]:
+    output = mcp_call.get("output") if isinstance(mcp_call, dict) else None
+    if not isinstance(output, dict):
+        return {}
+    summary = output.get("action_summary") if isinstance(output.get("action_summary"), dict) else {}
+    for key in ("weapon_state_after", "weapon_state_before"):
+        value = summary.get(key)
+        if isinstance(value, dict):
+            return value
+    value = output.get("weapon_state")
+    return value if isinstance(value, dict) else {}
 
 
 def _action_signature(tool: str, params: dict[str, Any]) -> str:
@@ -360,13 +429,13 @@ def _update_lockstep_after_action(
             key = str(object_id)
             failed[key] = int(failed.get(key, 0)) + 1
             lockstep_state["failed_object_ids"] = failed
-    if tool in COMBAT_TOOLS and stop_reason == "out_of_ammo" and object_id is not None:
-        out_of_ammo = dict(lockstep_state.get("out_of_ammo_targets") or {})
-        key = str(object_id)
-        out_of_ammo[key] = int(out_of_ammo.get(key, 0)) + 1
-        lockstep_state["out_of_ammo_targets"] = out_of_ammo
+    if tool in COMBAT_TOOLS and stop_reason in _RESOURCE_STOP_REASONS:
+        resource_failures = dict(lockstep_state.get("weapon_resource_failures") or {})
+        key = _weapon_resource_signature(mcp_call, stop_reason)
+        resource_failures[key] = int(resource_failures.get(key, 0)) + 1
+        lockstep_state["weapon_resource_failures"] = resource_failures
         warnings = list(lockstep_state.get("quality_warnings") or [])
-        warnings.append(f"Combat against target {object_id} stopped with out_of_ammo.")
+        warnings.append(_weapon_resource_warning(object_id, mcp_call, stop_reason))
         lockstep_state["quality_warnings"] = warnings[-20:]
     if stop_reason in {"target_killed", "shots_complete"} and (_int_like(summary.get("hits_landed")) or _int_like(summary.get("kills"))):
         lockstep_state["invisible_target_failures"] = {}
@@ -422,8 +491,8 @@ def _interaction_result(tool: str, stop_reason: str) -> str:
         return "reached"
     if stop_reason == "target_not_visible":
         return "target_not_visible"
-    if stop_reason == "out_of_ammo":
-        return "out_of_ammo"
+    if stop_reason in _RESOURCE_STOP_REASONS:
+        return stop_reason
     if stop_reason in {"pickup_not_collected", "target_lost", "max_tics", "enemy_nearby"}:
         return "unreachable_or_interrupted"
     if stop_reason in {"target_killed", "shots_complete"}:
@@ -439,7 +508,7 @@ def _lockstep_should_stop_as_stuck(lockstep_state: LockstepState) -> bool:
 
 def _lockstep_stop_outcome(lockstep_state: LockstepState) -> str:
     outcome = str(lockstep_state.get("stop_outcome") or "stuck")
-    return outcome if outcome in {"stuck", "incomplete_coverage"} else "stuck"
+    return outcome if outcome in {"stuck", "incomplete_coverage", "inconclusive_agent_stall"} else "stuck"
 
 
 def _lockstep_progress_metrics(lockstep_state: LockstepState) -> dict[str, Any]:
@@ -454,6 +523,7 @@ def _lockstep_progress_metrics(lockstep_state: LockstepState) -> dict[str, Any]:
         "completed_object_count": len(lockstep_state.get("completed_object_ids") or {}),
         "failed_object_count": len(lockstep_state.get("failed_object_ids") or {}),
         "out_of_ammo_target_count": len(lockstep_state.get("out_of_ammo_targets") or {}),
+        "weapon_resource_failure_count": len(lockstep_state.get("weapon_resource_failures") or {}),
         "blocked_decision_count": int(lockstep_state.get("blocked_decision_count") or 0),
         "low_value_explore_count": int(lockstep_state.get("low_value_explore_cumulative") or 0),
         "recovery_count": int(lockstep_state.get("recovery_count") or 0),
@@ -474,6 +544,7 @@ def _lockstep_quality_flags(lockstep_state: LockstepState, recording_metadata: d
         "completed_object_ids": dict(lockstep_state.get("completed_object_ids") or {}),
         "failed_object_ids": dict(lockstep_state.get("failed_object_ids") or {}),
         "out_of_ammo_targets": dict(lockstep_state.get("out_of_ammo_targets") or {}),
+        "weapon_resource_failures": dict(lockstep_state.get("weapon_resource_failures") or {}),
     }
 
 

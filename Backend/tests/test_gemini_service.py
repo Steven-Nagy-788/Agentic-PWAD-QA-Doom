@@ -140,6 +140,33 @@ def test_parse_decision_tool_is_mcp_tool_case_sensitive() -> None:
     assert result["mcp_tool"] == "aim_and_shoot"
 
 
+def test_parse_decision_allows_select_weapon() -> None:
+    result = GeminiService().parse_decision(
+        '{"mcp_tool": "select_weapon", "mcp_params": {"weapon_slot": 2}, "reasoning_summary": "switch"}'
+    )
+    assert result["mcp_tool"] == "select_weapon"
+
+
+def test_fallback_decision_selects_best_weapon_when_selected_weapon_empty() -> None:
+    decision = GeminiService()._fallback_decision(
+        {
+            "objects": [{"id": 7, "type": "monster", "is_visible": True, "distance": 120}],
+            "weapon_state": {
+                "selected_weapon": 1,
+                "selected_weapon_ammo": 0,
+                "usable_weapons": [1, 2],
+                "usable_attack_ammo": 50,
+                "best_viable_weapon": 2,
+            },
+            "lockstep_state": {},
+        },
+        "Fallback.",
+    )
+
+    assert decision["mcp_tool"] == "select_weapon"
+    assert decision["mcp_params"]["weapon_slot"] == 2
+
+
 def test_cost_estimate_uses_per_million_rates() -> None:
     assert round(estimate_llm_cost_usd(
         1_000_000,

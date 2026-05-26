@@ -22,6 +22,7 @@ ALLOWED_TOOLS = {
     "get_threat_assessment",
     "get_navigation_info",
     "take_action",
+    "select_weapon",
 }
 DIRECTOR_TOOLS = {"get_situation_report", "set_objective", "set_strategy"}
 
@@ -294,13 +295,23 @@ class GeminiService:
             for key, value in (lockstep_state.get("failed_object_ids") or {}).items()
             if _number(value, 0) >= 2
         }
-        out_of_ammo_targets = {str(key) for key in (lockstep_state.get("out_of_ammo_targets") or {})}
         invisible_target_failures = {str(key) for key in (lockstep_state.get("invisible_target_failures") or {})}
+        weapon_state = llm_input.get("weapon_state") if isinstance(llm_input.get("weapon_state"), dict) else {}
+        best_weapon = weapon_state.get("best_viable_weapon")
+        usable_attack_ammo = _number(weapon_state.get("usable_attack_ammo"), 0)
+        selected_ammo = _number(weapon_state.get("selected_weapon_ammo"), 0)
+        usable_weapons = weapon_state.get("usable_weapons") if isinstance(weapon_state.get("usable_weapons"), list) else []
+        if selected_ammo <= 0 and usable_attack_ammo > 0 and best_weapon is not None:
+            return {
+                "reasoning_summary": f"{reason} The selected weapon is empty but weapon {best_weapon} is usable, so switching before combat.",
+                "mcp_tool": "select_weapon",
+                "mcp_params": {"weapon_slot": best_weapon, "max_tics": 12},
+                "observed_issue": None,
+            }
         visible_monsters = [
             obj
             for obj in objects
             if obj.get("type") == "monster" and obj.get("is_visible") and obj.get("id") is not None
-            and str(obj.get("id")) not in out_of_ammo_targets
             and str(obj.get("id")) not in invisible_target_failures
         ]
         if visible_monsters:
@@ -329,11 +340,11 @@ class GeminiService:
                 "observed_issue": None,
             }
 
-        if out_of_ammo_targets:
+        if not usable_weapons:
             return {
-                "reasoning_summary": f"{reason} Recent combat ran out of ammo, so switching weapons before reassessing.",
-                "mcp_tool": "take_action",
-                "mcp_params": {"actions": {"SELECT_NEXT_WEAPON": 1}, "tics": 2},
+                "reasoning_summary": f"{reason} No usable weapon is available, so looking for resources or space before reassessing.",
+                "mcp_tool": "retreat",
+                "mcp_params": {"tics": 28},
                 "observed_issue": None,
             }
 

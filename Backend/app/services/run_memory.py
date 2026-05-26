@@ -287,6 +287,8 @@ class RunMemoryService:
         existing = list(existing_result.scalars().all())
         matched_any = False
         for hyp_text in in_run_hypotheses:
+            if not _is_persistable_hypothesis(hyp_text):
+                continue
             text_lower = hyp_text.lower()
             match = None
             for existing_hyp in existing:
@@ -313,6 +315,8 @@ class RunMemoryService:
 
         if agent_quality_flags:
             for warning in agent_quality_flags.get("warnings") or []:
+                if not _is_persistable_hypothesis(warning):
+                    continue
                 text_lower = warning.lower()
                 tag = _infer_tag(warning)
                 match = None
@@ -473,8 +477,6 @@ class RunMemoryService:
             for defects in defects_by_run.values()
             for defect in defects
             if defect.defect_type == "ammo_starvation"
-            or "ammo" in (defect.title or "").lower()
-            or "ammo" in (defect.description or "").lower()
         ]
         if ammo_defects:
             warnings.append(
@@ -600,6 +602,41 @@ def _similar_text(a: str, b: str) -> bool:
     return len(intersection) / max(len(words_a), len(words_b)) >= 0.4
 
 
+def _is_persistable_hypothesis(text: str) -> bool:
+    lower = text.lower().strip()
+    if len(lower) < 20:
+        return False
+    speculative_markers = (
+        "appears",
+        "maybe",
+        "possibly",
+        "likely",
+        "seems",
+        "unclear",
+        "hypothesis",
+        "switching",
+        "clearing",
+        "recent combat",
+        "already returned",
+        "red-textured",
+        "red textured",
+    )
+    if any(marker in lower for marker in speculative_markers):
+        return False
+    confirmed_markers = (
+        "confirmed",
+        "observed issue",
+        "defect",
+        "blocked after",
+        "unreachable after",
+        "does not respond after use",
+        "no usable attack ammo",
+        "ammo starvation",
+        "softlock",
+    )
+    return any(marker in lower for marker in confirmed_markers)
+
+
 def _infer_tag(text: str) -> str:
     lower = text.lower()
     if "blocked" in lower or "collision" in lower or "unreachable" in lower:
@@ -608,7 +645,14 @@ def _infer_tag(text: str) -> str:
         return "KEY_LOCATION"
     if "ammo" in lower or "starvation" in lower or "resource" in lower:
         return "RESOURCE_CACHE"
-    if "visual" in lower or "texture" in lower or "glitch" in lower:
+    if (
+        "visual" in lower
+        or "glitch" in lower
+        or "missing texture" in lower
+        or "misaligned texture" in lower
+        or "hall of mirrors" in lower
+        or "hom effect" in lower
+    ):
         return "VISUAL_GLITCH"
     if "encounter" in lower or "combat" in lower or "monster" in lower:
         return "ENCOUNTER_HOTSPOT"
