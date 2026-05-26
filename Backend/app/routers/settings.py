@@ -73,7 +73,7 @@ async def update_settings(
 
 
 @router.get("/settings/behavior-profiles")
-async def behavior_profiles_route() -> dict:
+def behavior_profiles_route() -> dict:
     return {
         name: {
             "name": p.name,

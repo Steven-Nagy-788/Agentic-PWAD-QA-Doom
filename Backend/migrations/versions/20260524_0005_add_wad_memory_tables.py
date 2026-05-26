@@ -35,8 +35,6 @@ def upgrade() -> None:
         """
     )
     op.execute("CREATE INDEX IF NOT EXISTS idx_spatial_wad_map ON wad_spatial_memory(wad_file_id, map_name)")
-    op.execute("ALTER TABLE IF EXISTS wad_spatial_memory ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
-    op.execute("ALTER TABLE IF EXISTS wad_spatial_memory ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
 
     op.execute(
         """

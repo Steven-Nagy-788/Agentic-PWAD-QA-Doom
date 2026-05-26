@@ -384,13 +384,13 @@ class ReportService:
             "max_items": max((event.item_count for event in events), default=run.total_items_collected),
             "max_secrets": max((event.secret_count for event in events), default=run.secrets_found),
             "secret_sector_count": analysis.secret_sector_count if analysis else None,
-            "recording_mp4_url": f"/runs/{run.id}/recording" if run.recording_mp4_path else None,
+            "recording_mp4_url": f"/runs/{run.id}/recording" if (run.recording_mp4_path or (run.recording_metadata or {}).get("quality_status") == "ok") else None,
             "report_pdf_url": f"/runs/{run.id}/report/pdf" if run.report_pdf_path else None,
             "recording_metadata": run.recording_metadata or {},
             "progress_metrics": progress_metrics,
             "coverage_percent": progress_metrics.get("coverage_percent"),
             "agent_quality_flags": run.agent_quality_flags or {},
-            "recording_file_size_bytes": ReportService._safe_file_size(run.recording_mp4_path),
+            "recording_file_size_bytes": ReportService._safe_file_size(run.recording_mp4_path) or ReportService._safe_file_size((run.recording_metadata or {}).get("path")),
         }
 
     @staticmethod
@@ -937,7 +937,7 @@ class ReportService:
             "agent_quality_flags",
         ]
         result = {key: getattr(run, key) for key in keys}
-        result["recording_mp4_url"] = f"/runs/{run.id}/recording" if run.recording_mp4_path else None
+        result["recording_mp4_url"] = f"/runs/{run.id}/recording" if (run.recording_mp4_path or (run.recording_metadata or {}).get("quality_status") == "ok") else None
         return result
 
     @staticmethod

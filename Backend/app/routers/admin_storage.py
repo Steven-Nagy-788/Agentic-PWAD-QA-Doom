@@ -17,7 +17,7 @@ router = APIRouter(prefix="/admin/storage", tags=["Admin Storage"])
 
 
 @router.get("/stats")
-async def storage_stats() -> dict[str, object]:
+def storage_stats() -> dict[str, object]:
     settings = get_settings()
     buckets = {
         "wads": settings.wad_storage_dir,

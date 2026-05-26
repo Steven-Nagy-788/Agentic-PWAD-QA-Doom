@@ -26,15 +26,8 @@ ALLOWED_TOOLS = {
 DIRECTOR_TOOLS = {"get_situation_report", "set_objective", "set_strategy"}
 
 logger = logging.getLogger(__name__)
-_gemini_sem: asyncio.Semaphore | None = None
+_gemini_sem = asyncio.Semaphore(max(1, get_settings().gemini_max_concurrency))
 _api_call_timestamps: list[float] = []
-_last_token_usage: dict[str, int] = {}
-
-
-def get_last_token_usage() -> dict[str, int]:
-    return dict(_last_token_usage)
-
-
 class GeminiService:
     def __init__(
         self,
@@ -56,33 +49,39 @@ class GeminiService:
         response = await self._generate_content("Return ok.", {})
         return {"model": self.llm_model, "response": response.text or ""}
 
-    async def decide(self, system_prompt: str, llm_input: dict[str, Any], screenshot_png: bytes | None = None) -> dict[str, Any]:
+    async def decide(self, system_prompt: str, llm_input: dict[str, Any], screenshot_png: bytes | None = None) -> tuple[dict[str, Any], dict[str, int]]:
         if not self.settings.gemini_api_key:
-            return self._fallback_decision(llm_input, "Gemini API key is not configured; using deterministic fallback.")
+            return self._fallback_decision(llm_input, "Gemini API key is not configured; using deterministic fallback."), {}
         return await self._call_with_retry(
             system_prompt,
             llm_input,
             self.parse_decision,
-            lambda: self._fallback_decision(
-                llm_input,
-                "Model response failed or was rate limited; using deterministic fallback.",
+            lambda: (
+                self._fallback_decision(
+                    llm_input,
+                    "Model response failed or was rate limited; using deterministic fallback.",
+                ),
+                {},
             ),
             screenshot_png=screenshot_png,
         )
 
-    async def decide_director(self, system_prompt: str, llm_input: dict[str, Any]) -> dict[str, Any]:
+    async def decide_director(self, system_prompt: str, llm_input: dict[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
         if not self.settings.gemini_api_key:
             return self._fallback_director_decision(
                 llm_input,
                 "Gemini API key is not configured; using deterministic director fallback.",
-            )
+            ), {}
         return await self._call_with_retry(
             system_prompt,
             llm_input,
             self.parse_director_decision,
-            lambda: self._fallback_director_decision(
-                llm_input,
-                "Model response failed or was rate limited; using deterministic director fallback.",
+            lambda: (
+                self._fallback_director_decision(
+                    llm_input,
+                    "Model response failed or was rate limited; using deterministic director fallback.",
+                ),
+                {},
             ),
         )
 
@@ -91,16 +90,16 @@ class GeminiService:
         system_prompt: str,
         llm_input: dict[str, Any],
         parser: Callable[[str], dict[str, Any]],
-        fallback: Callable[[], dict[str, Any]],
+        fallback: Callable[[], tuple[dict[str, Any], dict[str, int]]],
         screenshot_png: bytes | None = None,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], dict[str, int]]:
         last_error = ""
         await _throttle_local_rate(self.rate_limit_calls_per_minute)
         for attempt in range(3):
             try:
-                response = await self._call_gemini(system_prompt, llm_input, screenshot_png=screenshot_png)
+                response, token_usage = await self._call_gemini(system_prompt, llm_input, screenshot_png=screenshot_png)
                 _record_api_call()
-                return parser(response)
+                return parser(response), token_usage
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
                 logger.warning("Gemini API call attempt %d/3 failed: %s", attempt + 1, last_error)
@@ -114,22 +113,22 @@ class GeminiService:
                     await asyncio.sleep(5.0)
                     continue
         logger.warning("All 3 Gemini API attempts failed, using deterministic fallback")
-        fallback_result = fallback()
+        fallback_result, fallback_tokens = fallback()
         fallback_result["reasoning_summary"] = (
             f"Gemini API failed after 3 attempts: {last_error}. "
             f"{fallback_result.get('reasoning_summary', 'Falling back to deterministic.')}"
         )
-        return fallback_result
+        return fallback_result, fallback_tokens
 
-    async def _call_gemini(self, system_prompt: str, llm_input: dict, screenshot_png: bytes | None = None) -> str:
-        global _last_token_usage
+    async def _call_gemini(self, system_prompt: str, llm_input: dict, screenshot_png: bytes | None = None) -> tuple[str, dict[str, int]]:
         response = await self._generate_content(system_prompt, llm_input, screenshot_png=screenshot_png)
+        token_usage: dict[str, int] = {}
         if hasattr(response, "usage_metadata") and response.usage_metadata:
-            _last_token_usage = {
+            token_usage = {
                 "prompt_tokens": getattr(response.usage_metadata, "prompt_token_count", 0) or 0,
                 "completion_tokens": getattr(response.usage_metadata, "candidates_token_count", 0) or 0,
             }
-        return response.text or ""
+        return response.text or "", token_usage
 
     async def _generate_content(self, system_prompt: str, llm_input: dict, screenshot_png: bytes | None = None) -> Any:
         try:
@@ -137,10 +136,6 @@ class GeminiService:
             from google.genai import types
         except ImportError as exc:
             raise RuntimeError("google-genai is not installed") from exc
-
-        global _gemini_sem
-        if _gemini_sem is None:
-            _gemini_sem = asyncio.Semaphore(max(1, self.settings.gemini_max_concurrency))
 
         text_part = f"{system_prompt}\n\nCURRENT STATE JSON:\n{json.dumps(llm_input, default=str)}"
 

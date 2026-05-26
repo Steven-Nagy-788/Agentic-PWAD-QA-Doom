@@ -77,7 +77,6 @@ def _setup_loop_patches():
         patch("app.services.run_loop._finalize_lockstep_decision"),
         patch("app.services.run_loop._lockstep_progress_metrics", return_value={"progress_score": 0}),
         patch("app.services.run_loop._lockstep_quality_flags", return_value={"quality_status": "unknown"}),
-        patch("app.services.run_loop.get_last_token_usage", return_value={"prompt_tokens": 100, "completion_tokens": 50}),
     ]
 
 
@@ -131,12 +130,15 @@ def _make_mcp(mock_mcp_cls, start_side_effect=None, state_data=None):
 def _make_gemini(mock_gemini_cls):
     gemini = AsyncMock()
     gemini.decide = AsyncMock(
-        return_value={
-            "reasoning_summary": "Test decision.",
-            "mcp_tool": "explore",
-            "mcp_params": {},
-            "observed_issue": None,
-        }
+        return_value=(
+            {
+                "reasoning_summary": "Test decision.",
+                "mcp_tool": "explore",
+                "mcp_params": {},
+                "observed_issue": None,
+            },
+            {"prompt_tokens": 100, "completion_tokens": 50},
+        )
     )
     mock_gemini_cls.return_value = gemini
     return gemini
@@ -146,6 +148,8 @@ def _make_recorder(mock_rec_cls):
     rec = AsyncMock()
     rec.write_frame = MagicMock()
     rec.finalize = MagicMock(return_value="/tmp/recording.mp4")
+    rec.path = MagicMock()
+    rec.path.exists.return_value = True
     rec.validate = MagicMock(
         return_value={
             "quality_status": "ok",
@@ -188,7 +192,6 @@ async def test_normal_completion():
         patch("app.services.run_loop._finalize_lockstep_decision"),
         patch("app.services.run_loop._lockstep_progress_metrics", return_value={"progress_score": 0}),
         patch("app.services.run_loop._lockstep_quality_flags", return_value={"quality_status": "unknown"}),
-        patch("app.services.run_loop.get_last_token_usage", return_value={"prompt_tokens": 100, "completion_tokens": 50}),
     ):
         db = _make_db()
         db.get.side_effect = lambda cls, id: {TestRun: run, StaticAnalysisResult: analysis}.get(cls)
@@ -273,6 +276,8 @@ async def test_pwad_crash():
         rec = AsyncMock()
         rec.write_frame = MagicMock()
         rec.finalize = MagicMock(return_value="/tmp/recording.mp4")
+        rec.path = MagicMock()
+        rec.path.exists.return_value = True
         rec.validate = MagicMock(
             return_value={"quality_status": "ok", "frame_count": 0, "unique_frame_count": 0, "fps": 15, "width": 640, "height": 480, "gameplay_seconds": 0, "advanced_game_ticks": 0}
         )
@@ -366,6 +371,8 @@ async def test_cancelled():
         rec = AsyncMock()
         rec.write_frame = MagicMock()
         rec.finalize = MagicMock(return_value=None)
+        rec.path = MagicMock()
+        rec.path.exists.return_value = False
         rec.validate = MagicMock(
             return_value={"quality_status": "unknown", "frame_count": 0, "unique_frame_count": 0, "fps": 15, "width": 640, "height": 480, "gameplay_seconds": 0, "advanced_game_ticks": 0}
         )

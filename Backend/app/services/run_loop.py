@@ -22,7 +22,7 @@ from app.services.collector_service import CollectorService
 from app.services.defect_service import DefectService
 from app.repositories.config_repository import ConfigRepository
 from app.services.analysis_constants import CELL_SIZE
-from app.services.gemini_service import GeminiService, estimate_llm_cost_usd, get_last_token_usage
+from app.services.gemini_service import GeminiService, estimate_llm_cost_usd
 from app.services.mcp_client_service import McpDoomClient, McpStartupError, McpToolTimeoutError, normalize_mcp_state
 from app.services.prompt_service import render_agent_prompt
 from app.services.recording_service import RecordingService, jpeg_b64, png_bytes_to_frame
@@ -280,10 +280,9 @@ async def agent_run_task(run_id: UUID) -> None:
                     sequence_number += 1
 
                     llm_started = time.monotonic()
-                    decision = await gemini.decide(prompt, llm_input, screenshot_png=screenshot_png)
+                    decision, token_usage = await gemini.decide(prompt, llm_input, screenshot_png=screenshot_png)
                     total_llm_calls += 1
                     llm_duration_ms = (time.monotonic() - llm_started) * 1000
-                    token_usage = get_last_token_usage()
                     cost_estimate_usd = round(
                         estimate_llm_cost_usd(
                             token_usage.get("prompt_tokens"),
@@ -503,6 +502,8 @@ async def agent_run_task(run_id: UUID) -> None:
             final_fields.update(failure_fields)
             if recording_path:
                 final_fields["recording_mp4_path"] = str(recording_path)
+            elif recorder.path.exists():
+                final_fields["recording_mp4_path"] = str(recorder.path)
             if run.status not in {"failed", "cancelled"}:
                 final_fields["status"] = "completed"
             if run.started_at:
