@@ -326,6 +326,88 @@ def test_lockstep_overrides_repeated_low_value_explore_with_qa_probe() -> None:
     assert lockstep_state["qa_probe_count"] == 1
 
 
+def test_lockstep_counter_hypothesis_does_not_interrupt_visible_combat() -> None:
+    decision = {"mcp_tool": "aim_and_shoot", "mcp_params": {"object_id": 1, "shots": 5}}
+    state = {
+        "weapon_state": {
+            "selected_weapon": 2,
+            "usable_weapons": [1, 2],
+            "usable_ranged_weapons": [2],
+            "best_viable_weapon": 2,
+        },
+        "objects": [{"id": 1, "type": "monster", "name": "Demon", "is_visible": True, "distance": 64}],
+    }
+    lockstep_state = {"counter_hypothesis_added": True, "hypothesis_repetition_counts": {"GEOMETRY": 3}}
+
+    guarded = _apply_lockstep_recovery(decision, state, {}, lockstep_state)
+
+    assert guarded["mcp_tool"] == "aim_and_shoot"
+    assert guarded["mcp_params"]["object_id"] == 1
+    assert lockstep_state["counter_hypothesis_added"] is False
+
+
+def test_lockstep_counter_hypothesis_turns_explore_into_visible_combat() -> None:
+    decision = {"mcp_tool": "explore", "mcp_params": {"max_tics": 80}}
+    state = {
+        "weapon_state": {
+            "selected_weapon": 2,
+            "usable_weapons": [1, 2],
+            "usable_ranged_weapons": [2],
+            "best_viable_weapon": 2,
+        },
+        "objects": [{"id": 1, "type": "monster", "name": "Demon", "is_visible": True, "distance": 64}],
+    }
+    lockstep_state = {"counter_hypothesis_added": True, "hypothesis_repetition_counts": {"GEOMETRY": 3}}
+
+    guarded = _apply_lockstep_recovery(decision, state, {}, lockstep_state)
+
+    assert guarded["mcp_tool"] == "aim_and_shoot"
+    assert guarded["mcp_params"]["object_id"] == 1
+    assert "visible target" in guarded["reasoning_summary"]
+
+
+def test_low_value_explore_engages_visible_enemy_before_qa_probe() -> None:
+    decision = {"mcp_tool": "explore", "mcp_params": {"max_tics": 160}}
+    state = {
+        "weapon_state": {
+            "selected_weapon": 2,
+            "usable_weapons": [1, 2],
+            "usable_ranged_weapons": [2],
+            "best_viable_weapon": 2,
+        },
+        "objects": [{"id": 1, "type": "monster", "name": "Demon", "is_visible": True, "distance": 64}],
+    }
+    lockstep_state = {"low_value_explore_total": 2, "qa_probe_count": 0}
+
+    guarded = _apply_lockstep_recovery(decision, state, {}, lockstep_state)
+
+    assert guarded["mcp_tool"] == "aim_and_shoot"
+    assert guarded["mcp_params"]["object_id"] == 1
+    assert lockstep_state["qa_probe_count"] == 0
+
+
+def test_explore_after_enemy_spotted_engages_visible_enemy() -> None:
+    decision = {"mcp_tool": "explore", "mcp_params": {"max_tics": 80}}
+    state = {
+        "weapon_state": {
+            "selected_weapon": 2,
+            "usable_weapons": [1, 2],
+            "usable_ranged_weapons": [2],
+            "best_viable_weapon": 2,
+        },
+        "objects": [{"id": 1, "type": "monster", "name": "Demon", "is_visible": True, "distance": 64}],
+    }
+    lockstep_state = {
+        "decision_history": [{"tool": "explore", "stop_reason": "enemy_spotted"}],
+        "action_signature_counts": {},
+    }
+
+    guarded = _guard_lockstep_decision(decision, state, lockstep_state, {})
+
+    assert guarded["mcp_tool"] == "aim_and_shoot"
+    assert guarded["mcp_params"]["object_id"] == 1
+
+
 def test_low_value_explore_stops_run_after_bounded_attempts() -> None:
     lockstep_state = {"low_value_explore_total": 5, "consecutive_explore_max_tics": 0}
     mcp_call = {"tool": "explore", "output": {"action_summary": {"stop_reason": "max_tics"}}}

@@ -101,6 +101,17 @@ class ReportService:
         await RunRepository(self.db).update(run, report_pdf_path=str(pdf_path))
         return created
 
+    async def mark_error(self, run_id: UUID, error: str) -> TestReport:
+        existing = await self.repo.get_by_run(run_id)
+        fields = {
+            "generation_status": "error",
+            "generation_error": error,
+            "pdf_path": None,
+        }
+        if existing is not None:
+            return await self.repo.update(existing, **fields)
+        return await self.repo.create(TestReport(run_id=run_id, **fields))
+
     async def _map_bounds_for_report(
         self,
         run: TestRun,

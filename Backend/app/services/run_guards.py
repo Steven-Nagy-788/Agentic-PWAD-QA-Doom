@@ -67,6 +67,12 @@ def _apply_lockstep_recovery(
     selected_tool = str(decision.get("mcp_tool") or "explore")
     low_value_explores = int(lockstep_state.get("low_value_explore_total") or 0)
     if selected_tool == "explore" and low_value_explores >= LOW_VALUE_EXPLORE_OVERRIDE_THRESHOLD:
+        visible_combat = _visible_combat_recovery_decision(
+            state,
+            "A visible enemy is blocking useful exploration, so I am resolving the threat before probing geometry.",
+        )
+        if visible_combat is not None:
+            return visible_combat
         probe_count = int(lockstep_state.get("qa_probe_count") or 0)
         if probe_count < QA_PROBE_BURST_LIMIT:
             return _qa_probe_decision(
@@ -84,6 +90,15 @@ def _apply_lockstep_recovery(
     if bool(lockstep_state.get("counter_hypothesis_added")):
         lockstep_state["counter_hypothesis_added"] = False
         lockstep_state["hypothesis_repetition_counts"] = {}
+        if _has_visible_combat_opportunity(state):
+            if selected_tool in COMBAT_TOOLS:
+                return decision
+            visible_combat = _visible_combat_recovery_decision(
+                state,
+                "Repeated issue hypotheses are less useful than clearing the visible threat first.",
+            )
+            if visible_combat is not None:
+                return visible_combat
         return {
             "reasoning_summary": (
                 "Agent repeated the same issue category 3+ times. Forcing wide exploration "
@@ -214,27 +229,31 @@ def _guard_lockstep_decision(
     signature = _action_signature(tool, params)
     signature_count = int((lockstep_state.get("action_signature_counts") or {}).get(signature, 0))
     if signature_count >= REPEATED_ACTION_ABORT_THRESHOLD:
+        visible_combat = _visible_combat_recovery_decision(
+            state,
+            f"The requested action repeats a recent no-progress signature ({tool}), but a visible enemy is actionable.",
+        )
+        if visible_combat is not None:
+            return visible_combat
         return _blocked_decision_fallback(
             f"The requested action repeats a recent no-progress signature ({tool}), so I am switching tactics.",
             state,
             navigation_info or {},
             lockstep_state,
         )
-    total_dc = int(lockstep_state.get("total_decision_count") or 0)
-    priority_forced = int(lockstep_state.get("priority_pickup_forced_count") or 0)
-    if total_dc < 3 and priority_forced < 3 and tool != "move_to":
-        priority_pickup = _nearest_priority_pickup(state, lockstep_state)
-        if priority_pickup is not None:
-            lockstep_state["priority_pickup_forced_count"] = priority_forced + 1
-            return {
-                "reasoning_summary": (
-                    f"Early-game priority: collecting {priority_pickup.get('name', 'pickup')} "
-                    f"at distance {priority_pickup.get('distance', '?')} before engaging."
-                ),
-                "mcp_tool": "move_to",
-                "mcp_params": {"object_id": priority_pickup["id"], "max_tics": 80, "stop_on_enemy": True},
-                "observed_issue": None,
-            }
+    if tool == "explore" and _has_visible_combat_opportunity(state):
+        recent_enemy_spotted = sum(
+            1
+            for entry in (lockstep_state.get("decision_history") or [])[-4:]
+            if entry.get("tool") == "explore" and entry.get("stop_reason") == "enemy_spotted"
+        )
+        if recent_enemy_spotted:
+            visible_combat = _visible_combat_recovery_decision(
+                state,
+                "Exploration has already stopped on this visible enemy, so I am engaging it instead of looping.",
+            )
+            if visible_combat is not None:
+                return visible_combat
     if tool == "move_to" and object_id is not None:
         completed = lockstep_state.get("completed_object_ids") or {}
         failed = lockstep_state.get("failed_object_ids") or {}
@@ -271,6 +290,26 @@ def _guard_lockstep_decision(
                 "mcp_params": {"max_tics": 80, "stop_on_enemy": True, "stop_on_item": False},
                 "observed_issue": None,
             }
+    total_dc = int(lockstep_state.get("total_decision_count") or 0)
+    priority_forced = int(lockstep_state.get("priority_pickup_forced_count") or 0)
+    valid_visible_combat = (
+        tool in COMBAT_TOOLS
+        and _state_has_usable_attack_weapon(state)
+        and _combat_target_is_visible(state, object_id)
+    )
+    if total_dc < 3 and priority_forced < 3 and tool != "move_to" and not valid_visible_combat:
+        priority_pickup = _nearest_priority_pickup(state, lockstep_state)
+        if priority_pickup is not None:
+            lockstep_state["priority_pickup_forced_count"] = priority_forced + 1
+            return {
+                "reasoning_summary": (
+                    f"Early-game priority: collecting {priority_pickup.get('name', 'pickup')} "
+                    f"at distance {priority_pickup.get('distance', '?')} before engaging."
+                ),
+                "mcp_tool": "move_to",
+                "mcp_params": {"object_id": priority_pickup["id"], "max_tics": 80, "stop_on_enemy": True},
+                "observed_issue": None,
+            }
         if not _combat_target_is_visible(state, object_id):
             return {
                 "reasoning_summary": (
@@ -281,9 +320,137 @@ def _guard_lockstep_decision(
                 "mcp_params": {"max_tics": 80, "stop_on_enemy": True, "stop_on_item": False},
                 "observed_issue": None,
             }
+    if tool == "select_weapon" or (tool == "take_action" and _has_weapon_switch_action(params)):
+        weapon_switch_count = 0
+        for entry in (lockstep_state.get("decision_history") or [])[-5:]:
+            if entry.get("tool") == "select_weapon" or entry.get("tool") == "take_action" and "SELECT_WEAPON" in str(entry.get("params", {})):
+                weapon_switch_count += 1
+            elif entry.get("tool") == "take_action" and "SELECT_NEXT_WEAPON" in str(entry.get("params", {})):
+                weapon_switch_count += 1
+        if weapon_switch_count >= 2:
+            requested_slot = params.get("weapon_slot")
+            best_weapon = _best_viable_weapon(state)
+            selected_weapon = _selected_weapon(state)
+            if (
+                tool == "select_weapon"
+                and best_weapon is not None
+                and requested_slot == best_weapon
+                and selected_weapon != best_weapon
+                and _has_visible_combat_opportunity(state)
+            ):
+                decision["mcp_tool"] = tool
+                decision["mcp_params"] = params
+                return decision
+            lockstep_state["quality_warnings"] = list(lockstep_state.get("quality_warnings") or []) + [
+                f"Weapon switching loop detected ({weapon_switch_count}x in last 5 decisions), forcing explore instead."
+            ]
+            return {
+                "reasoning_summary": (
+                    f"Weapon switching detected {weapon_switch_count}x in recent decisions. "
+                    "Forcing explore to break the loop."
+                ),
+                "mcp_tool": "explore",
+                "mcp_params": {"max_tics": 80, "stop_on_enemy": True, "stop_on_item": True},
+                "observed_issue": None,
+            }
+
     decision["mcp_tool"] = tool
     decision["mcp_params"] = params
     return decision
+
+
+def _has_weapon_switch_action(params: dict[str, Any]) -> bool:
+    actions = params.get("actions") if isinstance(params, dict) else {}
+    if not isinstance(actions, dict):
+        return False
+    for key in actions:
+        if "SELECT_WEAPON" in str(key).upper() or "SELECT_NEXT" in str(key).upper() or "SELECT_PREV" in str(key).upper():
+            return True
+    return False
+
+
+def _visible_combat_target(state: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(state, dict):
+        return None
+    candidates = []
+    for obj in state.get("objects") or []:
+        if not isinstance(obj, dict):
+            continue
+        if obj.get("id") is None or obj.get("type") != "monster" or not obj.get("is_visible"):
+            continue
+        candidates.append(obj)
+    if not candidates:
+        return None
+    return min(candidates, key=lambda obj: _bounded_float(obj.get("distance"), 999999.0))
+
+
+def _has_visible_combat_opportunity(state: dict[str, Any] | None) -> bool:
+    return _visible_combat_target(state) is not None and _state_has_usable_attack_weapon(state or {})
+
+
+def _best_viable_weapon(state: dict[str, Any] | None) -> int | None:
+    weapon_state = state.get("weapon_state") if isinstance(state, dict) else None
+    if not isinstance(weapon_state, dict):
+        return None
+    value = weapon_state.get("best_viable_weapon")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _selected_weapon(state: dict[str, Any] | None) -> int | None:
+    weapon_state = state.get("weapon_state") if isinstance(state, dict) else None
+    if isinstance(weapon_state, dict):
+        value = weapon_state.get("selected_weapon")
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            pass
+    variables = state.get("game_variables") if isinstance(state, dict) else None
+    if isinstance(variables, dict):
+        return _bounded_int(variables.get("SELECTED_WEAPON"), 2)
+    return None
+
+
+def _visible_combat_recovery_decision(state: dict[str, Any], reason: str) -> dict[str, Any] | None:
+    target = _visible_combat_target(state)
+    if target is None or not _state_has_usable_attack_weapon(state):
+        return None
+    target_id = target.get("id")
+    if target_id is None:
+        return None
+
+    best_weapon = _best_viable_weapon(state)
+    selected_weapon = _selected_weapon(state)
+    weapon_state = state.get("weapon_state") if isinstance(state, dict) else {}
+    usable_ranged = set()
+    if isinstance(weapon_state, dict):
+        for slot in weapon_state.get("usable_ranged_weapons") or []:
+            try:
+                usable_ranged.add(int(slot))
+            except (TypeError, ValueError):
+                continue
+    distance = _bounded_float(target.get("distance"), 999999.0)
+    if (
+        best_weapon is not None
+        and selected_weapon != best_weapon
+        and best_weapon in usable_ranged
+        and distance > 96.0
+    ):
+        return {
+            "reasoning_summary": f"{reason} I am selecting weapon {best_weapon} before shooting.",
+            "mcp_tool": "select_weapon",
+            "mcp_params": {"weapon_slot": best_weapon, "max_tics": 12},
+            "observed_issue": None,
+        }
+
+    return {
+        "reasoning_summary": f"{reason} I am engaging visible target {target_id} instead of restarting exploration.",
+        "mcp_tool": "aim_and_shoot",
+        "mcp_params": {"object_id": target_id, "shots": 5, "max_tics": 100},
+        "observed_issue": None,
+    }
 
 
 def _blocked_decision_fallback(
@@ -349,9 +516,12 @@ def _nearest_available_pickup(
         if prefer_resources and obj_type not in {"ammo", "weapon", "item"}:
             continue
         obj_distance = float(obj.get("distance") or 999999)
-        # Allow non-visible weapon/ammo pickups at close range (reachable by turning)
         if not obj.get("is_visible"):
-            if obj_type not in {"weapon", "ammo", "item"} or obj_distance >= 100.0:
+            if (
+                not prefer_resources
+                or obj_type not in {"weapon", "ammo", "item"}
+                or obj_distance >= 100.0
+            ):
                 continue
         candidates.append(obj)
     if not candidates:
@@ -393,6 +563,17 @@ def _state_has_usable_attack_weapon(state: dict[str, Any]) -> bool:
         return True
     selected_weapon = _bounded_int(variables.get("SELECTED_WEAPON"), 2)
     selected_ammo = _bounded_float(variables.get("SELECTED_WEAPON_AMMO"), 0.0)
+    weapon_inventory = variables.get("WEAPON_INVENTORY") or []
+    if selected_weapon == 0:
+        return True
+    if selected_weapon == 1 and isinstance(weapon_inventory, list):
+        equipped_names = weapon_state.get("weapon_inventory", []) if isinstance(weapon_state, dict) else []
+        has_chainsaw = any("CHAINSAW" in str(w).upper() for w in equipped_names)
+        selected_name = weapon_state.get("selected_weapon_name", "") if isinstance(weapon_state, dict) else ""
+        if has_chainsaw or "CHAINSAW" in str(selected_name).upper():
+            return True
+        if not has_chainsaw and selected_weapon == 1:
+            return False
     if selected_weapon in {0, 1}:
         return True
     if selected_ammo > 0:

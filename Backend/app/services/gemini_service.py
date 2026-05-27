@@ -6,7 +6,7 @@ import logging
 import random
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from app.core.config import get_settings
@@ -25,10 +25,39 @@ ALLOWED_TOOLS = {
     "select_weapon",
 }
 DIRECTOR_TOOLS = {"get_situation_report", "set_objective", "set_strategy"}
+LOW_VALUE_TEXTURE_DEFECT_TYPES = {"visual_texture_misalignment"}
+LOW_VALUE_TEXTURE_TERMS = (
+    "alignment",
+    "misalign",
+    "offset",
+    "tiling",
+    "discontinuity",
+    "repeat",
+    "cut-off",
+    "cut off",
+    "seam",
+)
+CRITICAL_TEXTURE_TERMS = ("hom", "hall of mirrors", "missing texture", "medusa", "z-fighting", "z fighting")
 
 logger = logging.getLogger(__name__)
 _gemini_sem = asyncio.Semaphore(max(1, get_settings().gemini_max_concurrency))
 _api_call_timestamps: list[float] = []
+
+
+def is_low_value_texture_defect(defect: Mapping[str, Any]) -> bool:
+    defect_type = str(defect.get("defect_type") or "").strip().lower()
+    title = str(defect.get("title") or "").lower()
+    description = str(defect.get("description") or "").lower()
+    text = f"{defect_type} {title} {description}"
+    if any(term in text for term in CRITICAL_TEXTURE_TERMS):
+        return False
+    if defect_type in LOW_VALUE_TEXTURE_DEFECT_TYPES:
+        return True
+    return ("texture" in text or "floor" in text or "wall" in text or "pillar" in text) and any(
+        term in text for term in LOW_VALUE_TEXTURE_TERMS
+    )
+
+
 class GeminiService:
     def __init__(
         self,
@@ -70,20 +99,17 @@ class GeminiService:
 
         vision_prompt = (
             "You are a Doom map QA visual inspector. Analyze each screenshot and report any "
-            "visible defects. Look for:\n"
-          - "HOM (Hall of Mirrors) effects — missing textures causing visual glitches\n"
-          - "Medusa effects — distorted/stretched textures\n"
-          - "Tutti-frutti effects — colored pixel rows on walls\n"
-          - "Misaligned textures — offsets on doors/walls that look wrong\n"
-          - "Visible stuck monsters — monsters clipping into walls or each other\n"
-          - "Zero-height or invisible sectors causing floating objects\n"
-          - "HUD readout issues — negative health/armor, wrong weapon shown\n"
-          - "Overlapping or z-fighting geometry\n"
-          - "Projected texture seams or skybox issues\n\n"
+            "visible gameplay-affecting defects. Look for:\n"
+            "- HOM (Hall of Mirrors), missing textures, Medusa, or tutti-frutti rendering failures\n"
+            "- Visible stuck monsters clipping into walls or each other\n"
+            "- Zero-height or invisible sectors causing floating objects or blocked movement\n"
+            "- HUD readout issues such as negative health/armor or wrong weapon state\n"
+            "- Overlapping or z-fighting geometry that hides gameplay-critical space\n\n"
+            "Do not report cosmetic texture alignment, tiling, offset, pillar, floor, wall seam, or pattern-repeat issues.\n\n"
             "For each screenshot that contains a defect, return one JSON object:\n"
             "{\n"
             '  "screenshot_index": <0-based index in this batch>,\n'
-            '  "defect_type": "visual_texture_misalignment | visual_hom | visual_stuck_monster | visual_hud_anomaly | visual_geometry_glitch",\n'
+            '  "defect_type": "visual_hom | visual_stuck_monster | visual_hud_anomaly | visual_geometry_glitch",\n'
             '  "title": "<concise title>",\n'
             '  "description": "<specific description of what is visible>",\n'
             '  "severity": <1|2|3>,\n'
@@ -116,11 +142,15 @@ class GeminiService:
         _record_api_call()
         text = response.text or "[]"
         parsed = self._parse_vision_response(text)
+        filtered: list[dict[str, object]] = []
         for item in parsed:
+            if is_low_value_texture_defect(item):
+                continue
             idx = item.get("screenshot_index", 0)
             if 0 <= idx < len(batch):
                 item["screenshot_path"] = batch[idx][0]
-        return parsed
+            filtered.append(item)
+        return filtered
 
     def _parse_vision_response(self, text: str) -> list[dict[str, object]]:
         try:
@@ -158,6 +188,74 @@ class GeminiService:
             ),
             screenshot_png=screenshot_png,
         )
+
+    async def detect_visual_defect_from_screenshot(
+        self, screenshot_png: bytes | None, tick: int, x: float, y: float
+    ) -> dict | None:
+        if screenshot_png is None or not self.settings.gemini_api_key:
+            return None
+        vision_prompt = (
+            f"You are a Doom map QA visual inspector. Analyze this screenshot taken at tick {tick}, "
+            f"position ({x:.1f}, {y:.1f}). Return JSON with defect info if you see a gameplay-affecting visible defect, "
+            "or null if no defect is visible."
+            "\n\nLook for:\n"
+            "- HOM (Hall of Mirrors), missing textures, Medusa, or tutti-frutti rendering failures\n"
+            "- Visible stuck monsters clipping into walls or each other\n"
+            "- Zero-height or invisible sectors that affect navigation or visibility\n"
+            "- HUD readout issues — negative health/armor\n"
+            "- Overlapping or z-fighting geometry that hides gameplay-critical space\n\n"
+            "Do not report cosmetic texture alignment, tiling, offset, pillar, floor, wall seam, or pattern-repeat issues.\n\n"
+            "Respond with EXACTLY this JSON (no markdown, no extra text):\n"
+            '{"defect_type": "visual_hom|visual_stuck_monster|visual_hud_anomaly|visual_geometry_glitch", '
+            '"title": "concise title", '
+            '"description": "specific description of what is visible", '
+            '"severity": 1|2|3}'
+            "\nIf no defect is visible, respond with: null"
+        )
+        try:
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=self.settings.gemini_api_key)
+            async_client = getattr(client, "aio", None)
+            parts = [
+                types.Part.from_text(text=vision_prompt),
+                types.Part.from_bytes(data=screenshot_png, mime_type="image/png"),
+            ]
+            await _throttle_local_rate(self.rate_limit_calls_per_minute)
+            async with _gemini_sem:
+                if async_client is not None and hasattr(async_client, "models"):
+                    response = await async_client.models.generate_content(
+                        model=self.llm_model,
+                        contents=types.Content(parts=parts, role="user"),
+                    )
+                else:
+                    response = await asyncio.to_thread(
+                        lambda: client.models.generate_content(
+                            model=self.llm_model,
+                            contents=types.Content(parts=parts, role="user"),
+                        )
+                    )
+            _record_api_call()
+            text = response.text or ""
+            if not text or text.strip().lower() == "null":
+                return None
+            try:
+                data = json.loads(text)
+                if isinstance(data, dict) and "defect_type" in data and not is_low_value_texture_defect(data):
+                    return data
+            except (json.JSONDecodeError, ValueError):
+                pass
+            extracted = self._extract_json_balanced(text)
+            if extracted:
+                try:
+                    data = json.loads(extracted)
+                    if isinstance(data, dict) and "defect_type" in data and not is_low_value_texture_defect(data):
+                        return data
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            return None
+        except Exception:
+            return None
 
     async def decide_director(self, system_prompt: str, llm_input: dict[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
         if not self.settings.gemini_api_key:

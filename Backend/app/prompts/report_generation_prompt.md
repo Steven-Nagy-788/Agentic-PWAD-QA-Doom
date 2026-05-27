@@ -29,7 +29,6 @@ Your analysis must aggressively search for:
 - Missable keys
 - Untelegraphed progression paths
 - Geometry clipping issues
-- Texture misalignment
 - Hall-of-mirrors risks
 - Slime trails
 - Nodebuilder artifacts
@@ -67,7 +66,6 @@ Your analysis must aggressively search for:
 - Performance-heavy detailing
 - BSP inefficiencies
 - Overcomplicated sector construction
-- Texture repetition harming readability
 - Poor landmarking/navigation
 - Weak environmental guidance
 - Confusing spatial flow
@@ -221,7 +219,7 @@ OUTPUT FORMAT — return ONLY this JSON, no other text
 
   "critical_issues": "Complete section #2. List all game-breaking or progression-breaking problems. Use severity labels: Critical, Major, Moderate, Minor, Cosmetic.",
 
-  "geometry_technical_analysis": "Complete section #3. Analyze sector construction, BSP friendliness, collision quality, texture alignment, engine overflow risks, rendering stability, visual readability, optimization quality, vanilla compatibility risks, limit-removing compatibility concerns.",
+  "geometry_technical_analysis": "Complete section #3. Analyze sector construction, BSP friendliness, collision quality, engine overflow risks, rendering stability, visual readability, optimization quality, vanilla compatibility risks, limit-removing compatibility concerns. Do not file cosmetic texture alignment, tiling, offset, floor, pillar, or wall seam comments unless they block readability or gameplay.",
 
   "gameplay_flow_analysis": "Complete section #4. Analyze player routing, combat pacing, arena transitions, resource economy, exploration incentives, key progression clarity, backtracking quality, skill curve, encounter escalation.",
 

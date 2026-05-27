@@ -96,7 +96,8 @@ class McpDoomClient:
                 last_error = exc
                 if attempt < len(MCP_STARTUP_RETRY_DELAYS):
                     await asyncio.sleep(MCP_STARTUP_RETRY_DELAYS[attempt])
-        raise McpStartupError("MCP start_game failed after startup retries") from last_error
+        detail = f": {last_error}" if last_error is not None else ""
+        raise McpStartupError(f"MCP start_game failed after startup retries{detail}") from last_error
 
     async def get_state(self) -> tuple[dict[str, Any], bytes | None]:
         result = await self.call_tool("get_state", {"include_sectors": False, "include_depth": True})

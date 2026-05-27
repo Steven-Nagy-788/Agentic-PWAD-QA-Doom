@@ -18,11 +18,11 @@ from app.repositories.agent_decision_repository import AgentDecisionRepository
 from app.repositories.defect_repository import DefectRepository
 from app.repositories.run_repository import RunRepository
 from app.repositories.wad_repository import WadRepository
-from app.services.collector_service import CollectorService
+from app.services.collector_service import CollectorService, normalize_variables
 from app.services.defect_service import DefectService
 from app.repositories.config_repository import ConfigRepository
 from app.services.analysis_constants import CELL_SIZE
-from app.services.gemini_service import GeminiService, estimate_llm_cost_usd
+from app.services.gemini_service import GeminiService, estimate_llm_cost_usd, is_low_value_texture_defect
 from app.services.mcp_client_service import McpDoomClient, McpStartupError, McpToolTimeoutError, normalize_mcp_state
 from app.services.prompt_service import render_agent_prompt
 from app.services.recording_service import RecordingService, jpeg_b64, png_bytes_to_frame
@@ -48,6 +48,7 @@ from app.services.run_telemetry import (
 from app.services.run_utils import (
     _bounded_float,
     _bounded_int,
+    _build_run_history,
     _compact_mcp_output,
     _compact_state_for_llm,
     _compute_dynamic_stride,
@@ -62,12 +63,17 @@ from app.services.run_utils import (
     _normalize_mcp_params,
     _normalize_take_action_params,
     _pwad_crash_fields,
+    _record_checkpoint,
+    _record_decision_in_history,
+    _record_event_in_history,
+    _record_position_in_trail,
     _state_report_call,
-    _structured_memory_snapshot,
     _summary,
     _track_explored_sectors,
     _track_visited_cell,
     _unique_lockstep_tick,
+    _update_combat_log,
+    _update_objective_history,
     get_behavior_profile,
 )
 from app.services.websocket_service import websocket_service
@@ -186,7 +192,6 @@ async def agent_run_task(run_id: UUID) -> None:
                     if frame is not None:
                         last_record_frame = frame
                         recorder.write_frame(frame, game_tick=tick)
-                    recent = await _recent_trace(db, run.id)
                     threat_assessment = await _safe_context_tool(mcp, "get_threat_assessment")
                     navigation_info = await _safe_context_tool(mcp, "get_navigation_info")
                     _track_explored_sectors(state, navigation_info, lockstep_state)
@@ -206,8 +211,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         **_compact_state_for_llm(state),
                         "threat_assessment": threat_assessment,
                         "navigation_info": navigation_info,
-                        "recent_trace": recent,
-                        "structured_memory": _structured_memory_snapshot(lockstep_state),
+                        "run_history": _build_run_history(lockstep_state),
                         "cross_run_memory": cross_run_memory,
                         "lockstep_state": _lockstep_state_snapshot(lockstep_state),
                         "exploration_coverage": {
@@ -294,6 +298,37 @@ async def agent_run_task(run_id: UUID) -> None:
                     )
                     raw_decision = dict(decision)
                     _merge_hypotheses(lockstep_state, raw_decision, state)
+                    vision_defect = None
+                    if decision_row.sequence_number % 5 == 0:
+                        vision_defect = await gemini.detect_visual_defect_from_screenshot(
+                            screenshot_png, tick,
+                            float(state.get("game_variables", {}).get("POSITION_X", 0)),
+                            float(state.get("game_variables", {}).get("POSITION_Y", 0)),
+                        )
+                    if vision_defect is not None and is_low_value_texture_defect(vision_defect):
+                        vision_defect = None
+                    if vision_defect is not None:
+                        dt = str(vision_defect.get("defect_type", "visual_unknown"))
+                        title = str(vision_defect.get("title", "Visual defect detected"))
+                        desc = str(vision_defect.get("description", ""))
+                        sev = int(vision_defect.get("severity", 2))
+                        await DefectRepository(db).create(
+                            Defect(
+                                run_id=run.id,
+                                severity=sev,
+                                priority=2,
+                                defect_type=dt,
+                                fingerprint=f"{dt}:{tick}",
+                                title=title,
+                                description=desc,
+                                detected_at_tick=tick,
+                                position_x=float(state.get("game_variables", {}).get("POSITION_X", 0)),
+                                position_y=float(state.get("game_variables", {}).get("POSITION_Y", 0)),
+                            )
+                        )
+                        lockstep_state["defects_found"] = list(lockstep_state.get("defects_found") or []) + [
+                            {"type": dt, "title": title, "tick": tick, "severity": sev}
+                        ]
                     decision = _apply_lockstep_recovery(decision, state, navigation_info, lockstep_state)
                     decision = _guard_lockstep_decision(decision, state, lockstep_state, navigation_info)
                     guard_status = "kept"
@@ -349,7 +384,7 @@ async def agent_run_task(run_id: UUID) -> None:
                             stuck_stride=profile.stuck_stride,
                         )
                     mcp_started = time.monotonic()
-                    response, mcp_call = await _execute_tool(mcp, decision, state)
+                    response, mcp_call = await _execute_tool(mcp, decision, state, latest_state=llm_input)
                     mcp_duration_ms = (time.monotonic() - mcp_started) * 1000
                     total_actions += 1
 
@@ -361,6 +396,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         frame = png_bytes_to_frame(screenshot_png)
                     if not isinstance(result_state, dict) or "game_variables" not in result_state:
                         result_state = state
+                    result_x, result_y, result_angle = _history_position_from_state(result_state)
                     result_tick = _unique_lockstep_tick(result_state, lockstep_state)
                     if frame is not None:
                         last_record_frame = frame
@@ -370,6 +406,49 @@ async def agent_run_task(run_id: UUID) -> None:
                     _track_visited_cell(result_state, lockstep_state)
                     _finalize_lockstep_decision(lockstep_state)
 
+                    stop_reason = _mcp_action_summary(mcp_call).get("stop_reason")
+                    tool = mcp_call.get("tool") or decision.get("mcp_tool") or "explore"
+                    _record_decision_in_history(
+                        lockstep_state,
+                        seq=decision_row.sequence_number,
+                        tick_before=tick,
+                        tick_after=result_tick,
+                        tool=tool,
+                        stop_reason=stop_reason,
+                        params=decision.get("mcp_params") or {},
+                        reasoning=decision.get("reasoning_summary"),
+                        guard_modified=(guard_status == "modified"),
+                        llm_duration_ms=llm_duration_ms,
+                        mcp_duration_ms=mcp_duration_ms,
+                        total_budget=run.max_ticks,
+                    )
+                    if sequence_number % 3 == 0:
+                        _record_position_in_trail(
+                            lockstep_state, result_tick,
+                            result_x,
+                            result_y,
+                            result_angle,
+                        )
+                    summary_d = _mcp_action_summary(mcp_call)
+                    if tool in ("aim_and_shoot", "strafe_and_shoot"):
+                        _update_combat_log(
+                            lockstep_state,
+                            object_id=decision.get("mcp_params", {}).get("object_id"),
+                            weapon=str(summary_d.get("weapon_used", "unknown")),
+                            shots=int(summary_d.get("shots_fired", 0)),
+                            hits=int(summary_d.get("hits_landed", 0)),
+                            killed=(stop_reason == "target_killed" or int(summary_d.get("kills", 0)) > 0),
+                            distance=float(summary_d.get("target_distance", 0)),
+                        )
+                    if stop_reason in ("target_killed", "item_found", "key_found", "secret_found", "map_exit", "player_died"):
+                        _record_checkpoint(
+                            lockstep_state, result_tick,
+                            result_x,
+                            result_y,
+                            f"{stop_reason}: {summary_d.get('target_name', '')}" if summary_d else stop_reason or "",
+                        )
+                    _update_objective_history(lockstep_state, decision.get("reasoning_summary"))
+
                     latest_event = await collector.collect(
                         run.id,
                         result_tick,
@@ -378,6 +457,14 @@ async def agent_run_task(run_id: UUID) -> None:
                         decision,
                         mcp_call,
                         agent_decision_id=decision_row.id,
+                    )
+                    _record_event_in_history(
+                        lockstep_state,
+                        result_tick,
+                        latest_event.event_type,
+                        result_x,
+                        result_y,
+                        detail=stop_reason or tool,
                     )
                     summary = _mcp_action_summary(mcp_call)
                     await decision_repo.update(
@@ -406,9 +493,15 @@ async def agent_run_task(run_id: UUID) -> None:
                         },
                     )
                     progress_payload = _lockstep_progress_metrics(lockstep_state)
+                    history_snapshot = _build_run_history(lockstep_state)
                     await websocket_service.broadcast(
                         run.id,
-                        {"type": "progress", "tick": result_tick, **progress_payload},
+                        {
+                            "type": "progress",
+                            "tick": result_tick,
+                            **progress_payload,
+                            "run_history": history_snapshot,
+                        },
                     )
                     event_screenshot_b64 = None
                     if latest_event.event_type in {"kill", "death", "damage_taken", "stuck"} and record_frame is not None:
@@ -472,15 +565,23 @@ async def agent_run_task(run_id: UUID) -> None:
             outcome = "cancelled"
             await run_repo.update(run, status="cancelled")
         except Exception as exc:
+            exc_msg = str(exc)
             if isinstance(exc, McpStartupError):
-                failure_fields = _infrastructure_failure_fields(exc, "mcp_connect_retry_exhausted")
-                outcome = "error"
+                outcome, failure_fields = _classify_startup_failure(exc)
             elif isinstance(exc, McpToolTimeoutError):
-                failure_fields = _infrastructure_failure_fields(exc, "mcp_tool_timeout")
-                outcome = "error"
+                if any(kw in exc_msg.lower() for kw in ("wad", "map", "crash", "pwad")):
+                    failure_fields = _pwad_crash_fields(exc, "gameplay")
+                    outcome = "pwad_crash"
+                else:
+                    failure_fields = _infrastructure_failure_fields(exc, "mcp_tool_timeout")
+                    outcome = "error"
             else:
-                failure_fields = _pwad_crash_fields(exc, runtime_stage)
-                outcome = "pwad_crash"
+                if any(kw in exc_msg.lower() for kw in ("wad", "map", "lump", "texture", "crash", "pwad", "init")):
+                    failure_fields = _pwad_crash_fields(exc, "wad_loading")
+                    outcome = "pwad_crash"
+                else:
+                    failure_fields = _pwad_crash_fields(exc, runtime_stage)
+                    outcome = "pwad_crash"
             await run_repo.update(run, status="failed", outcome=outcome, error_message=str(exc), **failure_fields)
         finally:
             if mcp_client is not None:
@@ -593,6 +694,8 @@ async def agent_run_task(run_id: UUID) -> None:
                     await websocket_service.broadcast(run.id, {"type": "report_status", "status": "complete"})
                 except Exception as exc:
                     await db.rollback()
+                    await ReportService(db).mark_error(run.id, str(exc))
+                    await db.commit()
                     await websocket_service.broadcast(
                         run.id,
                         {"type": "report_status", "status": "error", "error": str(exc)},
@@ -628,10 +731,27 @@ async def _safe_context_tool(mcp: McpDoomClient, tool_name: str) -> dict[str, An
         return {"error": str(exc), "tool": tool_name}
 
 
+def _classify_startup_failure(exc: McpStartupError) -> tuple[str, dict[str, Any]]:
+    exc_msg = str(exc)
+    if "PWAD_CRASH:" in exc_msg:
+        return "pwad_crash", _pwad_crash_fields(exc, "wad_loading")
+    return "error", _infrastructure_failure_fields(exc, "mcp_connect_retry_exhausted")
+
+
+def _history_position_from_state(state: dict[str, Any]) -> tuple[float, float, int]:
+    variables = normalize_variables(state)
+    return (
+        float(variables.get("x", 0) or 0),
+        float(variables.get("y", 0) or 0),
+        int(variables.get("angle", 0) or 0),
+    )
+
+
 async def _execute_tool(
     mcp: McpDoomClient,
     decision: dict[str, Any],
     state: dict[str, Any] | None = None,
+    latest_state: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     from app.services.run_constants import (
         COMBAT_TOOLS,
@@ -640,13 +760,15 @@ async def _execute_tool(
         OBJECT_ID_TOOLS,
     )
 
+    validate_state = latest_state if latest_state is not None else state
+
     tool = decision.get("mcp_tool") or "explore"
     params = _normalize_mcp_params(tool, dict(decision.get("mcp_params") or {}))
     if tool in OBJECT_ID_TOOLS and "object_id" not in params:
         decision["tool_param_warning"] = f"{tool} requested without an object_id; fallback explore used."
         tool = "explore"
         params = {}
-    if tool in COMBAT_TOOLS and not _combat_target_is_visible(state, params.get("object_id")):
+    if tool in COMBAT_TOOLS and not _combat_target_is_visible(validate_state, params.get("object_id")):
         decision["tool_param_warning"] = (
             f"{tool} target {params.get('object_id')} is not a visible monster in the current state; "
             "fallback explore used."

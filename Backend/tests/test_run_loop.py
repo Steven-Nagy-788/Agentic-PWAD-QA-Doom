@@ -7,7 +7,8 @@ from uuid import uuid4
 import pytest
 
 from app.models import StaticAnalysisResult, TestRun, WadFile
-from app.services.run_loop import _estimate_total_map_cells
+from app.services.mcp_client_service import McpStartupError
+from app.services.run_loop import _classify_startup_failure, _estimate_total_map_cells, _history_position_from_state
 
 
 def _mock_run():
@@ -50,6 +51,34 @@ def test_estimate_total_map_cells_uses_static_analysis_dimensions() -> None:
     analysis.map_width_units = 513
     analysis.map_height_units = 512
     assert _estimate_total_map_cells(analysis) == 6
+
+
+def test_startup_failure_classifies_pwad_crash_prefix() -> None:
+    outcome, fields = _classify_startup_failure(McpStartupError("PWAD_CRASH: map MAP01 crashed during preflight"))
+
+    assert outcome == "pwad_crash"
+    assert fields["failure_category"] == "pwad_crash"
+    assert fields["failure_stage"] == "wad_loading"
+
+
+def test_startup_failure_classifies_infra_timeout_prefix() -> None:
+    outcome, fields = _classify_startup_failure(
+        McpStartupError("INFRA_TIMEOUT: Map MAP01 could not be loaded safely by ViZDoom")
+    )
+
+    assert outcome == "error"
+    assert fields["failure_category"] == "infrastructure"
+    assert fields["failure_stage"] == "mcp_connect_retry_exhausted"
+
+
+def test_history_position_uses_uppercase_vizdoom_variables() -> None:
+    x, y, angle = _history_position_from_state(
+        {"game_variables": {"POSITION_X": 123.5, "POSITION_Y": -42, "ANGLE": 270}}
+    )
+
+    assert x == 123.5
+    assert y == -42
+    assert angle == 270
 
 
 def _base_patches():

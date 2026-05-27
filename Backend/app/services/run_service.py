@@ -253,6 +253,8 @@ async def finalize_stopped_run(db: AsyncSession, run_id: UUID, outcome: str) -> 
         await db.commit()
     except Exception as exc:
         await db.rollback()
+        await ReportService(db).mark_error(run.id, str(exc))
+        await db.commit()
         refreshed_run = await db.get(TestRun, run.id)
         if refreshed_run is not None:
             await run_repo.update(

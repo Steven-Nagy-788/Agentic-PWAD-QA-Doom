@@ -273,7 +273,7 @@ function websocketBaseUrl(): URL {
 }
 
 function isLocalFrontendOrigin(base: URL): boolean {
-  return ["localhost", "127.0.0.1", "0.0.0.0"].includes(base.hostname) && ["3000", "3001"].includes(base.port);
+  return ["localhost", "127.0.0.1", "0.0.0.0"].includes(base.hostname);
 }
 
 function apiRootFromBase(base: string): string {

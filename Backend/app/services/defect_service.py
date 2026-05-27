@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Defect, GameEvent, NotableEventScreenshot, StaticAnalysisResult, TestRun
 from app.repositories.defect_repository import DefectRepository
+from app.services.gemini_service import is_low_value_texture_defect
 from app.services.analysis_service import selected_skill_spawn_summary
 
 if TYPE_CHECKING:
@@ -184,6 +185,8 @@ class DefectService:
         visual_defects = await self.gemini.detect_visual_defects(batch)
         path_to_screenshot_id: dict[str, UUID] = {s.screenshot_path: s.id for s in screenshots}
         for vd in visual_defects:
+            if is_low_value_texture_defect(vd):
+                continue
             scr_path = vd.get("screenshot_path", "")
             screenshot_id = path_to_screenshot_id.get(scr_path)
             await self.repo.create(

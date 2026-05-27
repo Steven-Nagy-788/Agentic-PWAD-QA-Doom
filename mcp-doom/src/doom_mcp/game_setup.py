@@ -156,9 +156,20 @@ game.close()
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
+        stderr_tail = ""
+        if exc.stderr:
+            stderr_tail = (exc.stderr.strip() or "")[-300:]
+        if exc.stdout:
+            stderr_tail = (stderr_tail + " " + exc.stdout.strip()[-200:]).strip()
+        if any(kw in (stderr_tail or "").lower() for kw in ("wad", "map", "lump", "texture", "patch", "not found", "error", "traceback")):
+            raise ToolError(
+                f"PWAD_CRASH: Map {map_name.upper()} could not be loaded by ViZDoom "
+                f"(preflight timed out after {exc.timeout:g}s). Stderr: {stderr_tail[:200]}"
+            ) from exc
         raise ToolError(
-            f"Map {map_name.upper()} could not be loaded safely by ViZDoom "
-            f"(preflight timed out after {exc.timeout:g}s)."
+            f"INFRA_TIMEOUT: Map {map_name.upper()} could not be loaded safely by ViZDoom "
+            f"(preflight timed out after {exc.timeout:g}s). "
+            f"No WAD-specific error detected. Stderr: {stderr_tail[:200]}"
         ) from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()

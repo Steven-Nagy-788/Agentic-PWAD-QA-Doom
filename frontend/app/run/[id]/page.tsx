@@ -2,18 +2,22 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import { use } from "react";
+import { use, useState } from "react";
+import type React from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { Activity, X } from "lucide-react";
 import { Run, Defect, Decision, PositionSample, TraceEntry, UsageStats, BenchmarkStats, WadMap, ReportStatus, apiGet, apiSend, API_BASE } from "@/lib/api";
-import { useRunStream } from "@/hooks/useRunStream";
+import { useRunStream, type LiveDecision, type RunHistory } from "@/hooks/useRunStream";
 import { Metric, OutcomeBadge, SkeletonRows, formatTime } from "@/lib/components/shared";
 import { DefectBadge } from "@/components/DefectBadge";
 import { DecisionTimeline } from "@/components/DecisionTimeline";
 import { MapCanvas } from "@/components/MapCanvas";
 import { ReasoningLog } from "@/components/ReasoningLog";
+import { RunHistoryPanel } from "@/components/RunHistoryPanel";
 import { StatBar } from "@/components/StatBar";
+
+const LIVE_STATUSES = new Set(["queued", "pending", "analyzing", "running"]);
 
 export default function RunPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -22,14 +26,14 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
   if (run.isLoading) return <SkeletonRows />;
   if (!run.data) return <div className="p-6 text-neutral-500">Run not found</div>;
 
-  const isLive = run.data.status === "running" || run.data.status === "pending";
+  const isLive = LIVE_STATUSES.has(run.data.status);
   if (isLive) {
-    return <LiveRunContent runId={id} />;
+    return <LiveRunContent runId={id} initialRun={run.data} />;
   }
   return <RunDetailContent runId={id} />;
 }
 
-function LiveRunContent({ runId }: { runId: string }) {
+function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run }) {
   const router = useRouter();
   const stream = useRunStream(runId);
   const queryClient = useQueryClient();
@@ -41,43 +45,248 @@ function LiveRunContent({ runId }: { runId: string }) {
     },
   });
   const tt = stream.tokenTotals;
+  const run = stream.snapshot?.run ?? initialRun;
+  const reportStatus = stream.snapshot?.report_status;
+  const usage = stream.snapshot?.usage;
+  const trail = liveTrail(stream.runHistory, stream.snapshot?.position_trail ?? []);
+  const events = stream.snapshot?.events ?? [];
+  const visibleDefects = stream.defects.filter((defect) => !isCosmeticTextureDefect(defect));
+  const latestDecision = stream.decisions.at(-1);
+  const isTerminal = run.status === "completed" || run.status === "failed" || run.status === "cancelled";
+  const maps = useQuery({
+    queryKey: ["run-maps-live", run.wad_file_id],
+    queryFn: () => apiGet<WadMap[]>(`/wads/${run.wad_file_id}/maps`),
+    enabled: Boolean(run.wad_file_id),
+  });
+  const map = maps.data?.find((item) => item.map_name === run.map_name);
+
+  const [tab, setTab] = useState<"reasoning" | "mcp" | "memory" | "defects">("reasoning");
 
   return (
-    <div className="grid h-screen grid-rows-[1fr_auto]">
-      <div className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_420px]">
-        <div className="flex min-h-0 flex-col bg-neutral-950">
-          <div className="flex items-center justify-between border-b border-neutral-800 px-4 py-3 text-white">
-            <span className="text-sm font-semibold" role="status" aria-live="polite">
-              {stream.connected
-                ? `Connected ${stream.lastMessageAt ? `(last msg: ${formatTime(stream.lastMessageAt)})` : ""}`
-                : `Reconnecting (attempt ${stream.retryCount}, next in ${(stream.retryDelay / 1000).toFixed(0)}s)`}
-            </span>
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-neutral-300">
-                {tt.decisionCount > 0 ? `${tt.totalTokens.toLocaleString()} tokens · $${tt.totalCost.toFixed(6)}` : ""}
-              </span>
-              <DefectBadge count={stream.defects.length} pulse={stream.defects.length > 0} />
-              <button onClick={() => cancel.mutate()} className="inline-flex h-9 items-center gap-2 rounded border border-neutral-700 px-3 text-sm">
-                <X className="h-4 w-4" aria-hidden="true" />
-                Cancel
-              </button>
+    <div className="grid h-screen grid-rows-[auto_1fr_auto] bg-neutral-100">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 bg-white px-4 py-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="truncate text-base font-semibold text-neutral-950">{run.map_name}</h1>
+            <OutcomeBadge outcome={run.outcome ?? run.status} />
+            <ConnectionBadge connected={stream.connected} phase={stream.phase} />
+          </div>
+          <p className="truncate text-xs text-neutral-500">
+            {run.id} · {run.behavior_profile ?? "default"} · {stream.lastMessageAt ? `last update ${formatTime(stream.lastMessageAt)}` : "waiting for stream"}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <DefectBadge count={visibleDefects.length} pulse={visibleDefects.length > 0} />
+          <a
+            href={isTerminal ? `${API_BASE}/runs/${runId}/report/pdf` : "#"}
+            aria-disabled={!isTerminal}
+            className={`inline-flex h-9 items-center rounded border px-3 text-sm font-semibold ${
+              isTerminal ? "border-neutral-300 bg-white text-neutral-900 hover:bg-neutral-50" : "cursor-not-allowed border-neutral-200 bg-neutral-100 text-neutral-400"
+            }`}
+          >
+            Report
+          </a>
+          <button
+            onClick={() => cancel.mutate()}
+            disabled={cancel.isPending || isTerminal}
+            className="inline-flex h-9 items-center gap-2 rounded bg-neutral-950 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-neutral-400"
+          >
+            <X className="h-4 w-4" aria-hidden="true" />
+            Cancel
+          </button>
+        </div>
+      </header>
+
+      <main className="grid min-h-0 grid-cols-1 gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_420px]">
+        <section className="grid min-h-0 grid-rows-[minmax(0,1fr)_auto] overflow-hidden rounded border border-neutral-200 bg-white">
+          <div className="grid min-h-0 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="grid min-h-0 place-items-center bg-white">
+              {stream.frame ? (
+                <img src={stream.frame} alt="Live game frame" role="img" aria-label="Live game frame" className="h-full w-full object-contain" />
+              ) : (
+                <div className="grid aspect-[4/3] w-full max-w-4xl place-items-center border border-neutral-200 bg-neutral-50 text-sm text-neutral-400">
+                  Waiting for live frame
+                </div>
+              )}
+            </div>
+            <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] border-t border-neutral-200 bg-neutral-50 xl:border-l xl:border-t-0">
+              <div className="border-b border-neutral-200 bg-white px-3 py-2">
+                <h2 className="text-xs font-semibold uppercase text-neutral-500">Map And Trail</h2>
+              </div>
+              <div className="min-h-0 p-3">
+                <MapCanvas map={map} trail={trail} events={events} livePosition={stream.state?.position ?? null} className="h-full max-h-full" />
+              </div>
+              <div className="grid grid-cols-3 gap-2 border-t border-neutral-200 bg-white p-3 text-xs">
+                <MiniStat label="Trail" value={trail.length} />
+                <MiniStat label="Events" value={events.length} />
+                <MiniStat label="Tick" value={stream.state?.tick ?? 0} />
+              </div>
             </div>
           </div>
-          <div className="grid flex-1 place-items-center p-4">
-            {stream.frame ? (
-              <img src={stream.frame} alt="Live game frame" role="img" aria-label="Live game frame" className="aspect-[4/3] max-h-full max-w-full object-contain" />
-            ) : (
-              <div className="grid aspect-[4/3] w-full max-w-4xl place-items-center border border-neutral-800 bg-neutral-900 text-sm text-neutral-400">
-                Waiting for live frame
-              </div>
-            )}
+          <div className="grid gap-2 border-t border-neutral-200 p-3 md:grid-cols-4">
+            <Metric label="LLM Calls" value={usage?.total_llm_calls ?? tt.decisionCount} />
+            <Metric label="Prompt Tokens" value={(usage?.total_prompt_tokens ?? tt.totalPrompt).toLocaleString()} />
+            <Metric label="Completion" value={(usage?.total_completion_tokens ?? tt.totalCompletion).toLocaleString()} />
+            <Metric label="Est. Cost" value={`$${(usage?.estimated_cost_usd ?? tt.totalCost).toFixed(6)}`} />
           </div>
-        </div>
-        <ReasoningLog decisions={stream.decisions} live />
-      </div>
+        </section>
+
+        <aside className="grid min-h-0 grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden rounded border border-neutral-200 bg-white">
+          <div className="grid grid-cols-3 gap-2 border-b border-neutral-200 p-3">
+            <MiniStat label="Status" value={run.status} />
+            <MiniStat label="Report" value={reportStatus?.status ?? "pending"} />
+            <MiniStat label="Defects" value={visibleDefects.length} />
+          </div>
+          {stream.error ? (
+            <div className="border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700" role="alert">
+              {stream.error}
+            </div>
+          ) : latestDecision ? (
+            <div className="border-b border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-700">
+              <span className="font-semibold">Latest:</span> #{latestDecision.sequenceNumber} {latestDecision.tool ?? "pending"} {latestDecision.stopReason ? `· ${latestDecision.stopReason}` : ""}
+            </div>
+          ) : null}
+          <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)]">
+            <div className="flex border-b border-neutral-200 bg-white">
+              <TabButton active={tab === "reasoning"} onClick={() => setTab("reasoning")}>Reasoning</TabButton>
+              <TabButton active={tab === "mcp"} onClick={() => setTab("mcp")}>MCP</TabButton>
+              <TabButton active={tab === "memory"} onClick={() => setTab("memory")}>Memory</TabButton>
+              <TabButton active={tab === "defects"} onClick={() => setTab("defects")}>Defects</TabButton>
+            </div>
+            <div className="min-h-0">
+            {tab === "reasoning" ? (
+              <ReasoningLog decisions={stream.decisions} live />
+            ) : tab === "mcp" ? (
+              <McpInspector decisions={stream.decisions} />
+            ) : tab === "defects" ? (
+              <DefectPanel defects={visibleDefects} />
+            ) : (
+              <RunHistoryPanel history={stream.runHistory} />
+            )}
+            </div>
+          </div>
+        </aside>
+      </main>
       <StatBar state={{ ...stream.state, secrets: stream.state?.secrets }} />
     </div>
   );
+}
+
+function ConnectionBadge({ connected, phase }: { connected: boolean; phase: string }) {
+  return (
+    <span className={`rounded border px-2 py-0.5 text-xs font-semibold ${connected ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700"}`}>
+      {connected ? "connected" : phase}
+    </span>
+  );
+}
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`min-h-10 flex-1 border-b-2 px-2 text-center text-xs font-semibold ${
+        active ? "border-neutral-950 text-neutral-950" : "border-transparent text-neutral-500 hover:text-neutral-700"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="min-w-0 rounded border border-neutral-200 bg-white px-2 py-1.5">
+      <div className="text-[10px] font-medium uppercase text-neutral-500">{label}</div>
+      <div className="truncate text-sm font-semibold text-neutral-950">{value}</div>
+    </div>
+  );
+}
+
+function McpInspector({ decisions }: { decisions: LiveDecision[] }) {
+  const visible = decisions.filter((decision) => decision.tool || decision.mcpOutput || decision.params).slice(-25).reverse();
+  return (
+    <div className="h-full overflow-y-auto bg-white p-3">
+      {visible.length === 0 ? (
+        <div className="grid h-32 place-items-center text-xs text-neutral-400">Waiting for MCP calls</div>
+      ) : (
+        <div className="space-y-2">
+          {visible.map((decision) => (
+            <article key={decision.sequenceNumber} className="min-w-0 overflow-hidden rounded border border-neutral-200 bg-neutral-50 p-3">
+              <div className="mb-2 flex min-w-0 items-center justify-between gap-2 text-xs">
+                <span className="min-w-0 truncate font-semibold text-neutral-950">#{decision.sequenceNumber} {decision.tool ?? "pending"}</span>
+                <span className="shrink-0 text-neutral-500">{decision.stopReason ?? "in flight"}</span>
+              </div>
+              <JsonBlock label="Input" value={decision.params} />
+              <JsonBlock label="Output" value={decision.mcpOutput} />
+            </article>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function JsonBlock({ label, value }: { label: string; value?: Record<string, unknown> }) {
+  if (!value || Object.keys(value).length === 0) return null;
+  return (
+    <div className="mt-2 min-w-0">
+      <div className="mb-1 text-[10px] font-semibold uppercase text-neutral-500">{label}</div>
+      <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-neutral-950 p-2 text-[10px] leading-4 text-neutral-100 [overflow-wrap:anywhere]">
+        {JSON.stringify(value, null, 2)}
+      </pre>
+    </div>
+  );
+}
+
+function DefectPanel({ defects }: { defects: Defect[] }) {
+  return (
+    <div className="h-full overflow-y-auto bg-white p-3">
+      {defects.length === 0 ? (
+        <div className="grid h-32 place-items-center text-xs text-neutral-400">No defects reported yet</div>
+      ) : (
+        <div className="space-y-2">
+          {defects.map((defect, index) => (
+            <article key={defect.fingerprint ?? defect.id ?? index} className="min-w-0 overflow-hidden rounded border border-amber-200 bg-amber-50 p-3">
+              <div className="flex min-w-0 items-start justify-between gap-3">
+                <span className="min-w-0 break-words font-semibold text-amber-950 [overflow-wrap:anywhere]">{defect.title}</span>
+                <span className="shrink-0 text-xs font-semibold text-amber-800">S{defect.severity}</span>
+              </div>
+              {defect.description ? <p className="mt-1 break-words text-sm text-amber-900 [overflow-wrap:anywhere]">{defect.description}</p> : null}
+              <p className="mt-1 break-words text-xs text-amber-700 [overflow-wrap:anywhere]">{defect.defect_type}{defect.detected_at_tick ? ` · tick ${defect.detected_at_tick}` : ""}</p>
+            </article>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function isCosmeticTextureDefect(defect: Defect) {
+  const type = (defect.defect_type ?? "").toLowerCase();
+  const text = `${type} ${defect.title ?? ""} ${defect.description ?? ""}`.toLowerCase();
+  if (text.includes("hom") || text.includes("hall of mirrors") || text.includes("missing texture") || text.includes("medusa")) {
+    return false;
+  }
+  if (type === "visual_texture_misalignment") {
+    return true;
+  }
+  const issue = ["alignment", "misalign", "offset", "tiling", "discontinuity", "repeat", "cut-off", "cut off", "seam"].some((term) => text.includes(term));
+  const surface = ["texture", "floor", "wall", "pillar"].some((term) => text.includes(term));
+  return issue && surface;
+}
+
+function liveTrail(history: RunHistory | null, snapshotTrail: PositionSample[]): PositionSample[] {
+  if (history?.position_trail?.length) {
+    return history.position_trail.map((sample, index) => ({
+      id: index,
+      run_id: "",
+      tick_number: sample.tick,
+      x: sample.x,
+      y: sample.y,
+      health: 0,
+    }));
+  }
+  return snapshotTrail;
 }
 
 function RunDetailContent({ runId }: { runId: string }) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { LiveDecision } from "@/hooks/useRunStream";
 
 function GuardBadge({ status }: { status?: "kept" | "modified" | "blocked" }) {
@@ -21,17 +21,17 @@ function DecisionCard({ decision, defaultExpanded = false }: { decision: LiveDec
   const [expanded, setExpanded] = useState(defaultExpanded);
 
   return (
-    <article className="rounded border border-neutral-200 bg-neutral-50 p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
+    <article className="min-w-0 overflow-hidden rounded border border-neutral-200 bg-neutral-50 p-3">
+      <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           <span className="text-xs font-semibold text-neutral-950">#{decision.sequenceNumber}</span>
           <GuardBadge status={decision.guardStatus} />
         </div>
-        <span className="rounded border border-neutral-200 bg-white px-2 py-0.5 text-[11px] text-neutral-700">
+        <span className="shrink-0 rounded border border-neutral-200 bg-white px-2 py-0.5 text-[11px] text-neutral-700">
           {decision.tool ?? "pending"} {decision.tick !== undefined ? `@ ${decision.tick}` : ""}
         </span>
       </div>
-      <p className="text-sm leading-5 text-neutral-800">{decision.reasoning ?? "..."}</p>
+      <p className="break-words text-sm leading-5 text-neutral-800 [overflow-wrap:anywhere]">{decision.reasoning ?? "..."}</p>
 
       <button
         onClick={() => setExpanded(!expanded)}
@@ -81,7 +81,7 @@ function DecisionCard({ decision, defaultExpanded = false }: { decision: LiveDec
           {decision.params && Object.keys(decision.params).length > 0 && (
             <div>
               <span className="mb-0.5 block font-medium">MCP input</span>
-              <pre className="overflow-x-auto rounded bg-neutral-100 p-2 text-[10px] leading-4">
+              <pre className="overflow-auto whitespace-pre-wrap break-words rounded bg-neutral-100 p-2 text-[10px] leading-4 [overflow-wrap:anywhere]">
                 {JSON.stringify(decision.params, null, 2)}
               </pre>
             </div>
@@ -89,7 +89,7 @@ function DecisionCard({ decision, defaultExpanded = false }: { decision: LiveDec
           {decision.mcpOutput && Object.keys(decision.mcpOutput).length > 0 && (
             <div>
               <span className="mb-0.5 block font-medium">MCP output</span>
-              <pre className="max-h-64 overflow-auto rounded bg-neutral-100 p-2 text-[10px] leading-4">
+              <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-neutral-100 p-2 text-[10px] leading-4 [overflow-wrap:anywhere]">
                 {JSON.stringify(decision.mcpOutput, null, 2)}
               </pre>
             </div>
@@ -97,7 +97,7 @@ function DecisionCard({ decision, defaultExpanded = false }: { decision: LiveDec
           {decision.llmInput && Object.keys(decision.llmInput).length > 0 && (
             <div>
               <span className="mb-0.5 block font-medium">LLM input</span>
-              <pre className="overflow-x-auto rounded bg-neutral-100 p-2 text-[10px] leading-4">
+              <pre className="overflow-auto whitespace-pre-wrap break-words rounded bg-neutral-100 p-2 text-[10px] leading-4 [overflow-wrap:anywhere]">
                 {JSON.stringify(decision.llmInput, null, 2)}
               </pre>
             </div>
@@ -105,7 +105,7 @@ function DecisionCard({ decision, defaultExpanded = false }: { decision: LiveDec
           {decision.llmOutput && Object.keys(decision.llmOutput).length > 0 && (
             <div>
               <span className="mb-0.5 block font-medium">Raw LLM output</span>
-              <pre className="overflow-x-auto rounded bg-neutral-100 p-2 text-[10px] leading-4">
+              <pre className="overflow-auto whitespace-pre-wrap break-words rounded bg-neutral-100 p-2 text-[10px] leading-4 [overflow-wrap:anywhere]">
                 {JSON.stringify(decision.llmOutput, null, 2)}
               </pre>
             </div>
@@ -117,24 +117,21 @@ function DecisionCard({ decision, defaultExpanded = false }: { decision: LiveDec
 }
 
 export function ReasoningLog({ decisions, live = false }: { decisions: LiveDecision[]; live?: boolean }) {
-  const endRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (live) {
-      endRef.current?.scrollIntoView({ block: "end" });
-    }
-  }, [decisions.length, live]);
+  const visibleDecisions = live ? decisions.slice(-30) : decisions;
 
   return (
     <div className="h-full overflow-y-auto border-l border-neutral-200 bg-white">
       <div className="sticky top-0 z-10 flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-3">
         <h2 className="text-sm font-semibold text-neutral-950">Reasoning</h2>
-        <span className="text-xs text-neutral-500">{decisions.length}</span>
+        <span className="text-xs text-neutral-500">
+          {visibleDecisions.length}
+          {visibleDecisions.length < decisions.length ? `/${decisions.length}` : ""}
+        </span>
       </div>
       <div className="space-y-2 p-3">
-        {decisions.map((decision, index) => (
-          <DecisionCard key={decision.sequenceNumber} decision={decision} defaultExpanded={live && index === decisions.length - 1} />
+        {visibleDecisions.map((decision) => (
+          <DecisionCard key={decision.sequenceNumber} decision={decision} defaultExpanded={false} />
         ))}
-        <div ref={endRef} />
       </div>
     </div>
   );
