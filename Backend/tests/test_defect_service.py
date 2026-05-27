@@ -120,6 +120,77 @@ async def test_difficulty_spawn_mismatch_all_spawn_no_defect(service, mock_db):
     service.repo.create.assert_not_called()
 
 
+# ── _static_resource_balance ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_static_resource_balance_detects_low_ammo(service, mock_db):
+    run = MagicMock(spec=TestRun)
+    run.id = uuid4()
+    analysis = MagicMock(spec=StaticAnalysisResult)
+    analysis.ammo_ratio = 0.0833
+    analysis.health_ratio = 1.0
+    analysis.total_monster_hp = 1200
+    analysis.total_health_pickup_pts = 200
+    await service._static_resource_balance(run, analysis)
+    assert service.repo.create.await_count == 1
+    args = service.repo.create.call_args[0][0]
+    assert args.defect_type == "static_ammo_insufficiency"
+
+
+@pytest.mark.asyncio
+async def test_static_resource_balance_detects_low_health(service, mock_db):
+    run = MagicMock(spec=TestRun)
+    run.id = uuid4()
+    analysis = MagicMock(spec=StaticAnalysisResult)
+    analysis.ammo_ratio = 1.0
+    analysis.health_ratio = 0.0
+    analysis.total_monster_hp = 3200
+    analysis.total_health_pickup_pts = 0
+    await service._static_resource_balance(run, analysis)
+    assert service.repo.create.await_count == 1
+    args = service.repo.create.call_args[0][0]
+    assert args.defect_type == "static_health_insufficiency"
+
+
+@pytest.mark.asyncio
+async def test_static_resource_balance_detects_both_low(service, mock_db):
+    run = MagicMock(spec=TestRun)
+    run.id = uuid4()
+    analysis = MagicMock(spec=StaticAnalysisResult)
+    analysis.ammo_ratio = 0.08
+    analysis.health_ratio = 0.0
+    analysis.total_monster_hp = 1200
+    analysis.total_health_pickup_pts = 0
+    await service._static_resource_balance(run, analysis)
+    assert service.repo.create.await_count == 2
+    args1 = service.repo.create.call_args_list[0][0][0]
+    args2 = service.repo.create.call_args_list[1][0][0]
+    assert args1.defect_type == "static_ammo_insufficiency"
+    assert args2.defect_type == "static_health_insufficiency"
+
+
+@pytest.mark.asyncio
+async def test_static_resource_balance_skips_when_adequate(service, mock_db):
+    run = MagicMock(spec=TestRun)
+    run.id = uuid4()
+    analysis = MagicMock(spec=StaticAnalysisResult)
+    analysis.ammo_ratio = 0.8
+    analysis.health_ratio = 0.5
+    analysis.total_monster_hp = 1000
+    analysis.total_health_pickup_pts = 500
+    await service._static_resource_balance(run, analysis)
+    service.repo.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_static_resource_balance_skips_when_no_analysis(service, mock_db):
+    run = MagicMock(spec=TestRun)
+    run.id = uuid4()
+    await service._static_resource_balance(run, None)
+    service.repo.create.assert_not_called()
+
+
 # ── _repeated_death_location ──────────────────────────────
 
 

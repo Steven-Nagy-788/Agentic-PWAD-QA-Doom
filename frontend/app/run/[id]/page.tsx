@@ -244,9 +244,9 @@ function RunDetailContent({ runId }: { runId: string }) {
               PDF Report
             </a>
           ) : (
-            <button disabled className="mt-3 inline-flex h-10 items-center rounded bg-neutral-200 px-4 text-sm font-semibold text-neutral-500">
-              PDF Report
-            </button>
+            <a className="mt-3 inline-flex h-10 items-center rounded bg-neutral-700 px-4 text-sm font-semibold text-white" href={`${API_BASE}/runs/${runId}/report/pdf`}>
+              Generate PDF
+            </a>
           )}
         </div>
       </section>

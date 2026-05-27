@@ -506,7 +506,10 @@ def format_cross_run_memory(memory: dict[str, Any]) -> str:
     same_count = int(memory.get("same_outcome_previous_count") or 0)
     outcome = last_run.get("outcome")
     if outcome and same_count:
-        parts.append(f"{same_count} previous run(s) had the same final outcome: {outcome}.")
+        parts.append(
+            f"{same_count} previous run(s) had the same final outcome: {outcome}. "
+            "Try a different approach this run — the prior pattern may not generalize."
+        )
     patterns = memory.get("defect_patterns") if isinstance(memory.get("defect_patterns"), list) else []
     if patterns:
         pattern_text = "; ".join(
@@ -620,6 +623,7 @@ def _is_persistable_hypothesis(text: str) -> bool:
         "already returned",
         "red-textured",
         "red textured",
+        "suspected false positive",
     )
     if any(marker in lower for marker in speculative_markers):
         return False

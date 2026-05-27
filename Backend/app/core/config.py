@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     recording_fps: float = 30.0
     recording_telemetry_stride: int = 1
     default_agent_behavior: str = "thorough"
+    run_worker_mode: bool = False
     cors_origins: list[str] | str = "http://localhost:3000"
 
     @field_validator("debug", mode="before")

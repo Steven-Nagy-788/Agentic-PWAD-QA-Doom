@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Callable
 from uuid import UUID
 
+import cv2
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Defect, GameEvent, NotableEventScreenshot, StaticAnalysisResult, TestRun
 from app.repositories.defect_repository import DefectRepository
 from app.services.analysis_service import selected_skill_spawn_summary
+
+if TYPE_CHECKING:
+    from app.services.gemini_service import GeminiService
 
 
 _RESOURCE_STOP_REASONS = {
@@ -23,16 +28,19 @@ _RESOURCE_STOP_REASONS = {
 
 
 class DefectService:
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(self, db: AsyncSession, gemini_service: GeminiService | None = None) -> None:
         self.db = db
         self.repo = DefectRepository(db)
+        self.gemini = gemini_service
 
     async def detect_for_run(self, run: TestRun) -> None:
         await self._pwad_crash(run)
         analysis = await self.db.get(StaticAnalysisResult, run.static_analysis_id) if run.static_analysis_id else None
         await self._difficulty_spawn_mismatch(run, analysis)
+        await self._static_resource_balance(run, analysis)
         result = await self.db.execute(select(GameEvent).where(GameEvent.run_id == run.id).order_by(GameEvent.tick_number))
         events = list(result.scalars().all())
+        await self._vision_defects(run.id)
         if not events:
             return
         await self._repeated_deaths(run.id, events)
@@ -100,6 +108,98 @@ class DefectService:
                 ),
             )
         )
+
+    async def _static_resource_balance(self, run: TestRun, analysis: StaticAnalysisResult | None) -> None:
+        if analysis is None:
+            return
+        ammo_val = float(analysis.ammo_ratio) if analysis.ammo_ratio is not None else 1.0
+        health_val = float(analysis.health_ratio) if analysis.health_ratio is not None else 1.0
+        if ammo_val >= 0.5 and health_val >= 0.2:
+            return
+        if ammo_val < 0.5:
+            await self.repo.create(
+                Defect(
+                    run_id=run.id,
+                    severity=1,
+                    priority=1,
+                    defect_type="static_ammo_insufficiency",
+                    fingerprint="static_ammo_insufficiency",
+                    title="Static ammo ratio critically low",
+                    description=(
+                        f"Static analysis ammo_ratio is {analysis.ammo_ratio:.4f} (threshold < 0.5). "
+                        f"There are {analysis.total_monster_hp or 0} total monster HP but only enough "
+                        "ammo-scoring pickups to deal a fraction of the required damage. "
+                        "The map may be unwinnable through direct combat at this difficulty."
+                    ),
+                    detected_at_tick=0,
+                    recommendation=(
+                        "Add more ammo pickups, reduce monster count, or replace high-HP monsters "
+                        "with alternatives. Consider providing a chainsaw or berserk pack to offset "
+                        "ammo deficit through melee."
+                    ),
+                )
+            )
+        if health_val < 0.2:
+            await self.repo.create(
+                Defect(
+                    run_id=run.id,
+                    severity=2,
+                    priority=2,
+                    defect_type="static_health_insufficiency",
+                    fingerprint="static_health_insufficiency",
+                    title="Static health ratio critically low",
+                    description=(
+                        f"Static analysis health_ratio is {analysis.health_ratio:.4f} (threshold < 0.2). "
+                        f"There are {analysis.total_monster_hp or 0} total monster HP but only "
+                        f"{analysis.total_health_pickup_pts or 0} HP worth of health pickups. "
+                        "Sustained combat will leave the player with no recovery options."
+                    ),
+                    detected_at_tick=0,
+                    recommendation=(
+                        "Add health pickups (stimpacks, medikits, or bonuses) to give the player "
+                        "a reasonable health pool for the monster count."
+                    ),
+                )
+            )
+
+    async def _vision_defects(self, run_id: UUID) -> None:
+        if self.gemini is None:
+            return
+        result = await self.db.execute(
+            select(NotableEventScreenshot).where(NotableEventScreenshot.run_id == run_id)
+        )
+        screenshots: list[NotableEventScreenshot] = list(result.scalars().all())
+        if not screenshots:
+            return
+        batch: list[tuple[str, bytes]] = []
+        for s in screenshots:
+            path = Path(s.screenshot_path)
+            if path.exists():
+                frame = cv2.imread(str(path))
+                if frame is not None:
+                    _, buf = cv2.imencode(".png", frame)
+                    batch.append((s.screenshot_path, buf.tobytes()))
+        if not batch:
+            return
+        visual_defects = await self.gemini.detect_visual_defects(batch)
+        path_to_screenshot_id: dict[str, UUID] = {s.screenshot_path: s.id for s in screenshots}
+        for vd in visual_defects:
+            scr_path = vd.get("screenshot_path", "")
+            screenshot_id = path_to_screenshot_id.get(scr_path)
+            await self.repo.create(
+                Defect(
+                    run_id=run_id,
+                    severity=int(vd.get("severity", 2)),
+                    priority=2,
+                    defect_type=str(vd.get("defect_type", "visual_unknown")),
+                    fingerprint=f"{vd.get('defect_type', 'visual_unknown')}:{scr_path}",
+                    title=str(vd.get("title", "Visual defect detected")),
+                    description=str(vd.get("description", "")),
+                    detected_at_tick=0,
+                    screenshot_id=screenshot_id,
+                    recommendation=str(vd.get("recommendation", "Review the screenshot for visual issues.")),
+                )
+            )
 
     async def _repeated_deaths(self, run_id: UUID, events: list[GameEvent]) -> None:
         buckets: dict[tuple[int, int], list[GameEvent]] = defaultdict(list)

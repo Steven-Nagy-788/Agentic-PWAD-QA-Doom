@@ -188,6 +188,11 @@ def _initial_lockstep_state() -> LockstepState:
         "new_cells_last_5_decisions": 0,
         "_new_cells_current": 0,
         "_new_cells_decision_counts": [],
+        "hypothesis_repetition_counts": {},
+        "counter_hypothesis_added": False,
+        "use_attempt_count": 0,
+        "total_decision_count": 0,
+        "priority_pickup_forced_count": 0,
     }
 
 
@@ -218,7 +223,32 @@ def _track_explored_sectors(
     lockstep_state["visited_sector_ids"] = visited
 
 
-def _merge_hypotheses(lockstep_state: LockstepState, decision: dict[str, Any]) -> None:
+HYPOTHESIS_REPETITION_LIMIT = 3
+
+_COUNTER_HYPOTHESIS_TEXT = (
+    "Suspected false positive: agent repeated the same category of issue 3+ times without new evidence. "
+    "Continue exploring wider area instead of fixating on previous hypothesis."
+)
+
+
+def _hypothesis_category_key(text: str) -> str:
+    lower = text.lower()
+    if any(kw in lower for kw in ("softlock", "progression", "unreachable", "stuck")):
+        return "PROGRESSION"
+    if any(kw in lower for kw in ("blocked", "collision", "gap", "sealed", "non-interactive")):
+        return "GEOMETRY"
+    if any(kw in lower for kw in ("ammo", "starvation", "health", "resource", "weapon")):
+        return "RESOURCE_BALANCE"
+    if any(kw in lower for kw in ("encounter", "combat", "monster", "hitscanner")):
+        return "ENCOUNTER_DESIGN"
+    return "OTHER"
+
+
+def _merge_hypotheses(
+    lockstep_state: LockstepState,
+    decision: dict[str, Any],
+    state: dict[str, Any] | None = None,
+) -> None:
     raw = decision.get("hypotheses")
     candidates: list[str] = []
     if isinstance(raw, str):
@@ -232,15 +262,45 @@ def _merge_hypotheses(lockstep_state: LockstepState, decision: dict[str, Any]) -
         candidates.append(issue["description"])
     if not candidates:
         return
+
+    visited_count = len(lockstep_state.get("visited_cells") or {})
+    kills = 0
+    if isinstance(state, dict):
+        variables = state.get("game_variables") if isinstance(state.get("game_variables"), dict) else state
+        kills = int(variables.get("KILLS") or 0)
+
+    repetition_counts = dict(lockstep_state.get("hypothesis_repetition_counts") or {})
     existing = [str(item) for item in lockstep_state.get("hypotheses") or [] if item]
     seen = {item.lower() for item in existing}
+    counter_added = bool(lockstep_state.get("counter_hypothesis_added"))
+
     for candidate in candidates:
         text = " ".join(candidate.split())[:180]
-        if not text or text.lower() in seen:
+        if not text:
             continue
+
+        category = _hypothesis_category_key(text)
+
+        if category == "PROGRESSION" and kills < 2 and visited_count < 5:
+            continue
+
+        repetition_counts[category] = repetition_counts.get(category, 0) + 1
+
+        if text.lower() in seen:
+            continue
+
+        if repetition_counts[category] >= HYPOTHESIS_REPETITION_LIMIT:
+            if not counter_added:
+                existing.append(_COUNTER_HYPOTHESIS_TEXT)
+                counter_added = True
+            continue
+
         existing.append(text)
         seen.add(text.lower())
+
     lockstep_state["hypotheses"] = existing[-12:]
+    lockstep_state["hypothesis_repetition_counts"] = repetition_counts
+    lockstep_state["counter_hypothesis_added"] = counter_added
 
 
 def _sector_ids_from_state(state: dict[str, Any]) -> list[int]:

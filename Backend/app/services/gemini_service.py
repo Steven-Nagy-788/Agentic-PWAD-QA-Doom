@@ -44,6 +44,98 @@ class GeminiService:
             else rate_limit_calls_per_minute
         )
 
+    async def detect_visual_defects(
+        self,
+        screenshots: list[tuple[str, bytes]],
+    ) -> list[dict[str, object]]:
+        if not screenshots:
+            return []
+        results: list[dict[str, object]] = []
+        batch_size = 3
+        for i in range(0, len(screenshots), batch_size):
+            batch = screenshots[i : i + batch_size]
+            batch_results = await self._analyze_screenshot_batch(batch)
+            results.extend(batch_results)
+        return results
+
+    async def _analyze_screenshot_batch(
+        self,
+        batch: list[tuple[str, bytes]],
+    ) -> list[dict[str, object]]:
+        try:
+            from google import genai
+            from google.genai import types
+        except ImportError as exc:
+            raise RuntimeError("google-genai is not installed") from exc
+
+        vision_prompt = (
+            "You are a Doom map QA visual inspector. Analyze each screenshot and report any "
+            "visible defects. Look for:\n"
+          - "HOM (Hall of Mirrors) effects — missing textures causing visual glitches\n"
+          - "Medusa effects — distorted/stretched textures\n"
+          - "Tutti-frutti effects — colored pixel rows on walls\n"
+          - "Misaligned textures — offsets on doors/walls that look wrong\n"
+          - "Visible stuck monsters — monsters clipping into walls or each other\n"
+          - "Zero-height or invisible sectors causing floating objects\n"
+          - "HUD readout issues — negative health/armor, wrong weapon shown\n"
+          - "Overlapping or z-fighting geometry\n"
+          - "Projected texture seams or skybox issues\n\n"
+            "For each screenshot that contains a defect, return one JSON object:\n"
+            "{\n"
+            '  "screenshot_index": <0-based index in this batch>,\n'
+            '  "defect_type": "visual_texture_misalignment | visual_hom | visual_stuck_monster | visual_hud_anomaly | visual_geometry_glitch",\n'
+            '  "title": "<concise title>",\n'
+            '  "description": "<specific description of what is visible>",\n'
+            '  "severity": <1|2|3>,\n'
+            '  "recommendation": "<what to fix>"\n'
+            "}\n"
+            "Return a JSON array of defects. If no defects visible, return [].\n"
+            "Do not report normal gameplay elements (blood, gibs, weapon sprites, normal HUD)."
+        )
+
+        parts = [types.Part.from_text(text=vision_prompt)]
+        for _, png_bytes in batch:
+            parts.append(types.Part.from_bytes(data=png_bytes, mime_type="image/png"))
+
+        await _throttle_local_rate(self.rate_limit_calls_per_minute)
+        async with _gemini_sem:
+            client = genai.Client(api_key=self.settings.gemini_api_key)
+            async_client = getattr(client, "aio", None)
+            if async_client is not None and hasattr(async_client, "models"):
+                response = await async_client.models.generate_content(
+                    model=self.llm_model,
+                    contents=types.Content(parts=parts, role="user"),
+                )
+            else:
+                response = await asyncio.to_thread(
+                    lambda: client.models.generate_content(
+                        model=self.llm_model,
+                        contents=types.Content(parts=parts, role="user"),
+                    )
+                )
+        _record_api_call()
+        text = response.text or "[]"
+        parsed = self._parse_vision_response(text)
+        for item in parsed:
+            idx = item.get("screenshot_index", 0)
+            if 0 <= idx < len(batch):
+                item["screenshot_path"] = batch[idx][0]
+        return parsed
+
+    def _parse_vision_response(self, text: str) -> list[dict[str, object]]:
+        try:
+            data = self._parse_json_response(text)
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                inner = data.get("defects") or data.get("results")
+                if isinstance(inner, list):
+                    return inner
+                return [data]
+        except ValueError:
+            pass
+        return []
+
     async def probe_model(self) -> dict[str, str]:
         if not self.settings.gemini_api_key:
             raise RuntimeError("GEMINI_API_KEY is not configured")

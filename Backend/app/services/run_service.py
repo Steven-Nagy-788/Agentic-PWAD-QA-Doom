@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -47,6 +48,8 @@ from app.services.run_utils import (
     _json_safe,
 )
 from app.services.websocket_service import websocket_service
+
+logger = logging.getLogger(__name__)
 
 
 class RunService:
@@ -109,6 +112,7 @@ class RunService:
             data.behavior_profile,
             str(runtime_value("default_agent_behavior", self.settings.default_agent_behavior)),
         )
+        queue_mode = runtime_value("run_worker_mode", self.settings.run_worker_mode)
         run = await self.repo.create(
             TestRun(
                 wad_file_id=wad.id,
@@ -119,11 +123,14 @@ class RunService:
                 llm_model=str(runtime_value("llm_model", self.settings.llm_model)),
                 max_ticks=max_ticks,
                 behavior_profile=behavior_profile,
-                status="pending",
+                status="queued" if queue_mode else "pending",
             )
         )
         await self.db.commit()
-        RUN_TASKS[run.id] = asyncio.create_task(agent_run_task(run.id))
+        if queue_mode:
+            logger.info("Run %s queued for worker (run_worker_mode=True)", run.id)
+        else:
+            RUN_TASKS[run.id] = asyncio.create_task(agent_run_task(run.id))
         return run
 
     async def cancel(self, run_id: UUID) -> TestRun:

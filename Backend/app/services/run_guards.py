@@ -29,6 +29,8 @@ from app.services.run_utils import (
     _normalize_mcp_params,
 )
 
+MAX_USE_ATTEMPTS_BEFORE_CLEAR = 8
+
 _RESOURCE_STOP_REASONS = {
     "out_of_ammo",
     "selected_weapon_empty",
@@ -45,6 +47,23 @@ def _apply_lockstep_recovery(
     navigation_info: dict[str, Any],
     lockstep_state: LockstepState,
 ) -> dict[str, Any]:
+    use_attempts = int(lockstep_state.get("use_attempt_count") or 0)
+    if use_attempts >= MAX_USE_ATTEMPTS_BEFORE_CLEAR:
+        lockstep_state["use_attempt_count"] = 0
+        lockstep_state["counter_hypothesis_added"] = False
+        lockstep_state["hypothesis_repetition_counts"] = {}
+        lockstep_state["hypotheses"] = []
+        return {
+            "reasoning_summary": (
+                f"Excessive USE attempts ({use_attempts}) on nearby walls produced no response — "
+                "this is likely a secret-hunting issue, not a geometry defect. "
+                "Forcing wide exploration from a fresh angle."
+            ),
+            "mcp_tool": "explore",
+            "mcp_params": {"max_tics": EXPLORE_MAX_TICS_UPPER, "stop_on_enemy": True, "stop_on_item": True},
+            "observed_issue": None,
+        }
+
     selected_tool = str(decision.get("mcp_tool") or "explore")
     low_value_explores = int(lockstep_state.get("low_value_explore_total") or 0)
     if selected_tool == "explore" and low_value_explores >= LOW_VALUE_EXPLORE_OVERRIDE_THRESHOLD:
@@ -61,6 +80,19 @@ def _apply_lockstep_recovery(
             )
         lockstep_state["qa_probe_count"] = 0
         lockstep_state["low_value_explore_total"] = 0
+
+    if bool(lockstep_state.get("counter_hypothesis_added")):
+        lockstep_state["counter_hypothesis_added"] = False
+        lockstep_state["hypothesis_repetition_counts"] = {}
+        return {
+            "reasoning_summary": (
+                "Agent repeated the same issue category 3+ times. Forcing wide exploration "
+                "from a fresh angle to break the fixation."
+            ),
+            "mcp_tool": "explore",
+            "mcp_params": {"max_tics": EXPLORE_MAX_TICS_UPPER, "stop_on_enemy": True, "stop_on_item": True},
+            "observed_issue": None,
+        }
 
     signature = _lockstep_progress_signature(state, navigation_info)
     if signature != lockstep_state.get("last_signature"):
@@ -188,6 +220,21 @@ def _guard_lockstep_decision(
             navigation_info or {},
             lockstep_state,
         )
+    total_dc = int(lockstep_state.get("total_decision_count") or 0)
+    priority_forced = int(lockstep_state.get("priority_pickup_forced_count") or 0)
+    if total_dc < 3 and priority_forced < 3 and tool != "move_to":
+        priority_pickup = _nearest_priority_pickup(state, lockstep_state)
+        if priority_pickup is not None:
+            lockstep_state["priority_pickup_forced_count"] = priority_forced + 1
+            return {
+                "reasoning_summary": (
+                    f"Early-game priority: collecting {priority_pickup.get('name', 'pickup')} "
+                    f"at distance {priority_pickup.get('distance', '?')} before engaging."
+                ),
+                "mcp_tool": "move_to",
+                "mcp_params": {"object_id": priority_pickup["id"], "max_tics": 80, "stop_on_enemy": True},
+                "observed_issue": None,
+            }
     if tool == "move_to" and object_id is not None:
         completed = lockstep_state.get("completed_object_ids") or {}
         failed = lockstep_state.get("failed_object_ids") or {}
@@ -301,7 +348,31 @@ def _nearest_available_pickup(
             continue
         if prefer_resources and obj_type not in {"ammo", "weapon", "item"}:
             continue
+        obj_distance = float(obj.get("distance") or 999999)
+        # Allow non-visible weapon/ammo pickups at close range (reachable by turning)
         if not obj.get("is_visible"):
+            if obj_type not in {"weapon", "ammo", "item"} or obj_distance >= 100.0:
+                continue
+        candidates.append(obj)
+    if not candidates:
+        return None
+    return min(candidates, key=lambda obj: float(obj.get("distance") or 999999))
+
+
+def _nearest_priority_pickup(state: dict[str, Any], lockstep_state: LockstepState) -> dict[str, Any] | None:
+    completed = {str(key) for key in (lockstep_state.get("completed_object_ids") or {})}
+    failed = lockstep_state.get("failed_object_ids") or {}
+    candidates = []
+    for obj in state.get("objects") or []:
+        if not isinstance(obj, dict) or obj.get("id") is None:
+            continue
+        if str(obj.get("id")) in completed or int(failed.get(str(obj.get("id")), 0) or 0) >= 2:
+            continue
+        obj_type = obj.get("type")
+        if obj_type not in {"weapon", "ammo"}:
+            continue
+        obj_distance = float(obj.get("distance") or 999999)
+        if obj_distance >= 100.0:
             continue
         candidates.append(obj)
     if not candidates:
@@ -375,6 +446,7 @@ def _update_lockstep_after_action(
     mcp_call: dict[str, Any],
     lockstep_state: LockstepState,
 ) -> None:
+    lockstep_state["total_decision_count"] = int(lockstep_state.get("total_decision_count") or 0) + 1
     summary = _mcp_action_summary(mcp_call)
     tool = str(mcp_call.get("tool") or decision.get("mcp_tool") or "")
     stop_reason = str(summary.get("stop_reason") or "")
@@ -444,6 +516,11 @@ def _update_lockstep_after_action(
         lockstep_state["blocked_decision_count"] = 0
     if stop_reason in {"item_found", "enemy_spotted"}:
         lockstep_state["progress_score"] = int(lockstep_state.get("progress_score") or 0) + 1
+
+    if tool == "take_action":
+        actions = params.get("actions") if isinstance(params.get("actions"), dict) else {}
+        if actions.get("USE") in (1, "1", True):
+            lockstep_state["use_attempt_count"] = int(lockstep_state.get("use_attempt_count") or 0) + 1
 
     if summary.get("stop_reason") == "target_not_visible":
         params = decision.get("mcp_params") if isinstance(decision.get("mcp_params"), dict) else {}

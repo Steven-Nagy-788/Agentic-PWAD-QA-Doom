@@ -195,10 +195,78 @@
   {% endif %}
   {% endif %}
 
-  {% if report.major_activities_summary or report.activity_variances %}
+  {% if report.executive_summary %}
+  <h2>1. Executive Summary</h2>
+  <p>{{ report.executive_summary }}</p>
+  {% elif report.major_activities_summary or report.activity_variances %}
   <h2>Activity Log Summary</h2>
   {% if report.major_activities_summary %}<p>{{ report.major_activities_summary }}</p>{% endif %}
   {% if report.activity_variances %}<p>{{ report.activity_variances }}</p>{% endif %}
+  {% endif %}
+
+  {% if report.critical_issues %}
+  <h2>2. Critical Issues</h2>
+  <p>{{ report.critical_issues }}</p>
+  {% endif %}
+
+  {% if report.geometry_technical_analysis %}
+  <h2>3. Geometry &amp; Technical Analysis</h2>
+  <p>{{ report.geometry_technical_analysis }}</p>
+  {% endif %}
+
+  {% if report.gameplay_flow_analysis %}
+  <h2>4. Gameplay Flow Analysis</h2>
+  <p>{{ report.gameplay_flow_analysis }}</p>
+  {% endif %}
+
+  {% if report.combat_design_review %}
+  <h2>5. Combat Design Review</h2>
+  <p>{{ report.combat_design_review }}</p>
+  {% endif %}
+
+  {% if report.itemization_audit %}
+  <h2>6. Itemization Audit</h2>
+  <p>{{ report.itemization_audit }}</p>
+  {% endif %}
+
+  {% if report.ai_enemy_behavior %}
+  <h2>7. AI &amp; Enemy Behavior</h2>
+  <p>{{ report.ai_enemy_behavior }}</p>
+  {% endif %}
+
+  {% if report.navigation_readability %}
+  <h2>8. Navigation &amp; Readability</h2>
+  <p>{{ report.navigation_readability }}</p>
+  {% endif %}
+
+  {% if report.secrets_optional_content %}
+  <h2>9. Secrets &amp; Optional Content</h2>
+  <p>{{ report.secrets_optional_content }}</p>
+  {% endif %}
+
+  {% if report.multiplayer_analysis %}
+  <h2>10. Multiplayer Analysis</h2>
+  <p>{{ report.multiplayer_analysis }}</p>
+  {% endif %}
+
+  {% if report.performance_engine_compliance %}
+  <h2>11. Performance &amp; Engine Compliance</h2>
+  <p>{{ report.performance_engine_compliance }}</p>
+  {% endif %}
+
+  {% if report.speedrunning_advanced_play %}
+  <h2>12. Speedrunning &amp; Advanced Play</h2>
+  <p>{{ report.speedrunning_advanced_play }}</p>
+  {% endif %}
+
+  {% if report.recommendations %}
+  <h2>13. Recommendations</h2>
+  <p>{{ report.recommendations }}</p>
+  {% endif %}
+
+  {% if report.final_verdict %}
+  <h2>14. Final Verdict</h2>
+  <p>{{ report.final_verdict }}</p>
   {% endif %}
 
   {% if report.test_item_limitations or report.good_quality_areas %}

@@ -293,7 +293,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         6,
                     )
                     raw_decision = dict(decision)
-                    _merge_hypotheses(lockstep_state, raw_decision)
+                    _merge_hypotheses(lockstep_state, raw_decision, state)
                     decision = _apply_lockstep_recovery(decision, state, navigation_info, lockstep_state)
                     decision = _guard_lockstep_decision(decision, state, lockstep_state, navigation_info)
                     guard_status = "kept"
@@ -533,7 +533,7 @@ async def agent_run_task(run_id: UUID) -> None:
                 },
             )
             if run.status in {"completed", "cancelled", "failed"}:
-                await DefectService(db).detect_for_run(run)
+                await DefectService(db, gemini_service=gemini).detect_for_run(run)
                 await db.commit()
                 for defect in await DefectRepository(db).list_by_run(run.id):
                     await websocket_service.broadcast(

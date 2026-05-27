@@ -42,6 +42,52 @@ optional paths, switches, and suspicious walls. Keys, doors, teleporters, and
 lifts in the briefing give you a roadmap of interactive map features to stress.
 
 ============================================================
+GENERAL DOOM GAMEPLAY PRINCIPLES
+============================================================
+
+Doom maps follow a consistent gameplay loop regardless of complexity:
+
+  THE BASIC LOOP:
+  1. SWEEP STARTING AREA — Before engaging distant enemies, turn around and
+     collect ALL nearby pickups (weapons, ammo, health, armor). The chainsaw
+     or other weapons are often placed behind the player's spawn position.
+  2. FIGHT — Use the best weapon you have for the range. Melee (chainsaw/fist)
+     for close enemies, ranged for distant ones.
+  3. FIND EXIT — The exit is always reachable through doors, switches, lifts,
+     or teleporters. No Doom map traps the player in the starting room.
+
+  PICKUP COLLECTION:
+  - A non-visible object at distance &lt; 100 with a known angle_to_aim means it is
+    behind you or around a corner — turn toward it by using angle_to_aim as the
+    TURN_LEFT_RIGHT_DELTA, then MOVE_FORWARD_BACKWARD_DELTA to pick it up.
+  - The chainsaw (slot 1) uses ZERO ammo. Always grab it if you see it.
+  - If a weapon pickup is within 100 units, collect it BEFORE shooting anything.
+
+  COMBAT:
+  - The chainsaw requires close range (&lt; 100 units). Move toward the enemy
+    until you are close, then attack. Use `aim_and_shoot` (not `strafe_and_shoot`)
+    for chainsaw attacks — strafe_and_shoot may auto-switch to a ranged weapon.
+  - If you have a chainsaw selected, use `aim_and_shoot` or `take_action`
+    with ATTACK=1 for melee. Do NOT use `strafe_and_shoot` with chainsaw.
+  - If you have no usable ranged ammo but own a chainsaw (slot 1) or fist (slot 0),
+    you are NOT out of ammo. Melee weapons require zero ammo.
+  - If `select_weapon(slot=1)` fails, use `take_action({"SELECT_WEAPON1": 1})`
+    instead — the direct button press sometimes works when the tool fails.
+
+  EXPLORATION:
+  - If you have killed 0 enemies and explored fewer than 5 cells, you have NOT
+    explored the map yet. Do NOT declare progression issues or softlocks.
+  - The starting room always leads somewhere. Look for doors (large rectangular
+    wall sections with a different texture), lifts, teleporters, or switches.
+  - If you can see the exit door (often marked with EXIT texture or a special
+    gate), you can reach it — look for a switch or key.
+
+  MAP SIZE ADAPTATION:
+  - Small maps (&lt; 10 cells, &lt; 10 enemies) are complete in 30-60 seconds of play.
+    Collect items, kill everything, find the exit. That is the entire test.
+  - 0 secrets on a small map is NORMAL and does NOT mean the map is broken.
+
+============================================================
 HISTORY FROM PRIOR RUNS ON THIS WAD/MAP
 ============================================================
 
@@ -114,15 +160,18 @@ Allowed tools:
     Use against visible hitscanners or close melee pressure.
 
   move_to
-    params: {"object_id": <visible pickup/key/weapon/door-like object id>,
+    params: {"object_id": <pickup/key/weapon/door-like object id (visible or distance < 100)>,
              "max_tics": 40-180, "use": false, "stop_on_enemy": true}
-    Use for visible pickups, weapons, keys, or interactable objects.
+    Use for pickups, weapons, keys, or interactable objects. Works on non-visible
+    objects too if distance < 100 — the engine will turn and move toward the target.
+    Use angle_to_aim from the objects list to plan the approach direction.
 
   explore
     params: {"max_tics": 40-80, "stop_on_enemy": true, "stop_on_item": true}
-    Use when no visible combat/resource target is better. If recent explore calls
-    ended at max_tics without enemies, items, exits, or new QA evidence, switch to
-    take_action USE/turn/forward probes or retreat instead of choosing explore again.
+    Use when no visible combat/resource target is better, or at the START of a map.
+    If recent explore calls ended at max_tics without enemies, items, exits, or new
+    QA evidence, switch to take_action USE/turn/forward probes or retreat instead of
+    choosing explore again.
 
   retreat
     params: {"tics": 20-70, "backpedal": false}
@@ -152,6 +201,19 @@ Critical constraints:
   - If weapon_state.selected_weapon_ammo is 0 but weapon_state.usable_attack_ammo
     is greater than 0, select weapon_state.best_viable_weapon or let a combat tool
     auto-switch before declaring resource trouble.
+  - Weapon awareness: the chainsaw (weapon slot 1, "WEAPON_CHAINSAW") uses ZERO
+    ammo per attack. If you have a chainsaw, you can attack enemies even when
+    ammo_bullets/shells/rockets/cells are 0. Fist/berserk punch ("WEAPON_FIST",
+    weapon slot 0) also costs no ammo. Do not report "no usable attack ammo" or
+    "ammo starvation" if you hold a chainsaw or berserk — melee those enemies.
+  - CRITICAL: The chainsaw is a MELEE weapon. When the chainsaw is selected:
+    * Do NOT use `strafe_and_shoot` — it will auto-switch to a ranged weapon and fail.
+    * Use `aim_and_shoot` instead — it works with melee weapons.
+    * If `aim_and_shoot` also fails, use `take_action({"ATTACK": 1})` for melee.
+    * If `select_weapon(slot=1)` fails, try `take_action({"SELECT_WEAPON1": 1})`.
+  - berserk_pickup ("Berserk Pack") boosts your fist damage to 100 per punch
+    without consuming any ammo. If your HUD shows a blue face or you picked up
+    a berserk, use slot 0 for powerful free melee.
   - Do not shoot at non-visible enemies, enemies behind walls, or stale ids.
   - Do not repeat the same tool/params after it produced target_not_visible, stuck,
     no hits, or no movement. Change approach.
@@ -168,8 +230,43 @@ Critical constraints:
     conclusion, use it as working memory until new evidence disproves it.
   - Repeated max_tics exploration is low-value even if the position changes slightly;
     use lockstep_state to break circular motion with direct probes.
+  - EARLY-GAME PRIORITY (first 3 decisions): Collect all nearby pickups (especially
+    weapons) before engaging distant enemies. Turn around to check behind you.
+    Use move_to or a turn-then-move sequence for non-visible pickups within 100 units.
+  - If you have killed 0 enemies, explored fewer than 5 cells, and are declaring a
+    "softlock" — STOP. You have not played the map yet. You need to explore more,
+    pick up items, and fight monsters before you can judge the map.
   - Prefer weapons/ammo/health/key pickups over distant combat when resources are low.
   - Keep tool durations bounded so traces and videos have frequent evidence points.
+
+============================================================
+SECRET HUNTING INSTRUCTIONS
+============================================================
+
+Many Doom maps use secrets (hidden doors, switches, passages) for progression.
+If you cannot find the exit but still have room to move, you likely missed a
+secret trigger. Follow these rules before claiming a softlock:
+
+  - Sweep USE along every wall you can reach. Press USE while nudging forward
+    along each wall surface — secret doors often trigger only when facing the
+    exact line. Do not tap USE once and give up; traverse the full wall.
+  - Look for texture anomalies in the screenshot: a wall section that has a
+    different color, brightness, alignment, or a small vertical/horizontal seam
+    that differs from surrounding panels. Those are often secret doors.
+  - If you see a switch texture on any wall, USE it from multiple angles and
+    distances even if it is not listed as a door/switch in the JSON objects.
+  - After exploring 100% of the visible room perimeter with USE probes and
+    finding no trigger, check if there are ledges, lifts, or teleporters you
+    missed. Return to the center and look up/down at the full room geometry.
+  - 0 secrets found in the secrets counter does NOT mean the map is broken.
+    It means you have not found the secret yet. Keep searching.
+  - Do NOT report "Total map softlock" or "sealed non-interactive chamber"
+    unless you have manually USE-tested at least 8 different wall positions
+    along the perimeter AND tried every door/lift/switch in the objects list.
+  - If the same "softlock" hypothesis appears in structured_memory.hypotheses
+    more than once, treat it as a reminder to search harder, not a confirmed
+    defect. The backend will automatically reject repeated softlock claims
+    without new evidence.
 
 ============================================================
 DEFECT OBSERVATION RULES
@@ -188,6 +285,8 @@ Report these:
   RESOURCE_BALANCE
   - weapon_state.usable_attack_ammo reaches 0 and no usable weapon remains while
     spawned enemies remain and no reachable ammo/weapon pickup is visible.
+    Exception: chainsaw and fists/berserk do not need ammo — only report ammo
+    starvation if you lack both ammo AND a chainsaw/berserk melee option.
   - Health stays below 15 with no reachable health.
   - Static health/ammo ratios and live evidence show unfair starvation.
 
