@@ -8,7 +8,6 @@ from typing import Any
 from uuid import UUID
 
 from app.core.config import get_settings
-from app.models import TestRun
 from app.services.collector_service import CollectorService
 from app.services.recording_service import RecordingService, jpeg_b64, png_bytes_to_frame
 from app.services.websocket_service import websocket_service
@@ -94,17 +93,18 @@ def _write_realtime_frame(
 
 
 async def _broadcast_state(
-    run: TestRun,
+    run_id: UUID,
     event: Any,
     decision: dict[str, Any],
     screenshot_b64: str | None = None,
+    run_status: str = "running",
 ) -> None:
     await websocket_service.broadcast(
-        run.id,
+        run_id,
         {
             "type": "state",
             "tick": event.tick_number,
-            "status": run.status,
+            "status": run_status,
             "health": event.health,
             "armor": event.armor,
             "kills": event.kill_count,

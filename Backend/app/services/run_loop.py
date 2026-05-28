@@ -600,6 +600,7 @@ async def agent_run_task(run_id: UUID) -> None:
             run_orm = await db.get(TestRun, run_id_val)
             if run_orm is not None:
                 await RunRepository(db).update(run_orm, status="cancelled")
+                await db.commit()
     except Exception as exc:
         exc_msg = str(exc)
         if isinstance(exc, McpStartupError):
@@ -662,9 +663,8 @@ async def agent_run_task(run_id: UUID) -> None:
                 RUN_TASKS.pop(run_id_val, None)
                 return
             run_repo = RunRepository(db)
-            run_status_str = run_orm.status
             run_started_at = run_orm.started_at
-            if run_status_str not in {"failed", "cancelled"}:
+            if run_orm.status not in {"failed", "cancelled"}:
                 final_fields["status"] = "completed"
             if run_started_at:
                 final_fields["duration_seconds"] = int((completed_at - run_started_at).total_seconds())
@@ -682,7 +682,7 @@ async def agent_run_task(run_id: UUID) -> None:
                     "agent_quality_flags": _json_safe(agent_quality_flags),
                 },
             )
-            if run_status_str in {"completed", "cancelled", "failed"}:
+            if final_fields.get("status") in {"completed", "cancelled", "failed"}:
                 await DefectService(db, gemini_service=gemini).detect_for_run(run_orm)
                 await db.commit()
                 for defect in await DefectRepository(db).list_by_run(run_id_val):
@@ -757,7 +757,7 @@ async def agent_run_task(run_id: UUID) -> None:
                             error_message=(refreshed_run.error_message or f"Report generation failed: {exc}"),
                         )
                         await db.commit()
-            await websocket_service.broadcast(run_id_val, {"type": "state", "status": run_status_str, "tick": max_ticks})
+            await websocket_service.broadcast(run_id_val, {"type": "state", "status": run_orm.status, "tick": max_ticks})
             RUN_TASKS.pop(run_id_val, None)
             await websocket_service.cleanup_run(run_id_val)
 
