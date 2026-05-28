@@ -285,6 +285,7 @@ class DefectService:
                 first = confirmed_stuck[0]
                 if run.outcome == "timeout":
                     run.outcome = "stuck"
+                    await self.db.flush()
                 await self.repo.create(
                     Defect(
                         run_id=run.id,
@@ -304,6 +305,7 @@ class DefectService:
             else:
                 first = stuck_events[0]
                 run.outcome = "inconclusive_agent_stall"
+                await self.db.flush()
                 await self.repo.create(
                     Defect(
                         run_id=run.id,
@@ -332,6 +334,7 @@ class DefectService:
             first = tail[0]
             if _has_agent_or_resource_limitation(tail):
                 run.outcome = "inconclusive_agent_stall"
+                await self.db.flush()
                 await self.repo.create(
                     Defect(
                         run_id=run.id,

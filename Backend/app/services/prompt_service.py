@@ -21,6 +21,7 @@ def render_agent_prompt(
     cross_run_memory: str | None = None,
     spatial_briefing: str | None = None,
     knowledge_document: str | None = None,
+    hypotheses_briefing: str | None = None,
 ) -> str:
     template = (BASE_DIR / "app" / "prompts" / "agent_system_prompt.md").read_text()
     skill_summary = selected_skill_spawn_summary(analysis, run.difficulty_level)
@@ -69,6 +70,7 @@ def render_agent_prompt(
         "cross_run_memory": cross_run_memory or "No prior runs exist for this WAD/map.",
         "spatial_briefing": spatial_briefing or "",
         "knowledge_document": knowledge_document or "",
+        "hypotheses_briefing": hypotheses_briefing or "",
     }
     for key, value in values.items():
         template = template.replace("{" + key + "}", _sanitize_prompt_value(value))

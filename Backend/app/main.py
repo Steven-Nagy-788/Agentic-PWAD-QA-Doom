@@ -16,6 +16,7 @@ import app.core.metrics
 from app.services.mcp_client_service import probe_mcp_sse_url
 from app.services.smoke_service import SmokeService
 from app.services.run_service import fail_orphaned_active_runs
+from app.services.run_constants import RUN_TASKS
 from app.models.test_run import TestRun
 from sqlalchemy import select, func, text
 
@@ -106,6 +107,11 @@ async def mcp_health_check() -> dict[str, object]:
 
 @app.get("/health/smoke", tags=["Health"])
 async def smoke_health_check():
+    if RUN_TASKS:
+        return JSONResponse(
+            content={"overall": "skip", "stages": [], "reason": "Active run in progress — smoke check would conflict."},
+            status_code=503,
+        )
     result = await SmokeService().run_smoke()
     status_code = 200 if result["overall"] == "pass" else 503
     return JSONResponse(content=result, status_code=status_code)

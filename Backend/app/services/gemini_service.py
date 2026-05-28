@@ -40,8 +40,15 @@ LOW_VALUE_TEXTURE_TERMS = (
 CRITICAL_TEXTURE_TERMS = ("hom", "hall of mirrors", "missing texture", "medusa", "z-fighting", "z fighting")
 
 logger = logging.getLogger(__name__)
-_gemini_sem = asyncio.Semaphore(max(1, get_settings().gemini_max_concurrency))
+_gemini_sem: asyncio.Semaphore | None = None
 _api_call_timestamps: list[float] = []
+
+
+def _get_gemini_sem() -> asyncio.Semaphore:
+    global _gemini_sem
+    if _gemini_sem is None:
+        _gemini_sem = asyncio.Semaphore(max(1, get_settings().gemini_max_concurrency))
+    return _gemini_sem
 
 
 def is_low_value_texture_defect(defect: Mapping[str, Any]) -> bool:
@@ -124,7 +131,7 @@ class GeminiService:
             parts.append(types.Part.from_bytes(data=png_bytes, mime_type="image/png"))
 
         await _throttle_local_rate(self.rate_limit_calls_per_minute)
-        async with _gemini_sem:
+        async with _get_gemini_sem():
             client = genai.Client(api_key=self.settings.gemini_api_key)
             async_client = getattr(client, "aio", None)
             if async_client is not None and hasattr(async_client, "models"):
@@ -222,7 +229,7 @@ class GeminiService:
                 types.Part.from_bytes(data=screenshot_png, mime_type="image/png"),
             ]
             await _throttle_local_rate(self.rate_limit_calls_per_minute)
-            async with _gemini_sem:
+            async with _get_gemini_sem():
                 if async_client is not None and hasattr(async_client, "models"):
                     response = await async_client.models.generate_content(
                         model=self.llm_model,
@@ -330,7 +337,7 @@ class GeminiService:
 
         text_part = f"{system_prompt}\n\nCURRENT STATE JSON:\n{json.dumps(llm_input, default=str)}"
 
-        async with _gemini_sem:
+        async with _get_gemini_sem():
             client = genai.Client(api_key=self.settings.gemini_api_key)
             async_client = getattr(client, "aio", None)
 

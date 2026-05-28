@@ -16,7 +16,7 @@ from app.services.run_guards import (
     _update_lockstep_after_action,
 )
 from app.services.run_utils import _normalize_mcp_params
-from app.services.run_service import (
+from app.services.run_service_director_experimental import (
     _apply_director_recovery,
     _director_should_stop_as_stuck,
     _normalize_director_objective_params,

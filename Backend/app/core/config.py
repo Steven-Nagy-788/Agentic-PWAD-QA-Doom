@@ -147,7 +147,6 @@ class Settings(BaseSettings):
             self.screenshot_storage_dir,
             self.analysis_storage_dir,
         ):
-            path.mkdir(parents=True, exist_ok=True)
             if not os.access(path, os.W_OK):
                 raise ValueError(f"Storage path is not writable: {path}")
         return self

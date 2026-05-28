@@ -8,7 +8,6 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
@@ -80,18 +79,18 @@ from app.services.websocket_service import websocket_service
 
 
 async def agent_run_task(run_id: UUID) -> None:
+    # Phase 1: load initial data in a short-lived session, then close it
     async with SessionLocal() as db:
-        run = await db.get(TestRun, run_id)
-        if run is None:
+        run_orm = await db.get(TestRun, run_id)
+        if run_orm is None:
             return
-        wad = await WadRepository(db).get_by_id(run.wad_file_id)
+        wad = await WadRepository(db).get_by_id(run_orm.wad_file_id)
         from app.models import StaticAnalysisResult
 
-        analysis = await db.get(StaticAnalysisResult, run.static_analysis_id) if run.static_analysis_id else None
-        run_repo = RunRepository(db)
+        analysis = await db.get(StaticAnalysisResult, run_orm.static_analysis_id) if run_orm.static_analysis_id else None
         if wad is None or analysis is None:
-            await run_repo.update(
-                run,
+            await RunRepository(db).update(
+                run_orm,
                 status="failed",
                 outcome="error",
                 error_message="Run is missing WAD or static analysis",
@@ -106,43 +105,50 @@ async def agent_run_task(run_id: UUID) -> None:
             return runtime_overrides.get(key, getattr(settings, key, fallback))
 
         cross_run_memory = await memory_svc.build_cross_run_memory(
-            run.wad_file_id,
-            run.map_name,
-            current_run_id=run.id,
+            run_orm.wad_file_id,
+            run_orm.map_name,
+            current_run_id=run_orm.id,
         )
         spatial_briefing = await memory_svc.build_spatial_memory_briefing(
-            run.wad_file_id,
-            run.map_name,
+            run_orm.wad_file_id,
+            run_orm.map_name,
         )
         knowledge_document = await memory_svc.build_knowledge_briefing(
-            run.wad_file_id,
-            run.map_name,
+            run_orm.wad_file_id,
+            run_orm.map_name,
         )
-        profile = get_behavior_profile(run)
-        lockstep_state: LockstepState = _initial_lockstep_state()
+        hypotheses_briefing = await memory_svc.build_hypotheses_briefing(
+            run_orm.wad_file_id,
+            run_orm.map_name,
+        )
+        profile = get_behavior_profile(run_orm)
         total_map_cells_estimate = _estimate_total_map_cells(analysis)
-        if total_map_cells_estimate is not None:
-            lockstep_state["total_map_cells_estimate"] = total_map_cells_estimate
         prompt = (
             render_agent_prompt(
-                wad, analysis, run,
+                wad, analysis, run_orm,
                 cross_run_memory=cross_run_memory["prompt"],
                 spatial_briefing=spatial_briefing,
                 knowledge_document=knowledge_document,
+                hypotheses_briefing=hypotheses_briefing,
             )
             + "\n\n"
             + profile.system_prompt_addendum
         )
-        collector = CollectorService(db)
+
+        # Extract primitive values before session closes
+        run_id_val = run_orm.id
+        wad_file_id = run_orm.wad_file_id
+        map_name_val = run_orm.map_name
+        max_ticks = run_orm.max_ticks
+        iwad_used = run_orm.iwad_used
+        difficulty_level = run_orm.difficulty_level
+        llm_model = run_orm.llm_model
+        wad_stored_path = wad.stored_path
         recording_fps = max(15.0, _bounded_float(runtime_value("recording_fps", settings.recording_fps), settings.recording_fps))
-        recorder = RecordingService(str(run.id), fps=recording_fps)
-        gemini = GeminiService(
-            llm_model=run.llm_model,
-            rate_limit_calls_per_minute=_bounded_int(
-                runtime_value("gemini_rate_limit_calls_per_minute", settings.gemini_rate_limit_calls_per_minute),
-                settings.gemini_rate_limit_calls_per_minute,
-                lower=0,
-            ),
+        gemini_rate_limit = _bounded_int(
+            runtime_value("gemini_rate_limit_calls_per_minute", settings.gemini_rate_limit_calls_per_minute),
+            settings.gemini_rate_limit_calls_per_minute,
+            lower=0,
         )
         llm_input_cost_per_million = _bounded_float(
             runtime_value("llm_input_cost_per_million", settings.llm_input_cost_per_million),
@@ -157,72 +163,98 @@ async def agent_run_task(run_id: UUID) -> None:
             settings.llm_throttle_seconds,
         )
         live_frame_fps = max(0.1, _bounded_float(runtime_value("live_frame_fps", settings.live_frame_fps), settings.live_frame_fps))
-        total_actions = 0
-        total_llm_calls = 0
-        last_frame_at = 0.0
-        outcome = "timeout"
-        latest_event = None
-        mcp_client: McpDoomClient | None = None
-        runtime_stage = "startup"
-        failure_fields: dict[str, Any] = {}
-        last_record_frame: Any = None
 
-        try:
-            async with McpDoomClient() as mcp:
-                mcp_client = mcp
-                await mcp.start_game(
-                    wad=run.iwad_used,
-                    scenario_wad=wad.stored_path,
-                    map_name=run.map_name,
-                    difficulty=run.difficulty_level,
-                    episode_timeout=run.max_ticks,
-                    async_player=False,
-                )
-                await run_repo.update(run, status="running", started_at=datetime.now(UTC))
-                await db.commit()
-                runtime_stage = "gameplay"
-                decision_repo = AgentDecisionRepository(db)
-                sequence_number = 0
+    # Phase 1 complete — session closed, all ORM objects detached
+    lockstep_state: LockstepState = _initial_lockstep_state()
+    if total_map_cells_estimate is not None:
+        lockstep_state["total_map_cells_estimate"] = total_map_cells_estimate
+    recorder = RecordingService(str(run_id_val), fps=recording_fps)
+    gemini = GeminiService(
+        llm_model=llm_model,
+        rate_limit_calls_per_minute=gemini_rate_limit,
+    )
+    total_actions = 0
+    total_llm_calls = 0
+    last_frame_at = 0.0
+    outcome = "timeout"
+    latest_event = None
+    mcp_client: McpDoomClient | None = None
+    runtime_stage = "startup"
+    failure_fields: dict[str, Any] = {}
+    last_record_frame: Any = None
 
-                while True:
-                    state, screenshot_png = await mcp.get_state()
-                    tick = _unique_lockstep_tick(state, lockstep_state)
-                    _track_visited_cell(state, lockstep_state)
-                    frame = png_bytes_to_frame(screenshot_png)
-                    if frame is not None:
-                        last_record_frame = frame
-                        recorder.write_frame(frame, game_tick=tick)
-                    threat_assessment = await _safe_context_tool(mcp, "get_threat_assessment")
-                    navigation_info = await _safe_context_tool(mcp, "get_navigation_info")
-                    _track_explored_sectors(state, navigation_info, lockstep_state)
-                    visited_count = len(lockstep_state.get("visited_cells") or {})
-                    ticks_remaining = max(0, run.max_ticks - tick)
-                    total_cells = lockstep_state.get("total_map_cells_estimate", 225) or 225
-                    coverage_percent = round(visited_count / max(total_cells, 1) * 100, 1)
-                    coverage_warning = None
-                    if coverage_percent < 20 and ticks_remaining < run.max_ticks * 0.5:
-                        coverage_warning = (
-                            f"WARNING: Coverage is {coverage_percent}% with {ticks_remaining} ticks remaining. "
-                            "Prioritize exploration over combat immediately."
-                        )
-                    llm_input = {
-                        "tick": tick,
-                        "ticks_remaining": ticks_remaining,
-                        **_compact_state_for_llm(state),
-                        "threat_assessment": threat_assessment,
-                        "navigation_info": navigation_info,
-                        "run_history": _build_run_history(lockstep_state),
-                        "cross_run_memory": cross_run_memory,
-                        "lockstep_state": _lockstep_state_snapshot(lockstep_state),
-                        "exploration_coverage": {
-                            "visited_cells_count": visited_count,
-                            "total_map_cells_estimate": total_cells,
-                            "coverage_percent": coverage_percent,
-                            "new_cells_last_5_decisions": lockstep_state.get("new_cells_last_5_decisions", 0),
-                            "unvisited_quadrants": _lockstep_state_snapshot(lockstep_state).get("unvisited_quadrants"),
-                            "coverage_warning": coverage_warning,
-                        },
-                    }
+    # Helpers that extract needed primitive values from `run_orm` before they go out of scope
+    def _run_status() -> str:
+        return "running"
+
+    try:
+        async with McpDoomClient() as mcp:
+            mcp_client = mcp
+            await mcp.start_game(
+                wad=iwad_used,
+                scenario_wad=wad_stored_path,
+                map_name=map_name_val,
+                difficulty=difficulty_level,
+                episode_timeout=max_ticks,
+                async_player=False,
+            )
+            # Set status to running in its own short session
+            async with SessionLocal() as db:
+                run_orm = await db.get(TestRun, run_id_val)
+                if run_orm is not None:
+                    await RunRepository(db).update(run_orm, status="running", started_at=datetime.now(UTC))
+                    await db.commit()
+            runtime_stage = "gameplay"
+            sequence_number = 0
+
+            while True:
+                state, screenshot_png = await mcp.get_state()
+                tick = _unique_lockstep_tick(state, lockstep_state)
+                _track_visited_cell(state, lockstep_state)
+                frame = png_bytes_to_frame(screenshot_png)
+                if frame is not None:
+                    last_record_frame = frame
+                    recorder.write_frame(frame, game_tick=tick)
+                threat_assessment = await _safe_context_tool(mcp, "get_threat_assessment")
+                navigation_info = await _safe_context_tool(mcp, "get_navigation_info")
+                _track_explored_sectors(state, navigation_info, lockstep_state)
+                visited_count = len(lockstep_state.get("visited_cells") or {})
+                ticks_remaining = max(0, max_ticks - tick)
+                total_cells = lockstep_state.get("total_map_cells_estimate", 225) or 225
+                coverage_percent = round(visited_count / max(total_cells, 1) * 100, 1)
+                coverage_warning = None
+                if coverage_percent < 20 and ticks_remaining < max_ticks * 0.5:
+                    coverage_warning = (
+                        f"WARNING: Coverage is {coverage_percent}% with {ticks_remaining} ticks remaining. "
+                        "Prioritize exploration over combat immediately."
+                    )
+                llm_input = {
+                    "tick": tick,
+                    "ticks_remaining": ticks_remaining,
+                    **_compact_state_for_llm(state),
+                    "threat_assessment": threat_assessment,
+                    "navigation_info": navigation_info,
+                    "run_history": _build_run_history(lockstep_state),
+                    "cross_run_memory": cross_run_memory,
+                    "lockstep_state": _lockstep_state_snapshot(lockstep_state),
+                    "exploration_coverage": {
+                        "visited_cells_count": visited_count,
+                        "total_map_cells_estimate": total_cells,
+                        "coverage_percent": coverage_percent,
+                        "new_cells_last_5_decisions": lockstep_state.get("new_cells_last_5_decisions", 0),
+                        "unvisited_quadrants": _lockstep_state_snapshot(lockstep_state).get("unvisited_quadrants"),
+                        "coverage_warning": coverage_warning,
+                    },
+                }
+
+                # Each iteration acquires its own DB session, commits, and releases
+                async with SessionLocal() as db:
+                    run_orm = await db.get(TestRun, run_id_val)
+                    if run_orm is None:
+                        outcome = "error"
+                        break
+                    collector = CollectorService(db)
+                    decision_repo = AgentDecisionRepository(db)
 
                     if _situation_finished(state):
                         decision = {
@@ -233,7 +265,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         mcp_call = _state_report_call(state)
                         decision_row = await decision_repo.create(
                             AgentDecision(
-                                run_id=run.id,
+                                run_id=run_id_val,
                                 sequence_number=sequence_number,
                                 tick_before=tick,
                                 tick_after=tick,
@@ -249,7 +281,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         )
                         sequence_number += 1
                         latest_event = await collector.collect(
-                            run.id,
+                            run_id_val,
                             tick,
                             state,
                             llm_input,
@@ -258,7 +290,7 @@ async def agent_run_task(run_id: UUID) -> None:
                             agent_decision_id=decision_row.id,
                         )
                         await decision_repo.update(decision_row, game_event_id=latest_event.id)
-                        await _broadcast_state(run, latest_event, decision)
+                        await _broadcast_state(run_id_val, latest_event, decision)
                         await db.commit()
                         if latest_event.event_type == "map_exit" or state.get("level_completed") or state.get("next_map"):
                             outcome = "map_completed"
@@ -269,12 +301,12 @@ async def agent_run_task(run_id: UUID) -> None:
                         break
 
                     await websocket_service.broadcast(
-                        run.id,
+                        run_id_val,
                         {"type": "llm_start", "sequence_number": sequence_number, "tick": tick},
                     )
                     decision_row = await decision_repo.create(
                         AgentDecision(
-                            run_id=run.id,
+                            run_id=run_id_val,
                             sequence_number=sequence_number,
                             tick_before=tick,
                             status="started",
@@ -314,7 +346,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         sev = int(vision_defect.get("severity", 2))
                         await DefectRepository(db).create(
                             Defect(
-                                run_id=run.id,
+                                run_id=run_id_val,
                                 severity=sev,
                                 priority=2,
                                 defect_type=dt,
@@ -348,7 +380,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         llm_cost_estimate_usd=cost_estimate_usd,
                     )
                     await websocket_service.broadcast(
-                        run.id,
+                        run_id_val,
                         {
                             "type": "llm_decision",
                             "sequence_number": decision_row.sequence_number,
@@ -366,7 +398,7 @@ async def agent_run_task(run_id: UUID) -> None:
                     )
 
                     await websocket_service.broadcast(
-                        run.id,
+                        run_id_val,
                         {
                             "type": "mcp_call_start",
                             "sequence_number": decision_row.sequence_number,
@@ -390,7 +422,7 @@ async def agent_run_task(run_id: UUID) -> None:
 
                     result_state, result_screenshot_png = normalize_mcp_state(response)
                     telemetry_frames = _pop_telemetry_frames(result_state)
-                    await _record_telemetry_frames(run.id, tick, telemetry_frames, collector, recorder)
+                    await _record_telemetry_frames(run_id_val, tick, telemetry_frames, collector, recorder)
                     frame = png_bytes_to_frame(result_screenshot_png)
                     if frame is None:
                         frame = png_bytes_to_frame(screenshot_png)
@@ -420,7 +452,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         guard_modified=(guard_status == "modified"),
                         llm_duration_ms=llm_duration_ms,
                         mcp_duration_ms=mcp_duration_ms,
-                        total_budget=run.max_ticks,
+                        total_budget=max_ticks,
                     )
                     if sequence_number % 3 == 0:
                         _record_position_in_trail(
@@ -450,7 +482,7 @@ async def agent_run_task(run_id: UUID) -> None:
                     _update_objective_history(lockstep_state, decision.get("reasoning_summary"))
 
                     latest_event = await collector.collect(
-                        run.id,
+                        run_id_val,
                         result_tick,
                         result_state,
                         llm_input,
@@ -479,7 +511,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         mcp_duration_ms=mcp_duration_ms,
                     )
                     await websocket_service.broadcast(
-                        run.id,
+                        run_id_val,
                         {
                             "type": "mcp_call_result",
                             "sequence_number": decision_row.sequence_number,
@@ -495,7 +527,7 @@ async def agent_run_task(run_id: UUID) -> None:
                     progress_payload = _lockstep_progress_metrics(lockstep_state)
                     history_snapshot = _build_run_history(lockstep_state)
                     await websocket_service.broadcast(
-                        run.id,
+                        run_id_val,
                         {
                             "type": "progress",
                             "tick": result_tick,
@@ -506,139 +538,156 @@ async def agent_run_task(run_id: UUID) -> None:
                     event_screenshot_b64 = None
                     if latest_event.event_type in {"kill", "death", "damage_taken", "stuck"} and record_frame is not None:
                         screenshot_path = recorder.save_screenshot(record_frame, latest_event.id)
-                        await collector.attach_screenshot(run.id, latest_event, str(screenshot_path))
+                        await collector.attach_screenshot(run_id_val, latest_event, str(screenshot_path))
                         event_screenshot_b64 = jpeg_b64(record_frame)
-                    await _broadcast_state(run, latest_event, decision, event_screenshot_b64)
+                    await _broadcast_state(run_id_val, latest_event, decision, event_screenshot_b64)
                     now = time.monotonic()
                     if record_frame is not None and now - last_frame_at >= 1 / live_frame_fps:
                         encoded = jpeg_b64(record_frame)
                         if encoded:
                             await websocket_service.broadcast(
-                                run.id,
+                                run_id_val,
                                 {"type": "frame", "tick": result_tick, "mime_type": "image/jpeg", "frame_b64": encoded},
                             )
                         last_frame_at = now
                     await db.commit()
+                # Session released, connection returned to pool
 
-                    if latest_event.event_type == "map_exit" or result_state.get("level_completed") or result_state.get("next_map"):
-                        outcome = "map_completed"
-                        break
-                    if latest_event.health <= 0 or result_state.get("dead"):
-                        outcome = "player_died"
-                        break
-                    if _lockstep_should_stop_as_stuck(lockstep_state):
-                        outcome = _lockstep_stop_outcome(lockstep_state)
-                        break
-                    if result_state.get("episode_finished") or result_state.get("episode_timeout"):
-                        outcome = "timeout"
-                        break
-                    if result_tick >= run.max_ticks:
-                        outcome = "timeout"
-                        break
+                if latest_event.event_type == "map_exit" or result_state.get("level_completed") or result_state.get("next_map"):
+                    outcome = "map_completed"
+                    break
+                if latest_event.health <= 0 or result_state.get("dead"):
+                    outcome = "player_died"
+                    break
+                if _lockstep_should_stop_as_stuck(lockstep_state):
+                    outcome = _lockstep_stop_outcome(lockstep_state)
+                    break
+                if result_state.get("episode_finished") or result_state.get("episode_timeout"):
+                    outcome = "timeout"
+                    break
+                if result_tick >= max_ticks:
+                    outcome = "timeout"
+                    break
 
-                    raw_state = state if isinstance(state, dict) else result_state
-                    profile_throttle = {
-                        "combat": profile.throttle_delays.get("combat", 0.5),
-                        "low_health": profile.throttle_delays.get("low_health", 1.0),
-                        "stuck": profile.throttle_delays.get("stuck", 2.0),
-                        "default": profile.throttle_delays.get("default", 1.5),
-                    }
-                    throttle_seconds = _compute_dynamic_throttle(raw_state, lockstep_state, throttle_delays=profile_throttle)
-                    if llm_throttle_cap_seconds <= 0:
-                        throttle_seconds = 0
-                    else:
-                        throttle_seconds = min(throttle_seconds, llm_throttle_cap_seconds)
-                    if throttle_seconds:
-                        await websocket_service.broadcast(
-                            run.id,
-                            {
-                                "type": "status",
-                                "status": run.status,
-                                "phase": "lockstep_throttle",
-                                "message": f"Game is paused in PLAYER mode for {throttle_seconds:g}s before the next LLM decision.",
-                                "sleep_seconds": throttle_seconds,
-                                "tick": result_tick,
-                            },
-                        )
-                        await asyncio.sleep(throttle_seconds)
-        except asyncio.CancelledError:
-            outcome = "cancelled"
-            await run_repo.update(run, status="cancelled")
-        except Exception as exc:
-            exc_msg = str(exc)
-            if isinstance(exc, McpStartupError):
-                outcome, failure_fields = _classify_startup_failure(exc)
-            elif isinstance(exc, McpToolTimeoutError):
-                if any(kw in exc_msg.lower() for kw in ("wad", "map", "crash", "pwad")):
-                    failure_fields = _pwad_crash_fields(exc, "gameplay")
-                    outcome = "pwad_crash"
+                raw_state = state if isinstance(state, dict) else result_state
+                profile_throttle = {
+                    "combat": profile.throttle_delays.get("combat", 0.5),
+                    "low_health": profile.throttle_delays.get("low_health", 1.0),
+                    "stuck": profile.throttle_delays.get("stuck", 2.0),
+                    "default": profile.throttle_delays.get("default", 1.5),
+                }
+                throttle_seconds = _compute_dynamic_throttle(raw_state, lockstep_state, throttle_delays=profile_throttle)
+                if llm_throttle_cap_seconds <= 0:
+                    throttle_seconds = 0
                 else:
-                    failure_fields = _infrastructure_failure_fields(exc, "mcp_tool_timeout")
-                    outcome = "error"
+                    throttle_seconds = min(throttle_seconds, llm_throttle_cap_seconds)
+                if throttle_seconds:
+                    await websocket_service.broadcast(
+                        run_id_val,
+                        {
+                            "type": "status",
+                            "status": "running",
+                            "phase": "lockstep_throttle",
+                            "message": f"Game is paused in PLAYER mode for {throttle_seconds:g}s before the next LLM decision.",
+                            "sleep_seconds": throttle_seconds,
+                            "tick": result_tick,
+                        },
+                    )
+                    await asyncio.sleep(throttle_seconds)
+    except asyncio.CancelledError:
+        outcome = "cancelled"
+        async with SessionLocal() as db:
+            run_orm = await db.get(TestRun, run_id_val)
+            if run_orm is not None:
+                await RunRepository(db).update(run_orm, status="cancelled")
+    except Exception as exc:
+        exc_msg = str(exc)
+        if isinstance(exc, McpStartupError):
+            outcome, failure_fields = _classify_startup_failure(exc)
+        elif isinstance(exc, McpToolTimeoutError):
+            if any(kw in exc_msg.lower() for kw in ("wad", "map", "crash", "pwad")):
+                failure_fields = _pwad_crash_fields(exc, "gameplay")
+                outcome = "pwad_crash"
             else:
-                if any(kw in exc_msg.lower() for kw in ("wad", "map", "lump", "texture", "crash", "pwad", "init")):
-                    failure_fields = _pwad_crash_fields(exc, "wad_loading")
-                    outcome = "pwad_crash"
-                else:
-                    failure_fields = _pwad_crash_fields(exc, runtime_stage)
-                    outcome = "pwad_crash"
-            await run_repo.update(run, status="failed", outcome=outcome, error_message=str(exc), **failure_fields)
-        finally:
-            if mcp_client is not None:
-                await mcp_client.stop_game()
-            recording_path = recorder.finalize()
-            recording_metadata = recorder.validate(recording_path, outcome=outcome)
-            progress_metrics = _lockstep_progress_metrics(lockstep_state)
-            agent_quality_flags = _lockstep_quality_flags(lockstep_state, recording_metadata)
-            completed_at = datetime.now(UTC)
-            final_fields: dict[str, Any] = {
-                "outcome": outcome,
-                "completed_at": completed_at,
-                "total_actions_taken": total_actions,
-                "total_llm_calls": total_llm_calls,
-                "recording_metadata": _json_safe(recording_metadata),
-                "progress_metrics": _json_safe(progress_metrics),
-                "agent_quality_flags": _json_safe(agent_quality_flags),
-            }
-            final_fields.update(failure_fields)
-            if recording_path:
-                final_fields["recording_mp4_path"] = str(recording_path)
-            elif recorder.path.exists():
-                final_fields["recording_mp4_path"] = str(recorder.path)
-            if run.status not in {"failed", "cancelled"}:
+                failure_fields = _infrastructure_failure_fields(exc, "mcp_tool_timeout")
+                outcome = "error"
+        else:
+            if any(kw in exc_msg.lower() for kw in ("wad", "map", "lump", "texture", "crash", "pwad", "init")):
+                failure_fields = _pwad_crash_fields(exc, "wad_loading")
+                outcome = "pwad_crash"
+            else:
+                failure_fields = _infrastructure_failure_fields(exc, runtime_stage)
+                outcome = "error"
+        async with SessionLocal() as db:
+            run_orm = await db.get(TestRun, run_id_val)
+            if run_orm is not None:
+                await RunRepository(db).update(run_orm, status="failed", outcome=outcome, error_message=str(exc), **failure_fields)
+                await db.commit()
+    finally:
+        if mcp_client is not None:
+            await mcp_client.stop_game()
+        recording_path = recorder.finalize()
+        recording_metadata = recorder.validate(recording_path, outcome=outcome)
+        progress_metrics = _lockstep_progress_metrics(lockstep_state)
+        agent_quality_flags = _lockstep_quality_flags(lockstep_state, recording_metadata)
+        completed_at = datetime.now(UTC)
+        final_fields: dict[str, Any] = {
+            "outcome": outcome,
+            "completed_at": completed_at,
+            "total_actions_taken": total_actions,
+            "total_llm_calls": total_llm_calls,
+            "recording_metadata": _json_safe(recording_metadata),
+            "progress_metrics": _json_safe(progress_metrics),
+            "agent_quality_flags": _json_safe(agent_quality_flags),
+        }
+        final_fields.update(failure_fields)
+        if recording_path:
+            final_fields["recording_mp4_path"] = str(recording_path)
+        elif recorder.path.exists():
+            final_fields["recording_mp4_path"] = str(recorder.path)
+        if latest_event is not None:
+            final_fields.update(
+                {
+                    "final_hp": latest_event.health,
+                    "final_armor": latest_event.armor,
+                    "total_kills": latest_event.kill_count,
+                    "secrets_found": latest_event.secret_count,
+                    "total_items_collected": latest_event.item_count,
+                }
+            )
+
+        async with SessionLocal() as db:
+            run_orm = await db.get(TestRun, run_id_val)
+            if run_orm is None:
+                RUN_TASKS.pop(run_id_val, None)
+                return
+            run_repo = RunRepository(db)
+            run_status_str = run_orm.status
+            run_started_at = run_orm.started_at
+            if run_status_str not in {"failed", "cancelled"}:
                 final_fields["status"] = "completed"
-            if run.started_at:
-                final_fields["duration_seconds"] = int((completed_at - run.started_at).total_seconds())
-            if latest_event is not None:
-                final_fields.update(
-                    {
-                        "final_hp": latest_event.health,
-                        "final_armor": latest_event.armor,
-                        "total_kills": latest_event.kill_count,
-                        "secrets_found": latest_event.secret_count,
-                        "total_items_collected": latest_event.item_count,
-                    }
-                )
-            await run_repo.update(run, **final_fields)
+            if run_started_at:
+                final_fields["duration_seconds"] = int((completed_at - run_started_at).total_seconds())
+            await run_repo.update(run_orm, **final_fields)
             await db.commit()
             await websocket_service.broadcast(
-                run.id,
+                run_id_val,
                 {"type": "recording_status", "metadata": _json_safe(recording_metadata)},
             )
             await websocket_service.broadcast(
-                run.id,
+                run_id_val,
                 {
                     "type": "quality_summary",
                     "progress_metrics": _json_safe(progress_metrics),
                     "agent_quality_flags": _json_safe(agent_quality_flags),
                 },
             )
-            if run.status in {"completed", "cancelled", "failed"}:
-                await DefectService(db, gemini_service=gemini).detect_for_run(run)
+            if run_status_str in {"completed", "cancelled", "failed"}:
+                await DefectService(db, gemini_service=gemini).detect_for_run(run_orm)
                 await db.commit()
-                for defect in await DefectRepository(db).list_by_run(run.id):
+                for defect in await DefectRepository(db).list_by_run(run_id_val):
                     await websocket_service.broadcast(
-                        run.id,
+                        run_id_val,
                         {
                             "type": "defect",
                             "defect_type": defect.defect_type,
@@ -649,34 +698,35 @@ async def agent_run_task(run_id: UUID) -> None:
                         },
                     )
                 try:
-                    events_result = await db.execute(select(GameEvent).where(GameEvent.run_id == run.id))
+                    events_result = await db.execute(select(GameEvent).where(GameEvent.run_id == run_id_val))
                     run_events = list(events_result.scalars().all())
-                    defects_result = await db.execute(select(Defect).where(Defect.run_id == run.id))
+                    defects_result = await db.execute(select(Defect).where(Defect.run_id == run_id_val))
                     run_defects = list(defects_result.scalars().all())
+                    memory_svc = RunMemoryService(db)
                     await memory_svc.persist_spatial_memory(
-                        run_id=run.id,
-                        wad_file_id=run.wad_file_id,
-                        map_name=run.map_name,
+                        run_id=run_id_val,
+                        wad_file_id=wad_file_id,
+                        map_name=map_name_val,
                         events=run_events,
                         defects=run_defects,
                     )
                     hyp_list = list(lockstep_state.get("hypotheses") or [])
                     await memory_svc.persist_hypotheses(
-                        run_id=run.id,
-                        wad_file_id=run.wad_file_id,
-                        map_name=run.map_name,
+                        run_id=run_id_val,
+                        wad_file_id=wad_file_id,
+                        map_name=map_name_val,
                         in_run_hypotheses=hyp_list,
                         agent_quality_flags=agent_quality_flags,
                     )
-                    if run.started_at:
-                        dur = int((completed_at - run.started_at).total_seconds())
+                    if run_started_at:
+                        dur = int((completed_at - run_started_at).total_seconds())
                     else:
                         dur = None
                     tick_count = run_events[-1].tick_number if run_events else 0
                     await memory_svc.update_knowledge_document(
-                        run_id=run.id,
-                        wad_file_id=run.wad_file_id,
-                        map_name=run.map_name,
+                        run_id=run_id_val,
+                        wad_file_id=wad_file_id,
+                        map_name=map_name_val,
                         outcome=outcome,
                         duration=dur,
                         defect_count=len(run_defects),
@@ -688,28 +738,28 @@ async def agent_run_task(run_id: UUID) -> None:
                 except Exception as exc:
                     await db.rollback()
                 try:
-                    await websocket_service.broadcast(run.id, {"type": "report_status", "status": "generating"})
-                    await ReportService(db).generate(run.id)
+                    await websocket_service.broadcast(run_id_val, {"type": "report_status", "status": "generating"})
+                    await ReportService(db).generate(run_id_val)
                     await db.commit()
-                    await websocket_service.broadcast(run.id, {"type": "report_status", "status": "complete"})
+                    await websocket_service.broadcast(run_id_val, {"type": "report_status", "status": "complete"})
                 except Exception as exc:
                     await db.rollback()
-                    await ReportService(db).mark_error(run.id, str(exc))
+                    await ReportService(db).mark_error(run_id_val, str(exc))
                     await db.commit()
                     await websocket_service.broadcast(
-                        run.id,
+                        run_id_val,
                         {"type": "report_status", "status": "error", "error": str(exc)},
                     )
-                    refreshed_run = await db.get(TestRun, run.id)
+                    refreshed_run = await db.get(TestRun, run_id_val)
                     if refreshed_run is not None:
-                        await run_repo.update(
+                        await RunRepository(db).update(
                             refreshed_run,
                             error_message=(refreshed_run.error_message or f"Report generation failed: {exc}"),
                         )
                         await db.commit()
-            await websocket_service.broadcast(run.id, {"type": "state", "status": run.status, "tick": run.max_ticks})
-            RUN_TASKS.pop(run.id, None)
-            await websocket_service.cleanup_run(run.id)
+            await websocket_service.broadcast(run_id_val, {"type": "state", "status": run_status_str, "tick": max_ticks})
+            RUN_TASKS.pop(run_id_val, None)
+            await websocket_service.cleanup_run(run_id_val)
 
 
 def _situation_finished(situation: dict[str, Any]) -> bool:
@@ -812,24 +862,6 @@ async def _execute_tool(
         "output": _json_safe(output),
     }
 
-
-async def _recent_trace(db: AsyncSession, run_id: UUID) -> list[dict[str, Any]]:
-    result = await db.execute(
-        select(GameEvent).where(GameEvent.run_id == run_id).order_by(GameEvent.tick_number.desc()).limit(20)
-    )
-    all_events = list(reversed(result.scalars().all()))
-    meaningful = [
-        event
-        for event in all_events
-        if event.llm_reasoning
-        and not event.llm_reasoning.startswith("Rate limited")
-        and "RESOURCE_EXHAUSTED" not in event.llm_reasoning
-        and "429" not in event.llm_reasoning
-    ][-5:]
-    return [
-        {"tick": event.tick_number, "event_type": event.event_type, "reasoning": event.llm_reasoning}
-        for event in meaningful
-    ]
 
 
 def _estimate_total_map_cells(analysis: Any) -> int | None:

@@ -14,16 +14,16 @@ Three services in one repo:
 # Backend (from Backend/)
 make install                # .venv + pip install -r requirements.txt
 make db-init && make db-upgrade  # create DB + Alembic migrate (or make db-schema)
-.venv/bin/python -m pytest -q     # 194 tests (as of 2026-05-24)
+.venv/bin/python -m pytest -q     # ~200+ tests
 
 # MCP-Doom (from mcp-doom/)
 pip install -e ".[dev]"       # editable install + pytest/pytest-asyncio
-pytest -q                     # all tests (100)
+pytest -q                     # all tests (~100+)
 pytest -k "not integration"   # unit only (no ViZDoom needed)
 pytest -m integration         # integration only (needs ViZDoom runtime + display libs)
 
 # Frontend (from frontend/)
-npm test -- --run             # Vitest (18 tests)
+npm test -- --run             # Vitest (~20 tests)
 npm run lint                  # ESLint
 npm run build                 # Next.js production build
 # Also works with: bun run test, bun run lint, bun run build
@@ -33,7 +33,7 @@ npm run build                 # Next.js production build
 
 - **Lockstep loop**: Backend calls MCP `get_state` → builds LLM prompt → Gemini returns action → MCP `take_action` → record. Every game advance ties to a stored decision.
 - **MCP boundary**: Backend never talks to ViZDoom directly. All game interaction is through MCP tools at `mcp-doom/src/doom_mcp/server.py`.
-- **Director mode** (`executor.py`) exists but is **not** the active runtime path. The product uses lockstep.
+- **Director mode** (`executor.py` + `run_service_director_experimental.py`) exists but is **not** the active runtime path. The product uses lockstep.
 - One active run at a time. PostgreSQL advisory lock prevents concurrent runs. Run tasks are process-local (`RUN_TASKS` dict) — cross-replica cancellation not supported.
 - PDF reports render via WeasyPrint in a worker thread.
 
@@ -56,3 +56,5 @@ Frontend defaults to REST via `/api/v1` (rewritten by `next.config.ts` to `local
 - `Backend/storage/` contains runtime artifacts (WADs, screenshots, recordings, PDFs) — not source code.
 - No Docker or compose files exist yet (roadmap item).
 - Frontend uses `@/` path alias (maps to `frontend/` root).
+- `agent_run_task` in `run_loop.py` acquires a fresh DB session per iteration instead of holding one for the entire run.
+- `/health/smoke` is guarded during active runs.
