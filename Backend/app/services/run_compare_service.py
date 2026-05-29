@@ -78,7 +78,11 @@ class RunCompareService:
         return list(result.scalars().all())
 
     async def _movement_coverage(self, run_id: UUID) -> float:
-        result = await self.db.execute(select(AgentPositionTrail).where(AgentPositionTrail.run_id == run_id))
+        result = await self.db.execute(
+            select(AgentPositionTrail)
+            .where(AgentPositionTrail.run_id == run_id)
+            .where(AgentPositionTrail.is_sentinel.is_(False))
+        )
         cells = {(round(position.x / 128), round(position.y / 128)) for position in result.scalars().all()}
         return float(len(cells))
 

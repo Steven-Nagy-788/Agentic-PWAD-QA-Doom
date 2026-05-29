@@ -564,17 +564,17 @@ def _state_has_usable_attack_weapon(state: dict[str, Any]) -> bool:
     selected_weapon = _bounded_int(variables.get("SELECTED_WEAPON"), 2)
     selected_ammo = _bounded_float(variables.get("SELECTED_WEAPON_AMMO"), 0.0)
     weapon_inventory = variables.get("WEAPON_INVENTORY") or []
-    if selected_weapon == 0:
+    if selected_weapon in {1, 8}:
         return True
-    if selected_weapon == 1 and isinstance(weapon_inventory, list):
+    if selected_weapon == 0 and isinstance(weapon_inventory, list):
         equipped_names = weapon_state.get("weapon_inventory", []) if isinstance(weapon_state, dict) else []
         has_chainsaw = any("CHAINSAW" in str(w).upper() for w in equipped_names)
         selected_name = weapon_state.get("selected_weapon_name", "") if isinstance(weapon_state, dict) else ""
         if has_chainsaw or "CHAINSAW" in str(selected_name).upper():
             return True
-        if not has_chainsaw and selected_weapon == 1:
+        if not has_chainsaw and selected_weapon == 0:
             return False
-    if selected_weapon in {0, 1}:
+    if selected_weapon == 0:
         return True
     if selected_ammo > 0:
         return True

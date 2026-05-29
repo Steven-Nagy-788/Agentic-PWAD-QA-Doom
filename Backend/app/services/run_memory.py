@@ -209,7 +209,12 @@ class RunMemoryService:
         kb = result.scalar_one_or_none()
         if kb is None or not kb.document_text.strip():
             return ""
-        return f"Accumulated knowledge about this map (v{kb.version}):\n{kb.document_text[:2000]}"
+        doc = kb.document_text
+        summary_end_marker = "\n\n[Run History]\n"
+        if summary_end_marker in doc:
+            summary_part = doc[:doc.index(summary_end_marker)]
+            return f"Accumulated knowledge about this map (v{kb.version}):\n{summary_part[:2000]}"
+        return f"Accumulated knowledge about this map (v{kb.version}):\n{doc[:2000]}"
 
     async def persist_spatial_memory(
         self,
@@ -370,19 +375,21 @@ class RunMemoryService:
             if defect.position_x is not None:
                 change_log.append(f"    at ({round(defect.position_x, 1)}, {round(defect.position_y, 1)})")
 
-        if current_doc:
-            new_text = (
-                f"=== Update from run completed at {datetime.now(UTC).isoformat()} ===\n"
-                f"Run: {run_id}\n"
-                + "\n".join(change_log)
-                + "\n\n"
-                + current_doc
-            )
+        run_update = (
+            f"=== Update from run completed at {datetime.now(UTC).isoformat()} ===\n"
+            f"Run: {run_id}\n"
+            + "\n".join(change_log)
+        )
+        summary_end_marker = "\n\n[Run History]\n"
+        if current_doc and summary_end_marker in current_doc:
+            summary, history = current_doc.split(summary_end_marker, 1)
+            new_text = f"{summary}{summary_end_marker}{run_update}\n\n{history}"
+        elif current_doc:
+            new_text = run_update + "\n\n" + current_doc
         else:
             new_text = (
                 f"Knowledge document for {map_name} (v{version})\n"
-                f"Created from run {run_id}\n"
-                + "\n".join(change_log)
+                + run_update
             )
         new_text = new_text[:10000]
 
@@ -398,6 +405,31 @@ class RunMemoryService:
                 version=version,
             ))
         return new_text
+
+    async def replace_knowledge_summary(
+        self,
+        wad_file_id: UUID,
+        map_name: str,
+        summary: str,
+    ) -> None:
+        """Replace the prompt-facing summary while preserving raw run history."""
+        result = await self.db.execute(
+            select(WadKnowledgeBase)
+            .where(
+                WadKnowledgeBase.wad_file_id == wad_file_id,
+                WadKnowledgeBase.map_name == map_name.upper(),
+            )
+            .limit(1)
+        )
+        kb = result.scalar_one_or_none()
+        if kb is None:
+            return
+        current = kb.document_text or ""
+        summary_end_marker = "\n\n[Run History]\n"
+        if summary_end_marker in current:
+            current = current[current.index(summary_end_marker) + len(summary_end_marker):]
+        kb.document_text = (summary + summary_end_marker + current)[:10000]
+        kb.updated_at = datetime.now(UTC)
 
     async def _recent_runs(
         self,
@@ -606,39 +638,48 @@ def _similar_text(a: str, b: str) -> bool:
 
 
 def _is_persistable_hypothesis(text: str) -> bool:
+    import re
+
     lower = text.lower().strip()
     if len(lower) < 20:
         return False
-    speculative_markers = (
-        "appears",
-        "maybe",
-        "possibly",
-        "likely",
-        "seems",
-        "unclear",
-        "hypothesis",
+    noise_markers = (
+        "suspected false positive",
         "switching",
         "clearing",
         "recent combat",
         "already returned",
         "red-textured",
         "red textured",
-        "suspected false positive",
     )
-    if any(marker in lower for marker in speculative_markers):
+    if any(marker in lower for marker in noise_markers):
         return False
-    confirmed_markers = (
-        "confirmed",
-        "observed issue",
-        "defect",
-        "blocked after",
-        "unreachable after",
-        "does not respond after use",
-        "no usable attack ammo",
-        "ammo starvation",
-        "softlock",
+    only_speculation = ("maybe", "possibly", "unclear", "hypothesis")
+    has_only_speculation = any(marker in lower for marker in only_speculation)
+    has_evidence_anchor = bool(re.search(r"tick \d+|position \(|cell \(|at \(-?\d|\(\s*-?\d", lower))
+    has_conclusion = any(
+        marker in lower
+        for marker in (
+            "confirmed",
+            "observed issue",
+            "defect",
+            "softlock",
+            "no exit",
+            "no usable",
+            "unreachable",
+            "blocked after",
+            "does not respond",
+            "ammo starvation",
+            "no reachable",
+            "progression defect",
+            "sealed",
+            "no interactable",
+            "exhausted",
+        )
     )
-    return any(marker in lower for marker in confirmed_markers)
+    if has_only_speculation and not has_evidence_anchor and not has_conclusion:
+        return False
+    return has_evidence_anchor or has_conclusion
 
 
 def _infer_tag(text: str) -> str:

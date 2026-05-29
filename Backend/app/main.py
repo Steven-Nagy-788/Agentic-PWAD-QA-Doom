@@ -10,7 +10,7 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, REGISTRY
 
 from app.core.config import get_settings
 from app.core.database import Base, SessionLocal, engine
-from app.routers import admin_storage, analysis, patterns, reports, runs, settings as settings_router, wads, ws
+from app.routers import admin_storage, analysis, memory, patterns, reports, runs, settings as settings_router, wads, ws
 from app.services.gemini_service import GeminiService
 import app.core.metrics
 from app.services.mcp_client_service import probe_mcp_sse_url
@@ -78,6 +78,7 @@ app.include_router(ws.router, prefix="/v1")
 app.include_router(patterns.router, prefix="/v1")
 app.include_router(admin_storage.router, prefix="/v1")
 app.include_router(settings_router.router, prefix="/v1")
+app.include_router(memory.router, prefix="/v1")
 
 
 @app.get("/metrics", tags=["Metrics"])

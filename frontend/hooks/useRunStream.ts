@@ -33,6 +33,9 @@ export type RunStreamMessage = {
   llm_duration_ms?: number;
   llm_input?: Record<string, unknown>;
   llm_raw_output?: Record<string, unknown>;
+  cross_run_memory_prompt?: string;
+  hypotheses_briefing?: string;
+  spatial_briefing?: string;
   mcp_duration_ms?: number;
   guard_status?: string;
   llm_input_tokens?: number;
@@ -59,6 +62,9 @@ export type RunHistory = {
     estimated_decisions_remaining: number;
   };
   current_objective: { current: string; history: string[] };
+  cross_run_memory: string;
+  hypotheses_briefing: string;
+  spatial_briefing: string;
 };
 
 export type RunHistoryDecision = {
@@ -154,6 +160,7 @@ export function useRunStream(runId?: string) {
   const [retryDelay, setRetryDelay] = useState(0);
   const [lastMessageAt, setLastMessageAt] = useState(0);
   const [runHistory, setRunHistory] = useState<RunHistory | null>(null);
+  const [visitedCells, setVisitedCells] = useState<Record<string, number>>({});
   const [snapshot, setSnapshot] = useState<LiveSnapshot | null>(null);
   const [phase, setPhase] = useState<RunStreamPhase>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -264,6 +271,17 @@ export function useRunStream(runId?: string) {
         }));
       }
       if (payload.type === "llm_decision") {
+        const crossRunMemory = payload.cross_run_memory_prompt ?? "";
+        const hypothesesBriefing = payload.hypotheses_briefing ?? "";
+        const spatialBriefing = payload.spatial_briefing ?? "";
+        setVisitedCells(visitedCellsFromInput(payload.llm_input));
+        if (crossRunMemory || hypothesesBriefing || spatialBriefing) {
+          setRunHistory((current) => mergeRunHistoryMemory(current, {
+            cross_run_memory: crossRunMemory,
+            hypotheses_briefing: hypothesesBriefing,
+            spatial_briefing: spatialBriefing,
+          }));
+        }
         setDecisions((current) => mergeDecision(current, {
           sequenceNumber: payload.sequence_number ?? current.length,
           tick: payload.tick,
@@ -300,7 +318,11 @@ export function useRunStream(runId?: string) {
       }
       if (payload.type === "progress") {
         if (payload.run_history) {
-          setRunHistory(payload.run_history);
+          setRunHistory((current) => mergeRunHistoryMemory(payload.run_history!, {
+            cross_run_memory: current?.cross_run_memory ?? "",
+            hypotheses_briefing: current?.hypotheses_briefing ?? "",
+            spatial_briefing: current?.spatial_briefing ?? "",
+          }));
         }
       }
       if (payload.type === "defect") {
@@ -339,12 +361,73 @@ export function useRunStream(runId?: string) {
       defects,
       tokenTotals,
       runHistory,
+      visitedCells,
       snapshot,
       phase,
       error,
     }),
-    [connected, retryCount, retryDelay, lastMessageAt, messages, frame, state, decisions, defects, tokenTotals, runHistory, snapshot, phase, error],
+    [connected, retryCount, retryDelay, lastMessageAt, messages, frame, state, decisions, defects, tokenTotals, runHistory, visitedCells, snapshot, phase, error],
   );
+}
+
+function mergeRunHistoryMemory(
+  current: RunHistory | null,
+  memory: Pick<RunHistory, "cross_run_memory" | "hypotheses_briefing" | "spatial_briefing">,
+): RunHistory {
+  return {
+    ...(current ?? emptyRunHistory()),
+    cross_run_memory: memory.cross_run_memory,
+    hypotheses_briefing: memory.hypotheses_briefing,
+    spatial_briefing: memory.spatial_briefing,
+  };
+}
+
+function emptyRunHistory(): RunHistory {
+  return {
+    decisions: [],
+    events: [],
+    position_trail: [],
+    combat: {
+      total_engagements: 0,
+      total_kills: 0,
+      total_shots: 0,
+      total_hits: 0,
+      enemies_engaged: [],
+      weapon_performance: {},
+    },
+    tool_stats: {},
+    hypotheses: [],
+    defects: [],
+    checkpoints: [],
+    budget: {
+      total_ticks: 0,
+      ticks_used: 0,
+      ticks_remaining: 0,
+      decisions_made: 0,
+      avg_ticks_per_decision: 0,
+      estimated_decisions_remaining: 0,
+    },
+    current_objective: { current: "", history: [] },
+    cross_run_memory: "",
+    hypotheses_briefing: "",
+    spatial_briefing: "",
+  };
+}
+
+function visitedCellsFromInput(input?: Record<string, unknown>): Record<string, number> {
+  const lockstepState = input?.lockstep_state;
+  if (!isRecord(lockstepState) || !isRecord(lockstepState.visited_cells)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(lockstepState.visited_cells)
+      .map(([key, value]) => [key, typeof value === "number" && Number.isFinite(value) ? value : Number(value)] as const)
+      .filter(([, value]) => Number.isFinite(value)),
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function mergeDecision(current: LiveDecision[], next: LiveDecision): LiveDecision[] {

@@ -64,7 +64,7 @@ Doom maps follow a consistent gameplay loop regardless of complexity:
   - A non-visible object at distance &lt; 100 with a known angle_to_aim means it is
     behind you or around a corner — turn toward it by using angle_to_aim as the
     TURN_LEFT_RIGHT_DELTA, then MOVE_FORWARD_BACKWARD_DELTA to pick it up.
-  - The chainsaw (slot 1) uses ZERO ammo. Always grab it if you see it.
+  - The chainsaw (slot 8) uses ZERO ammo. Always grab it if you see it.
   - If a weapon pickup is within 100 units, collect it BEFORE shooting anything.
 
   COMBAT:
@@ -73,10 +73,14 @@ Doom maps follow a consistent gameplay loop regardless of complexity:
     for chainsaw attacks — strafe_and_shoot may auto-switch to a ranged weapon.
   - If you have a chainsaw selected, use `aim_and_shoot` or `take_action`
     with ATTACK=1 for melee. Do NOT use `strafe_and_shoot` with chainsaw.
-  - If you have no usable ranged ammo but own a chainsaw (slot 1) or fist (slot 0),
+  - If you have no usable ranged ammo but own a chainsaw (slot 8) or fist (slot 1),
     you are NOT out of ammo. Melee weapons require zero ammo.
-  - If `select_weapon(slot=1)` fails, use `take_action({"SELECT_WEAPON1": 1})`
-    instead — the direct button press sometimes works when the tool fails.
+  - Weapon slot numbers in MCP tools use ViZDoom's internal weapon numbering:
+    1=fist, 2=pistol, 3=shotgun, 4=chaingun, 5=rocket, 6=plasma, 7=BFG, 8=chainsaw.
+    Use slot=8 (not slot=1) to explicitly select the chainsaw.
+  - If `select_weapon(slot=8)` fails, use `take_action({"SELECT_WEAPON1": 1})`
+    as fallback — player key 1 maps to chainsaw/fist and the game will select
+    whichever melee weapon is available.
   - Living monsters standing in a hallway are normal combat, not a geometry
     defect. Kill or evade them before claiming a corridor, doorway, or route is
     physically blocked.
@@ -241,19 +245,20 @@ Critical constraints:
   - If weapon_state.selected_weapon_ammo is 0 but weapon_state.usable_attack_ammo
     is greater than 0, select weapon_state.best_viable_weapon or let a combat tool
     auto-switch before declaring resource trouble.
-  - Weapon awareness: the chainsaw (weapon slot 1, "WEAPON_CHAINSAW") uses ZERO
+  - Weapon awareness: the chainsaw (weapon slot 8, "WEAPON_CHAINSAW") uses ZERO
     ammo per attack. If you have a chainsaw, you can attack enemies even when
     ammo_bullets/shells/rockets/cells are 0. Fist/berserk punch ("WEAPON_FIST",
-    weapon slot 0) also costs no ammo. Do not report "no usable attack ammo" or
+    weapon slot 1) also costs no ammo. Do not report "no usable attack ammo" or
     "ammo starvation" if you hold a chainsaw or berserk — melee those enemies.
   - CRITICAL: The chainsaw is a MELEE weapon. When the chainsaw is selected:
     * Do NOT use `strafe_and_shoot` — it will auto-switch to a ranged weapon and fail.
     * Use `aim_and_shoot` instead — it works with melee weapons.
     * If `aim_and_shoot` also fails, use `take_action({"ATTACK": 1})` for melee.
-    * If `select_weapon(slot=1)` fails, try `take_action({"SELECT_WEAPON1": 1})`.
+    * Use `select_weapon(slot=8)` to explicitly select the chainsaw.
+    * If `select_weapon(slot=8)` fails, try `take_action({"SELECT_WEAPON1": 1})`.
   - berserk_pickup ("Berserk Pack") boosts your fist damage to 100 per punch
     without consuming any ammo. If your HUD shows a blue face or you picked up
-    a berserk, use slot 0 for powerful free melee.
+    a berserk, use slot 1 for powerful free melee.
   - Do not shoot at non-visible enemies, enemies behind walls, or stale ids.
   - Do not repeat the same tool/params after it produced target_not_visible, stuck,
     no hits, or no movement. Change approach.

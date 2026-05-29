@@ -201,20 +201,31 @@ DELTA_BUTTONS = {
 }
 
 _WEAPON_SLOTS = tuple(range(10))
-_MELEE_WEAPON_SLOTS = {0, 1}
+_MELEE_WEAPON_SLOTS = {1, 8}
 _WEAPON_NAMES = {
-    0: "fist",
-    1: "chainsaw",
+    0: "weapon0",
+    1: "fist",
     2: "pistol",
     3: "shotgun",
     4: "chaingun",
     5: "rocket_launcher",
     6: "plasma_rifle",
     7: "bfg9000",
-    8: "weapon8",
-    9: "weapon9",
+    8: "chainsaw",
+    9: "super_shotgun",
 }
-_RANGED_WEAPON_PRIORITY = (7, 6, 5, 4, 3, 2, 8, 9)
+# Maps player key number (1-7) to ViZDoom SELECTED_WEAPON values.
+# Key 1 maps to both fist (1) and chainsaw (8); prefer chainsaw if owned.
+_PLAYER_KEY_TO_VIZDOOM_WEAPON: dict[int, int] = {
+    1: 8,
+    2: 2,
+    3: 3,
+    4: 4,
+    5: 5,
+    6: 6,
+    7: 7,
+}
+_RANGED_WEAPON_PRIORITY = (7, 6, 5, 4, 3, 9, 2)
 _MELEE_RANGE = 128.0
 
 
@@ -1064,6 +1075,9 @@ class GameManager:
 
     def _select_weapon_slot(self, game: vzd.DoomGame, weapon_slot: int, max_tics: int = 12) -> tuple[bool, int]:
         """Select a weapon slot with SELECT_WEAPONn when configured, otherwise cycle."""
+        if weapon_slot == 1:
+            chainsaw_owned = int(game.get_game_variable(vzd.GameVariable.WEAPON8)) > 0
+            weapon_slot = _PLAYER_KEY_TO_VIZDOOM_WEAPON[1] if chainsaw_owned else 1
         target = max(0, min(9, int(weapon_slot)))
         if int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) == target:
             return True, 0

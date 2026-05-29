@@ -93,6 +93,7 @@ class CollectorService:
                 x=event.player_x,
                 y=event.player_y,
                 health=event.health,
+                is_sentinel=True,
             )
         )
         issue = decision.get("observed_issue")

@@ -42,6 +42,7 @@ class DefectService:
         result = await self.db.execute(select(GameEvent).where(GameEvent.run_id == run.id).order_by(GameEvent.tick_number))
         events = list(result.scalars().all())
         await self._vision_defects(run.id)
+        await self._weapon_failures(run)
         if not events:
             return
         await self._repeated_deaths(run.id, events)
@@ -141,6 +142,8 @@ class DefectService:
                 )
             )
         if health_val < 0.2:
+            armor_points_raw = getattr(analysis, "total_armor_pickup_pts", 0)
+            armor_points = armor_points_raw if isinstance(armor_points_raw, (int, float)) else 0
             await self.repo.create(
                 Defect(
                     run_id=run.id,
@@ -153,7 +156,13 @@ class DefectService:
                         f"Static analysis health_ratio is {analysis.health_ratio:.4f} (threshold < 0.2). "
                         f"There are {analysis.total_monster_hp or 0} total monster HP but only "
                         f"{analysis.total_health_pickup_pts or 0} HP worth of health pickups. "
-                        "Sustained combat will leave the player with no recovery options."
+                        + (
+                            f"Note: map has {armor_points} armor points which provide "
+                            "partial survivability compensation, but health cannot be recovered once lost. "
+                            if armor_points > 0
+                            else "Sustained combat will leave the player with no recovery options. "
+                        )
+                        + "Players may be unable to survive the full encounter without health pickups."
                     ),
                     detected_at_tick=0,
                     recommendation=(
@@ -391,6 +400,44 @@ class DefectService:
                         f"after reaching {coverage_percent:.1f}% coarse cell coverage."
                     ),
                     detected_at_tick=events[-1].tick_number,
+                )
+            )
+
+    async def _weapon_failures(self, run: TestRun) -> None:
+        """Create defects for weapon_switch_failed events stored in quality flags."""
+        quality_flags = run.agent_quality_flags if isinstance(run.agent_quality_flags, dict) else {}
+        weapon_failures = quality_flags.get("weapon_resource_failures", {})
+        if not isinstance(weapon_failures, dict) or not weapon_failures:
+            return
+        for key, count in weapon_failures.items():
+            key_text = str(key)
+            if "weapon_switch_failed" not in key_text:
+                continue
+            if not isinstance(count, int) or count < 1:
+                continue
+            fingerprint = f"weapon_malfunction:{key_text}"
+            if await self.repo.exists_by_fingerprint(run.id, fingerprint):
+                continue
+            await self.repo.create(
+                Defect(
+                    run_id=run.id,
+                    severity=2,
+                    priority=2,
+                    defect_type="weapon_malfunction",
+                    fingerprint=fingerprint,
+                    title=f"Weapon failed to activate ({count}x)",
+                    description=(
+                        f"The weapon system reported '{key_text}' {count} time(s) during the run. "
+                        "This indicates a weapon could not be selected or fired when expected. "
+                        "Possible causes: weapon pickup animation conflict, ammo check error, "
+                        "or ViZDoom weapon slot numbering mismatch."
+                    ),
+                    detected_at_tick=0,
+                    recommendation=(
+                        "Verify that the map's weapon placement does not trigger weapon state "
+                        "conflicts on pickup. Ensure the weapon slot numbering in MCP tools matches "
+                        "ViZDoom's SELECTED_WEAPON variable (1=fist, 8=chainsaw)."
+                    ),
                 )
             )
 

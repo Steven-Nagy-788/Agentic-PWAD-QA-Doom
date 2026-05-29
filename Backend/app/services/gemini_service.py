@@ -335,36 +335,47 @@ class GeminiService:
         except ImportError as exc:
             raise RuntimeError("google-genai is not installed") from exc
 
-        text_part = f"{system_prompt}\n\nCURRENT STATE JSON:\n{json.dumps(llm_input, default=str)}"
+        config_cls = getattr(types, "GenerateContentConfig", None)
+        config = config_cls(system_instruction=system_prompt) if config_cls is not None else None
+        user_content = f"CURRENT STATE JSON:\n{json.dumps(llm_input, default=str)}"
+        if config is None:
+            user_content = f"{system_prompt}\n\n{user_content}"
 
         async with _get_gemini_sem():
             client = genai.Client(api_key=self.settings.gemini_api_key)
             async_client = getattr(client, "aio", None)
 
-            if screenshot_png is not None and async_client is not None and hasattr(async_client, "models"):
-                parts = [
-                    types.Part.from_text(text=text_part),
-                    types.Part.from_bytes(data=screenshot_png, mime_type="image/png"),
-                ]
-                return await async_client.models.generate_content(
-                    model=self.llm_model,
-                    contents=types.Content(parts=parts, role="user"),
-                )
-
             if async_client is not None and hasattr(async_client, "models"):
-                return await async_client.models.generate_content(model=self.llm_model, contents=text_part)
+                if screenshot_png is not None:
+                    parts = [
+                        types.Part.from_text(text=user_content),
+                        types.Part.from_bytes(data=screenshot_png, mime_type="image/png"),
+                    ]
+                    kwargs = {
+                        "model": self.llm_model,
+                        "contents": types.Content(parts=parts, role="user"),
+                    }
+                else:
+                    kwargs = {"model": self.llm_model, "contents": user_content}
+                if config is not None:
+                    kwargs["config"] = config
+                return await async_client.models.generate_content(**kwargs)
 
             def generate() -> Any:
                 if screenshot_png is not None:
                     parts = [
-                        types.Part.from_text(text=text_part),
+                        types.Part.from_text(text=user_content),
                         types.Part.from_bytes(data=screenshot_png, mime_type="image/png"),
                     ]
-                    return client.models.generate_content(
-                        model=self.llm_model,
-                        contents=types.Content(parts=parts, role="user"),
-                    )
-                return client.models.generate_content(model=self.llm_model, contents=text_part)
+                    kwargs = {
+                        "model": self.llm_model,
+                        "contents": types.Content(parts=parts, role="user"),
+                    }
+                else:
+                    kwargs = {"model": self.llm_model, "contents": user_content}
+                if config is not None:
+                    kwargs["config"] = config
+                return client.models.generate_content(**kwargs)
 
             return await asyncio.to_thread(generate)
 

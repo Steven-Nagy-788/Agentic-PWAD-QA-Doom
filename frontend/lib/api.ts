@@ -206,6 +206,22 @@ export type BehaviorProfile = {
   stuck_stride: number;
 };
 
+export type RecurringDefect = {
+  fingerprint: string;
+  defect_type: string;
+  title: string;
+  occurrences: number;
+  run_count: number;
+};
+
+export type MapMemory = {
+  wad_id: string;
+  map_name: string;
+  recurring_defects: RecurringDefect[];
+  hypotheses: { tag: string; content: string; confidence: number }[];
+  cross_run_summary: { prior_run_count: number; outcome_counts: Record<string, number> };
+};
+
 export async function apiGet<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
   if (!response.ok) {

@@ -1,0 +1,75 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: doom_qa
+      POSTGRES_USER: doom_qa
+      POSTGRES_PASSWORD: doom_qa_secret
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U doom_qa"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mcp-doom:
+    build:
+      context: ./mcp-doom
+      dockerfile: Dockerfile
+    environment:
+      DISPLAY: ":99"
+    ports:
+      - "8001:8001"
+    volumes:
+      - wad_storage:/app/storage/wads
+    command: >
+      bash -c "Xvfb :99 -screen 0 1024x768x24 &
+               sleep 1 &&
+               fastmcp run src/doom_mcp/server.py --transport sse --host 0.0.0.0 --port 8001 --path /sse"
+
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://doom_qa:doom_qa_secret@postgres:5432/doom_qa"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      MCP_DOOM_SSE_URL: "http://mcp-doom:8001/sse"
+      STORAGE_DIR: "/app/storage"
+      CORS_ORIGINS: "http://localhost:3000"
+    volumes:
+      - wad_storage:/app/storage/wads
+      - recording_storage:/app/storage/recordings
+      - report_storage:/app/storage/reports
+      - screenshot_storage:/app/storage/screenshots
+      - analysis_storage:/app/storage/analysis
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mcp-doom:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    environment:
+      NEXT_PUBLIC_API_BASE: "http://localhost:8000/v1"
+      NEXT_PUBLIC_WS_BASE: "ws://localhost:8000/v1"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  wad_storage:
+  recording_storage:
+  report_storage:
+  screenshot_storage:
+  analysis_storage:

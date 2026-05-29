@@ -4,7 +4,7 @@ import { use, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { Play } from "lucide-react";
-import { WadFile, WadMap, Run, BehaviorProfile, apiGet, apiSend } from "@/lib/api";
+import { WadFile, WadMap, Run, BehaviorProfile, MapMemory, apiGet, apiSend } from "@/lib/api";
 import { Metric, SkeletonRows, InlineError, errorMessage } from "@/lib/components/shared";
 import { MapCanvas } from "@/components/MapCanvas";
 import { SkillHeatmap } from "@/components/SkillHeatmap";
@@ -23,6 +23,11 @@ export default function WadDetailPage({ params }: { params: Promise<{ id: string
   const behaviorProfiles = useQuery({
     queryKey: ["behavior-profiles"],
     queryFn: () => apiGet<Record<string, BehaviorProfile>>("/settings/behavior-profiles"),
+  });
+  const mapMemory = useQuery({
+    queryKey: ["map-memory", id, selectedMap?.map_name],
+    queryFn: () => apiGet<MapMemory>(`/wads/${id}/memory/${selectedMap!.map_name}`),
+    enabled: Boolean(selectedMap),
   });
 
   const startRun = useMutation({
@@ -74,6 +79,40 @@ export default function WadDetailPage({ params }: { params: Promise<{ id: string
             </button>
           ))}
         </div>
+
+        {mapMemory.data && mapMemory.data.recurring_defects.length > 0 ? (
+          <section>
+            <h3 className="mb-2 text-sm font-semibold">Recurring Defects - {selectedMap?.map_name}</h3>
+            <div className="space-y-2">
+              {mapMemory.data.recurring_defects.map((defect) => (
+                <div key={defect.fingerprint} className="rounded border border-amber-200 bg-amber-50 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-semibold text-amber-950">{defect.title}</span>
+                    <span className="shrink-0 text-xs text-amber-700">
+                      {defect.run_count} runs · {defect.occurrences}x total
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-xs text-amber-700">{defect.defect_type}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {mapMemory.data && mapMemory.data.hypotheses.length > 0 ? (
+          <section>
+            <h3 className="mb-2 text-sm font-semibold">Accumulated Hypotheses - {selectedMap?.map_name}</h3>
+            <div className="space-y-1">
+              {mapMemory.data.hypotheses.map((hypothesis, index) => (
+                <div key={`${hypothesis.tag}-${index}`} className="rounded bg-neutral-100 px-3 py-2 text-xs">
+                  <span className="font-semibold text-neutral-600">[{hypothesis.tag}]</span>{" "}
+                  <span className="text-neutral-700">{hypothesis.content}</span>
+                  <span className="ml-2 text-neutral-400">{Math.round(hypothesis.confidence * 100)}%</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
       </div>
       <aside className="border-l border-neutral-200 bg-white p-4 lg:sticky lg:top-0 lg:h-screen">
         <div className="space-y-4">

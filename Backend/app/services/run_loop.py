@@ -391,6 +391,9 @@ async def agent_run_task(run_id: UUID) -> None:
                             "llm_duration_ms": round(llm_duration_ms, 1),
                             "llm_input": _json_safe(llm_input),
                             "llm_raw_output": _json_safe(raw_decision),
+                            "cross_run_memory_prompt": cross_run_memory.get("prompt", ""),
+                            "hypotheses_briefing": hypotheses_briefing or "",
+                            "spatial_briefing": spatial_briefing or "",
                             "llm_input_tokens": token_usage.get("prompt_tokens"),
                             "llm_output_tokens": token_usage.get("completion_tokens"),
                             "llm_cost_estimate_usd": cost_estimate_usd,
@@ -653,7 +656,11 @@ async def agent_run_task(run_id: UUID) -> None:
                     "final_armor": latest_event.armor,
                     "total_kills": latest_event.kill_count,
                     "secrets_found": latest_event.secret_count,
-                    "total_items_collected": latest_event.item_count,
+                    "total_items_collected": (latest_event.item_count or 0) + sum(
+                        1
+                        for value in (lockstep_state.get("completed_object_ids") or {}).values()
+                        if isinstance(value, dict) and value.get("target_type") == "weapon"
+                    ),
                 }
             )
 
@@ -723,7 +730,7 @@ async def agent_run_task(run_id: UUID) -> None:
                     else:
                         dur = None
                     tick_count = run_events[-1].tick_number if run_events else 0
-                    await memory_svc.update_knowledge_document(
+                    raw_doc = await memory_svc.update_knowledge_document(
                         run_id=run_id_val,
                         wad_file_id=wad_file_id,
                         map_name=map_name_val,
@@ -734,6 +741,17 @@ async def agent_run_task(run_id: UUID) -> None:
                         game_tick_count=tick_count,
                         defects=run_defects,
                     )
+                    try:
+                        if raw_doc and len(raw_doc) > 300 and version_is_distillable(raw_doc):
+                            distilled = await _distill_knowledge_document(gemini, raw_doc, map_name_val)
+                            if distilled:
+                                await memory_svc.replace_knowledge_summary(
+                                    wad_file_id,
+                                    map_name_val,
+                                    distilled,
+                                )
+                    except Exception:
+                        pass
                     await db.commit()
                 except Exception as exc:
                     await db.rollback()
@@ -875,3 +893,46 @@ def _estimate_total_map_cells(analysis: Any) -> int | None:
     if parsed_width <= 0 or parsed_height <= 0:
         return None
     return max(1, math.ceil(parsed_width / CELL_SIZE) * math.ceil(parsed_height / CELL_SIZE))
+
+
+async def _distill_knowledge_document(
+    gemini: GeminiService,
+    raw_doc: str,
+    map_name: str,
+) -> str | None:
+    """Summarize accumulated run changelogs into actionable map knowledge."""
+    distill_prompt = (
+        f"You are summarizing QA run history for Doom map {map_name}. "
+        "Below is the accumulated run log. Write 5-8 bullet points of actionable knowledge "
+        "for a QA agent running this map next time. Focus ONLY on:\n"
+        "- Confirmed stuck locations (with coordinates if available)\n"
+        "- Resource balance findings (ammo/health shortage confirmed)\n"
+        "- Successful navigation strategies that led to progress\n"
+        "- Confirmed defects (with type and location)\n"
+        "- Map features discovered (switches, keys, secrets)\n"
+        "Do NOT include: meta-information about runs, timestamps, action counts, or outcomes.\n"
+        "Format: one bullet per line, starting with a dash.\n\n"
+        + raw_doc[:5000]
+    )
+
+    def parse_summary(text: str) -> dict[str, Any]:
+        return {"reasoning_summary": text.strip()}
+
+    try:
+        decision, _ = await gemini._call_with_retry(  # noqa: SLF001 - reuse Gemini retry/rate-limit path.
+            distill_prompt,
+            {},
+            parse_summary,
+            lambda: ({}, {}),
+        )
+        summary = decision.get("reasoning_summary", "")
+        if isinstance(summary, str) and len(summary) > 50:
+            return f"[Distilled knowledge for {map_name}]\n{summary}"
+    except Exception:
+        pass
+    return None
+
+
+def version_is_distillable(doc: str) -> bool:
+    """Return True if the document contains enough changelog entries to distill."""
+    return doc.count("=== Update from run") >= 2

@@ -60,7 +60,7 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
   });
   const map = maps.data?.find((item) => item.map_name === run.map_name);
 
-  const [tab, setTab] = useState<"reasoning" | "mcp" | "memory" | "defects">("reasoning");
+  const [tab, setTab] = useState<"reasoning" | "mcp" | "memory" | "cross_run" | "defects">("reasoning");
 
   return (
     <div className="grid h-screen grid-rows-[auto_1fr_auto] bg-neutral-100">
@@ -114,7 +114,14 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
                 <h2 className="text-xs font-semibold uppercase text-neutral-500">Map And Trail</h2>
               </div>
               <div className="min-h-0 p-3">
-                <MapCanvas map={map} trail={trail} events={events} livePosition={stream.state?.position ?? null} className="h-full max-h-full" />
+                <MapCanvas
+                  map={map}
+                  trail={trail}
+                  events={events}
+                  livePosition={stream.state?.position ?? null}
+                  visitedCells={stream.visitedCells ?? {}}
+                  className="h-full max-h-full"
+                />
               </div>
               <div className="grid grid-cols-3 gap-2 border-t border-neutral-200 bg-white p-3 text-xs">
                 <MiniStat label="Trail" value={trail.length} />
@@ -151,6 +158,7 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
               <TabButton active={tab === "reasoning"} onClick={() => setTab("reasoning")}>Reasoning</TabButton>
               <TabButton active={tab === "mcp"} onClick={() => setTab("mcp")}>MCP</TabButton>
               <TabButton active={tab === "memory"} onClick={() => setTab("memory")}>Memory</TabButton>
+              <TabButton active={tab === "cross_run"} onClick={() => setTab("cross_run")}>Cross-Run</TabButton>
               <TabButton active={tab === "defects"} onClick={() => setTab("defects")}>Defects</TabButton>
             </div>
             <div className="min-h-0">
@@ -160,6 +168,8 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
               <McpInspector decisions={stream.decisions} />
             ) : tab === "defects" ? (
               <DefectPanel defects={visibleDefects} />
+            ) : tab === "cross_run" ? (
+              <CrossRunMemoryPanel history={stream.runHistory} />
             ) : (
               <RunHistoryPanel history={stream.runHistory} />
             )}
@@ -168,6 +178,34 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
         </aside>
       </main>
       <StatBar state={{ ...stream.state, secrets: stream.state?.secrets }} />
+    </div>
+  );
+}
+
+function CrossRunMemoryPanel({ history }: { history: RunHistory | null }) {
+  if (!history?.cross_run_memory) {
+    return <div className="grid h-32 place-items-center text-xs text-neutral-400">No prior runs for this WAD/map</div>;
+  }
+  return (
+    <div className="h-full space-y-3 overflow-y-auto bg-white p-3">
+      {history.cross_run_memory ? (
+        <section>
+          <h3 className="mb-1 text-xs font-semibold uppercase text-neutral-500">Prior Runs Summary</h3>
+          <pre className="whitespace-pre-wrap text-xs leading-5 text-neutral-700">{history.cross_run_memory}</pre>
+        </section>
+      ) : null}
+      {history.hypotheses_briefing ? (
+        <section>
+          <h3 className="mb-1 text-xs font-semibold uppercase text-neutral-500">Persistent Hypotheses</h3>
+          <pre className="whitespace-pre-wrap text-xs leading-5 text-neutral-700">{history.hypotheses_briefing}</pre>
+        </section>
+      ) : null}
+      {history.spatial_briefing ? (
+        <section>
+          <h3 className="mb-1 text-xs font-semibold uppercase text-neutral-500">Spatial Memory</h3>
+          <pre className="whitespace-pre-wrap text-xs leading-5 text-neutral-700">{history.spatial_briefing}</pre>
+        </section>
+      ) : null}
     </div>
   );
 }

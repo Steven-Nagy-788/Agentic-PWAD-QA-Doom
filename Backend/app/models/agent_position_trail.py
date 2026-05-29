@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, ForeignKey, Index, Integer, REAL, SmallInteger
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, Integer, REAL, SmallInteger
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -27,5 +27,6 @@ class AgentPositionTrail(Base):
     x: Mapped[float] = mapped_column(REAL, nullable=False)
     y: Mapped[float] = mapped_column(REAL, nullable=False)
     health: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    is_sentinel: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     run: Mapped[TestRun] = relationship("TestRun", back_populates="position_trail")

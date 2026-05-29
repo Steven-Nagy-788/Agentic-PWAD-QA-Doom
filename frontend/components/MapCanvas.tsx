@@ -10,6 +10,7 @@ type MapCanvasProps = {
   trail?: PositionSample[];
   events?: TraceEntry[];
   livePosition?: { x: number; y: number } | null;
+  visitedCells?: Record<string, number>;
   className?: string;
 };
 
@@ -17,7 +18,7 @@ const STEP = 15;
 const VIEW_SIZE = 1024;
 const MAP_MARGIN = 20;
 
-export function MapCanvas({ map, trail = [], events = [], livePosition, className = "" }: MapCanvasProps) {
+export function MapCanvas({ map, trail = [], events = [], livePosition, visitedCells = {}, className = "" }: MapCanvasProps) {
   const imageUrl = assetUrl(map?.map_overview_png_url);
   const points = livePosition ? [...trail, { id: -1, run_id: "", tick_number: 0, x: livePosition.x, y: livePosition.y, health: 0 }] : trail;
   const bounds = getBounds(points, map);
@@ -61,6 +62,29 @@ export function MapCanvas({ map, trail = [], events = [], livePosition, classNam
         aria-label={`${map?.map_name ?? "Map"} overview with player position trail. Use arrow keys to navigate.`}
         onKeyDown={onKeyDown}
       >
+        {Object.entries(visitedCells).map(([key, count]) => {
+          const [cx, cy] = key.split(",").map(Number);
+          if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+            return null;
+          }
+          const worldX = cx * 256;
+          const worldY = cy * 256;
+          const topLeft = project(worldX - 128, worldY + 128, bounds);
+          const bottomRight = project(worldX + 128, worldY - 128, bounds);
+          const opacity = Math.min(0.4, 0.1 + count * 0.05);
+          return (
+            <rect
+              key={key}
+              x={Math.min(topLeft.x, bottomRight.x)}
+              y={Math.min(topLeft.y, bottomRight.y)}
+              width={Math.max(Math.abs(bottomRight.x - topLeft.x), 2)}
+              height={Math.max(Math.abs(bottomRight.y - topLeft.y), 2)}
+              fill="#22c55e"
+              fillOpacity={opacity}
+              stroke="none"
+            />
+          );
+        })}
         {points.length > 1 ? (
           <polyline
             points={points.map((sample) => {

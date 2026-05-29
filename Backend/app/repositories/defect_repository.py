@@ -72,6 +72,17 @@ class DefectRepository:
         )
         return result.scalar_one_or_none() is not None
 
+    async def exists_by_fingerprint(self, run_id: UUID, fingerprint: str) -> bool:
+        result = await self.db.execute(
+            select(Defect.id)
+            .where(
+                Defect.run_id == run_id,
+                Defect.fingerprint == fingerprint,
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
     @staticmethod
     def dedupe_defects(defects: list[Defect]) -> list[Defect]:
         unique: list[Defect] = []

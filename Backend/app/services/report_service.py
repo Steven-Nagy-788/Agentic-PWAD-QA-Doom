@@ -59,6 +59,7 @@ class ReportService:
                 await self.db.execute(
                     select(AgentPositionTrail)
                     .where(AgentPositionTrail.run_id == run_id)
+                    .where(AgentPositionTrail.is_sentinel.is_(False))
                     .order_by(AgentPositionTrail.tick_number)
                 )
             )
