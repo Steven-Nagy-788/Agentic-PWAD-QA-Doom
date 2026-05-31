@@ -215,6 +215,20 @@ _WEAPON_NAMES = {
 _RANGED_WEAPON_PRIORITY = (7, 6, 5, 4, 3, 9, 2)
 _MELEE_RANGE = 128.0
 
+# Player key slots that map to multiple ViZDoom weapon IDs.
+# Maps slot -> (preferred_weapon_id, ownership_game_var)
+# When the preferred weapon is owned, slot maps to its ViZDoom ID;
+# otherwise falls back to the slot number itself (which is also a valid weapon ID).
+_SLOT_WEAPON_PREFERENCE: dict[int, tuple[int, object]] = {
+    1: (8, vzd.GameVariable.WEAPON8),  # chainsaw preferred over fist
+    3: (9, vzd.GameVariable.WEAPON9),  # super shotgun preferred over shotgun
+}
+# All valid ViZDoom weapon IDs for each player key slot.
+_SLOT_VALID_WEAPON_IDS: dict[int, set[int]] = {
+    1: {1, 8},
+    3: {3, 9},
+}
+
 
 def _direct_weapon_button_slot(button_name: str) -> int | None:
     prefix = "SELECT_WEAPON"
@@ -1064,9 +1078,18 @@ class GameManager:
 
     def _select_weapon_slot(self, game: vzd.DoomGame, weapon_slot: int, max_tics: int = 20) -> tuple[bool, int]:
         """Select a weapon slot with SELECT_WEAPONn when configured, otherwise cycle."""
-        target = max(0, min(9, int(weapon_slot)))
-        if int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) == target:
+        slot = max(0, min(9, int(weapon_slot)))
+        if slot in _SLOT_WEAPON_PREFERENCE:
+            pref_id, own_var = _SLOT_WEAPON_PREFERENCE[slot]
+            target = pref_id if int(game.get_game_variable(own_var)) > 0 else slot
+        else:
+            target = slot
+        valid_ids = _SLOT_VALID_WEAPON_IDS.get(slot, {target})
+        if int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) in valid_ids:
             return True, 0
+
+        def _check_selected() -> bool:
+            return int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) in valid_ids
 
         button_names = {button.name for button in self._buttons}
         direct_button = f"SELECT_WEAPON{target}"
@@ -1079,14 +1102,14 @@ class GameManager:
             for tic_index in range(1, max(1, int(max_tics))):
                 if game.is_episode_finished():
                     break
-                if int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) == target:
+                if _check_selected():
                     self._clear_action(game)
                     return True, tics_used
                 actions = {direct_button: 1} if tic_index == retry_at else {}
                 self._make_action(game, self._build_action_list(actions), 1)
                 tics_used += 1
             self._clear_action(game)
-            return int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) == target, tics_used
+            return _check_selected(), tics_used
 
         if "SELECT_NEXT_WEAPON" not in button_names:
             return False, 0
@@ -1096,11 +1119,11 @@ class GameManager:
                 break
             self._make_action(game, self._build_action_list({"SELECT_NEXT_WEAPON": 1}), 1)
             tics_used += 1
-            if int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) == target:
+            if _check_selected():
                 self._clear_action(game)
                 return True, tics_used
         self._clear_action(game)
-        return int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) == target, tics_used
+        return _check_selected(), tics_used
 
     def _ensure_attack_capable_weapon(
         self,
@@ -1524,6 +1547,7 @@ class GameManager:
         max_tics: int = 200,
         stop_on_enemy: bool = True,
         stop_on_item: bool = False,
+        ignore_object_ids: list[int] | None = None,
         capture_telemetry: bool = False,
         telemetry_stride: int = 4,
     ) -> dict:
@@ -1533,6 +1557,8 @@ class GameManager:
             max_tics: Maximum tics to explore (default 200).
             stop_on_enemy: Stop when a visible monster is spotted nearby. Default true.
             stop_on_item: Stop when a new item/ammo is spotted. Default false.
+            ignore_object_ids: Skip stop_on_enemy for these monster IDs. Use for
+                enemies already evaluated as non-blocking (e.g. invulnerable).
 
         Returns:
             Game state + action_summary with: distance_moved, direction_changes,
@@ -1549,6 +1575,7 @@ class GameManager:
         }
         seen_enemy_ids: set[int] = set()
         seen_item_ids: set[int] = set()
+        ignore_set: set[int] = set(ignore_object_ids) if ignore_object_ids else set()
 
         with self._with_executor_paused():
             with self._game_lock:
@@ -1587,7 +1614,7 @@ class GameManager:
                     for obj in all_objs:
                         info = get_object_info(obj["name"])
                         if info["type"] == "monster" and obj["is_visible"] and obj["distance"] < _ENEMY_ALERT_DIST:
-                            if obj["id"] not in seen_enemy_ids:
+                            if obj["id"] not in seen_enemy_ids and obj["id"] not in ignore_set:
                                 seen_enemy_ids.add(obj["id"])
                                 enemy_info = {
                                     "id": obj["id"],

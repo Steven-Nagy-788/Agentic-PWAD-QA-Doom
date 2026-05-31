@@ -96,6 +96,9 @@ class RunService:
         )
         if behavior_profile not in PROFILES:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unknown behavior profile")
+        if (analysis.thing_count_enemies or 0) == 0 and behavior_profile == "thorough":
+            behavior_profile = "fast"
+            logger.info("Map %s has 0 enemies; using 'fast' behavior profile instead of 'thorough'", map_name)
         queue_mode = runtime_value("run_worker_mode", self.settings.run_worker_mode)
         run = await self.repo.create(
             TestRun(

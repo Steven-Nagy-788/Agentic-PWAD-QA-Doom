@@ -119,21 +119,33 @@ def _compact_state_for_llm(state: dict[str, Any]) -> dict[str, Any]:
                 continue
             if obj.get("type") in {"player", "decoration", "projectile"} or obj.get("is_visible") is False:
                 continue
-            objects.append(
-                {
-                    key: obj.get(key)
-                    for key in (
-                        "id",
-                        "name",
-                        "type",
-                        "distance",
-                        "angle_to_aim",
-                        "is_visible",
-                    )
-                    if key in obj
-                }
-            )
-        compact["objects"] = objects[:12]
+            dist = float(obj.get("distance") or 999999)
+            if obj.get("type") == "monster":
+                if dist <= 128:
+                    weapon_advice = "melee viable"
+                elif dist <= 512:
+                    weapon_advice = "shotgun effective"
+                else:
+                    weapon_advice = "use ranged (pistol/chaingun)"
+            else:
+                weapon_advice = "pickup"
+            entry = {
+                key: obj.get(key)
+                for key in (
+                    "id",
+                    "name",
+                    "type",
+                    "distance",
+                    "angle_to_aim",
+                    "is_visible",
+                )
+                if key in obj
+            }
+            entry["weapon_advice"] = weapon_advice
+            objects.append(entry)
+        visible_first = [o for o in objects if o.get("is_visible") is True][:5]
+        non_visible = [o for o in objects if o.get("is_visible") is not True][:3]
+        compact["objects"] = visible_first + non_visible
     return _json_safe(compact)
 
 
@@ -145,25 +157,21 @@ def _compact_weapon_state_for_llm(state: dict[str, Any]) -> dict[str, Any]:
             "selected_weapon_name",
             "selected_weapon_ammo",
             "usable_weapons",
-            "usable_ranged_weapons",
-            "usable_melee_weapons",
             "usable_attack_ammo",
             "best_viable_weapon",
             "melee_available",
         )
         if key in state
     }
-    inventory = state.get("weapon_inventory")
-    if isinstance(inventory, list):
-        compact["owned_weapons"] = [
-            {
-                key: weapon.get(key)
-                for key in ("slot", "name", "owned_count", "ammo", "usable", "selected")
-                if key in weapon
-            }
-            for weapon in inventory
-            if isinstance(weapon, dict) and (weapon.get("owned") or weapon.get("selected"))
-        ][:6]
+    usable = state.get("usable_weapons")
+    if isinstance(usable, list) and len(usable) <= 3:
+        inventory = state.get("weapon_inventory")
+        if isinstance(inventory, list):
+            compact["owned_weapons"] = [
+                {"slot": w["slot"], "name": w["name"], "ammo": w.get("ammo")}
+                for w in inventory
+                if isinstance(w, dict) and (w.get("owned") or w.get("selected"))
+            ][:4]
     return compact
 
 
@@ -228,7 +236,7 @@ def _build_llm_input(
                 "secrets": variables.get("secret_count"),
             },
             "weapon_state": _compact_weapon_state_for_llm(state.get("weapon_state") or {}),
-            "scene_objects": objects[:12],
+            "scene_objects": objects[:8],
             "threat_summary": {
                 "threat_level": threat_assessment.get("threat_level"),
                 "visible_attackable_threats": [
@@ -359,7 +367,7 @@ def _build_combat_summary(attempts: dict) -> dict[str, Any]:
         "enemies_engaged": [
             {
                 key: enemy.get(key)
-                for key in ("id", "name", "shots", "hits", "killed")
+                for key in ("id", "name", "shots", "hits", "killed", "damage_dealt")
                 if key in enemy
             }
             for enemy in enemies[:3]
@@ -620,14 +628,16 @@ def _update_combat_log(
     hits: int,
     killed: bool,
     distance: float,
+    damage_dealt: float = 0,
 ) -> None:
     if object_id is None:
         return
     attempts = dict(lockstep_state.get("combat_attempts") or {})
     key = str(object_id)
-    existing = attempts.get(key, {"id": object_id, "name": "unknown", "weapon": weapon, "shots": 0, "hits": 0, "killed": False, "distance": distance})
+    existing = attempts.get(key, {"id": object_id, "name": "unknown", "weapon": weapon, "shots": 0, "hits": 0, "killed": False, "distance": distance, "damage_dealt": 0})
     existing["shots"] += shots
     existing["hits"] += hits
+    existing["damage_dealt"] += damage_dealt
     if killed:
         existing["killed"] = True
     existing["distance"] = distance
@@ -712,6 +722,10 @@ def _initial_lockstep_state() -> LockstepState:
         "checkpoints": [],
         "defects_found": [],
         "objective_history": [],
+        "position_stuck_counter": 0,
+        "last_position": None,
+        "decision_diversity_counter": 0,
+        "consecutive_get_state": 0,
     }
 
 

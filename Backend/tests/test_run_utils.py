@@ -53,7 +53,7 @@ def test_compact_state_caps_objects_and_removes_depth() -> None:
     state["depth"] = {"left": 12}
     compact = _compact_state_for_llm(state)
     assert "depth" not in compact
-    assert len(compact["objects"]) == 12
+    assert len(compact["objects"]) == 5
 
 
 def test_compact_state_removes_objects_duplicated_by_threat_context() -> None:
@@ -64,7 +64,7 @@ def test_compact_state_removes_objects_duplicated_by_threat_context() -> None:
         {"id": 4, "type": "monster"},
     ])
     compact = _compact_state_for_llm(state)
-    assert compact["objects"] == [{"id": 4, "type": "monster"}]
+    assert compact["objects"] == [{"id": 4, "type": "monster", "weapon_advice": "use ranged (pistol/chaingun)"}]
 
 
 def test_compact_context_caps_lists_and_removes_duplicate_objects() -> None:

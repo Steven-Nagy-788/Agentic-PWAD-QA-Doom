@@ -117,7 +117,7 @@ async def test_execute_tool_explore_keeps_technical_defaults_without_runtime_err
 
     mcp.call_tool.assert_awaited_once()
     params = mcp.call_tool.await_args.args[1]
-    assert params["max_tics"] == 80
+    assert params["max_tics"] == 180
     assert params["stop_on_enemy"] is True
     assert params["stop_on_item"] is True
 

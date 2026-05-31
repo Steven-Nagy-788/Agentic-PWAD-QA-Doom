@@ -19,7 +19,7 @@ COMPOUND_TELEMETRY_TOOLS = {
 }
 OBJECT_ID_TOOLS = {"aim_and_shoot", "strafe_and_shoot", "move_to"}
 COMBAT_TOOLS = {"aim_and_shoot", "strafe_and_shoot"}
-EXPLORE_MAX_TICS_UPPER = 80
+EXPLORE_MAX_TICS_UPPER = 180
 PWAD_CRASH_CATEGORY = "pwad_crash"
 INFRASTRUCTURE_CATEGORY = "infrastructure"
 TAKE_ACTION_BUTTONS = {

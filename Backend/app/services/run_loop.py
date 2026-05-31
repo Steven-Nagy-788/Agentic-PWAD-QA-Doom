@@ -22,7 +22,7 @@ from app.services.collector_service import CollectorService, normalize_variables
 from app.services.defect_service import DefectService
 from app.repositories.config_repository import ConfigRepository
 from app.services.analysis_constants import CELL_SIZE
-from app.services.gemini_service import GeminiService, estimate_llm_cost_usd, is_low_value_texture_defect
+from app.services.gemini_service import GeminiService, estimate_llm_cost_usd
 from app.services.environment_service import collect_environment_metadata
 from app.services.mcp_client_service import McpDoomClient, McpStartupError, McpToolTimeoutError, normalize_mcp_state
 from app.services.prompt_service import render_agent_prompt
@@ -316,37 +316,6 @@ async def agent_run_task(run_id: UUID) -> None:
                     raw_decision = dict(decision)
                     decision_source = str(decision.pop("_decision_source", "gemini"))
                     _merge_hypotheses(lockstep_state, raw_decision, state)
-                    vision_defect = None
-                    if decision_row.sequence_number % 5 == 0:
-                        vision_defect = await gemini.detect_visual_defect_from_screenshot(
-                            screenshot_png, tick,
-                            float(state.get("game_variables", {}).get("POSITION_X", 0)),
-                            float(state.get("game_variables", {}).get("POSITION_Y", 0)),
-                        )
-                    if vision_defect is not None and is_low_value_texture_defect(vision_defect):
-                        vision_defect = None
-                    if vision_defect is not None:
-                        dt = str(vision_defect.get("defect_type", "visual_unknown"))
-                        title = str(vision_defect.get("title", "Visual defect detected"))
-                        desc = str(vision_defect.get("description", ""))
-                        sev = int(vision_defect.get("severity", 2))
-                        await DefectRepository(db).create(
-                            Defect(
-                                run_id=run_id_val,
-                                severity=sev,
-                                priority=2,
-                                defect_type=dt,
-                                fingerprint=f"{dt}:{tick}",
-                                title=title,
-                                description=desc,
-                                detected_at_tick=tick,
-                                position_x=float(state.get("game_variables", {}).get("POSITION_X", 0)),
-                                position_y=float(state.get("game_variables", {}).get("POSITION_Y", 0)),
-                            )
-                        )
-                        lockstep_state["defects_found"] = list(lockstep_state.get("defects_found") or []) + [
-                            {"type": dt, "title": title, "tick": tick, "severity": sev}
-                        ]
                     await decision_repo.update(
                         decision_row,
                         status="llm_complete",
@@ -391,6 +360,31 @@ async def agent_run_task(run_id: UUID) -> None:
                     )
                     decision.setdefault("mcp_params", {})
                     from app.services.run_constants import COMPOUND_TELEMETRY_TOOLS
+
+                    # Get_state spam guard: after 2 consecutive get_state, force explore
+                    get_state_count = lockstep_state.get("consecutive_get_state", 0)
+                    if get_state_count >= 2 and decision.get("mcp_tool") == "get_state":
+                        decision["mcp_tool"] = "explore"
+                        decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": True}
+                        decision["reasoning_summary"] = "OVERRIDE: Consecutive get_state detected. Forced explore to advance gameplay."
+                        decision["_decision_source"] = "guard_get_state"
+
+                    # Position stuck detection: override if agent hasn't moved in 3+ consecutive decisions
+                    stuck_counter = lockstep_state.get("position_stuck_counter", 0)
+                    if stuck_counter >= 3 and decision.get("mcp_tool") in ("explore", "aim_and_shoot", "strafe_and_shoot", "move_to"):
+                        decision["mcp_tool"] = "explore"
+                        decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": True}
+                        decision["reasoning_summary"] = f"OVERRIDE: Agent stuck ({stuck_counter} decisions without movement). Forced explore to break fixation loop."
+                        decision["_decision_source"] = "guard_stuck"
+
+                    # Decision diversity check: if last 3 same-tool decisions had similar reasoning, break loop
+                    diversity_counter = lockstep_state.get("decision_diversity_counter", 0)
+                    if diversity_counter >= 3 and decision.get("mcp_tool") in ("explore", "aim_and_shoot", "strafe_and_shoot", "move_to"):
+                        decision["mcp_tool"] = "explore"
+                        decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": False, "ignore_object_ids": []}
+                        decision["reasoning_summary"] = f"OVERRIDE: Decision loop detected ({diversity_counter} repeated decisions). Forced explore to break cycle."
+                        decision["_decision_source"] = "guard_diversity"
+
                     if (
                         decision.get("mcp_tool") in COMPOUND_TELEMETRY_TOOLS
                         and "telemetry_stride" not in decision["mcp_params"]
@@ -426,6 +420,29 @@ async def agent_run_task(run_id: UUID) -> None:
 
                     stop_reason = _mcp_action_summary(mcp_call).get("stop_reason")
                     tool = mcp_call.get("tool") or decision.get("mcp_tool") or "explore"
+
+                    self_x = float(state.get("game_variables", {}).get("POSITION_X", 0))
+                    self_y = float(state.get("game_variables", {}).get("POSITION_Y", 0))
+                    dx = abs(result_x - self_x)
+                    dy = abs(result_y - self_y)
+                    movement = math.sqrt(dx * dx + dy * dy)
+                    if movement < 5 and tool not in ("select_weapon", "get_threat_assessment", "get_navigation_info"):
+                        lockstep_state["position_stuck_counter"] = lockstep_state.get("position_stuck_counter", 0) + 1
+                    else:
+                        lockstep_state["position_stuck_counter"] = 0
+
+                    if tool == "get_state":
+                        lockstep_state["consecutive_get_state"] = lockstep_state.get("consecutive_get_state", 0) + 1
+                    else:
+                        lockstep_state["consecutive_get_state"] = 0
+
+                    prev_decisions = list(lockstep_state.get("decision_history") or [])
+                    last_three = [d.get("tool") for d in prev_decisions[-3:] if d.get("tool")]
+                    if len(last_three) >= 3 and len(set(last_three)) == 1:
+                        lockstep_state["decision_diversity_counter"] = lockstep_state.get("decision_diversity_counter", 0) + 1
+                    else:
+                        lockstep_state["decision_diversity_counter"] = 0
+
                     _record_decision_in_history(
                         lockstep_state,
                         seq=decision_row.sequence_number,
@@ -454,6 +471,9 @@ async def agent_run_task(run_id: UUID) -> None:
                         )
                     summary_d = _mcp_action_summary(mcp_call)
                     if tool in ("aim_and_shoot", "strafe_and_shoot"):
+                        damage_before = float(state.get("game_variables", {}).get("DAMAGECOUNT", 0))
+                        damage_after = float(result_state.get("game_variables", {}).get("DAMAGECOUNT", 0))
+                        damage_delta = max(0, damage_after - damage_before)
                         _update_combat_log(
                             lockstep_state,
                             object_id=decision.get("mcp_params", {}).get("object_id"),
@@ -462,6 +482,7 @@ async def agent_run_task(run_id: UUID) -> None:
                             hits=int(summary_d.get("hits_landed", 0)),
                             killed=(stop_reason == "target_killed" or int(summary_d.get("kills", 0)) > 0),
                             distance=float(summary_d.get("target_distance", 0)),
+                            damage_dealt=damage_delta,
                         )
                     if stop_reason in ("target_killed", "item_found", "key_found", "secret_found", "map_exit", "player_died"):
                         _record_checkpoint(

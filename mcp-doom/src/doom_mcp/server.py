@@ -354,6 +354,7 @@ def explore(
     max_tics: int = 200,
     stop_on_enemy: bool = True,
     stop_on_item: bool = False,
+    ignore_object_ids: list[int] | None = None,
     capture_telemetry: bool = False,
     telemetry_stride: int = 4,
 ):
@@ -368,6 +369,8 @@ def explore(
         max_tics: Maximum game tics to explore (default 200).
         stop_on_enemy: Stop when a visible monster is spotted nearby. Default true.
         stop_on_item: Stop when a new item/ammo is spotted. Default false.
+        ignore_object_ids: Skip stop_on_enemy for these monster IDs. Use for
+            enemies already evaluated as non-blocking.
 
     Returns screenshot + state with action_summary containing:
         distance_moved, direction_changes, enemies_seen[], items_seen[], stop_reason.
@@ -378,6 +381,7 @@ def explore(
         max_tics=max_tics,
         stop_on_enemy=stop_on_enemy,
         stop_on_item=stop_on_item,
+        ignore_object_ids=ignore_object_ids,
         capture_telemetry=capture_telemetry,
         telemetry_stride=telemetry_stride,
     )

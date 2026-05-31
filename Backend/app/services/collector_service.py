@@ -255,21 +255,23 @@ def _changed_resources_or_score(current: dict[str, Any], previous: dict[str, Any
     return any(current.get(key) != previous.get(key) for key in watched_keys)
 
 
-_KNOWN_DEFECT_CATEGORIES = {"geometry", "resource_balance", "progression", "encounter_design", "pwad_crash"}
+_KNOWN_DEFECT_CATEGORIES = {"geometry", "resource_balance", "progression", "encounter_design", "balance", "combat", "pwad_crash"}
 
 
 def normalize_observed_issue(issue: Any) -> tuple[str, str]:
     if isinstance(issue, dict):
-        raw = str(issue.get("category") or "agent_observed").strip().lower()
+        raw = str(issue.get("category") or "").strip().lower()
         description = issue.get("description") or ""
+    elif isinstance(issue, str):
+        match = re.match(r"\s*\[([^\]]+)\]", issue)
+        raw = (match.group(1) if match else "").strip().lower()
+        description = issue
     else:
-        text = str(issue)
-        match = re.match(r"\s*\[([^\]]+)\]", text)
-        raw = (match.group(1) if match else "agent observed").strip().lower()
-        description = text
+        raw = ""
+        description = str(issue)
 
     slug = re.sub(r"[^a-z0-9]+", "_", raw).strip("_") or "issue"
-    normalized_category = slug if slug in _KNOWN_DEFECT_CATEGORIES else "agent_observed"
+    normalized_category = slug if slug in _KNOWN_DEFECT_CATEGORIES else slug
     defect_type = f"agent_observed_{normalized_category}"[:64]
     title = f"Automated playthrough observed {normalized_category.replace('_', ' ')} issue"
     return defect_type, title[:255]

@@ -11,8 +11,8 @@ def test_string_input_uses_bracket_category() -> None:
 
 def test_string_input_no_bracket_defaults_agent_observed() -> None:
     defect_type, title = normalize_observed_issue("some generic issue")
-    assert defect_type == "agent_observed_agent_observed"
-    assert "agent observed" in title
+    assert defect_type == "agent_observed_issue"
+    assert "issue" in title
 
 
 def test_dict_known_category_returns_normalized() -> None:
@@ -46,35 +46,37 @@ def test_dict_known_pwad_crash() -> None:
     assert defect_type == "agent_observed_pwad_crash"
 
 
-def test_dict_unknown_category_falls_back_to_agent_observed() -> None:
+def test_dict_unknown_category_falls_back_to_slug() -> None:
     defect_type, title = normalize_observed_issue({"category": "graphics_glitch", "description": "weird texture"})
-    assert defect_type == "agent_observed_agent_observed"
+    assert defect_type == "agent_observed_graphics_glitch"
+    assert "graphics glitch" in title
 
 
-def test_dict_missing_category_defaults_to_agent_observed() -> None:
+def test_dict_missing_category_defaults_to_issue() -> None:
     defect_type, title = normalize_observed_issue({"description": "something happened"})
-    assert defect_type == "agent_observed_agent_observed"
+    assert defect_type == "agent_observed_issue"
+    assert "issue" in title
 
 
-def test_none_input_returns_agent_observed() -> None:
+def test_none_input_returns_issue() -> None:
     defect_type, title = normalize_observed_issue(None)
-    assert defect_type == "agent_observed_agent_observed"
-    assert "agent observed" in title
+    assert defect_type == "agent_observed_issue"
+    assert "issue" in title
 
 
-def test_list_input_returns_agent_observed() -> None:
+def test_list_input_returns_issue() -> None:
     defect_type, title = normalize_observed_issue(["item1", "item2"])
-    assert defect_type == "agent_observed_agent_observed"
+    assert defect_type == "agent_observed_issue"
 
 
-def test_empty_string_returns_agent_observed() -> None:
+def test_empty_string_returns_issue() -> None:
     defect_type, title = normalize_observed_issue("")
-    assert "agent_observed" in defect_type
+    assert "issue" in defect_type
 
 
 def test_dict_empty_category_falls_back() -> None:
     defect_type, title = normalize_observed_issue({"category": "", "description": "desc"})
-    assert defect_type == "agent_observed_agent_observed"
+    assert defect_type == "agent_observed_issue"
 
 
 def test_title_contains_readable_category_name() -> None:

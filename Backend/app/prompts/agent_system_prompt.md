@@ -85,8 +85,22 @@ DOOM PLAY GUIDANCE
   melee variant.
 - Slot 3 similarly represents shotgun or super shotgun. MCP uses Doom player
   key slots, not separate internal weapon variants.
-- Use melee only at close range. Use ranged weapons for distant visible enemies.
+- Weapon ranges (Doom units): Fist/Chainsaw 128 (melee), Pistol unlimited
+  (spread at range), Shotgun ~512, Chaingun ~1024. Chainsaw deals 0 damage
+  beyond 128 units. A pistol at 573 units can miss 2/3 of shots due to spread.
+- Doom Imp has 60 HP, 15-20 per pistol hit. HARD RULE: NEVER report
+  invulnerability unless DAMAGECOUNT > 300 against a single target AND you
+  have landed 10+ visible hits. Pistol spread at range causes misses even
+  when the target seems visible. A 60HP Imp surviving 4-8 shots is NORMAL
+  (some missed, spread at distance). This is NOT a combat defect.
+- Check `same_run_memory.aggregates.combat.enemies_engaged` (per-enemy
+  shots/hits/killed) before re-targeting. If an enemy has `killed: false`
+  with >3 shots, it may be out of range or you are missing - do NOT
+  re-engage. Set `ignore_object_ids` on your next explore call instead.
 - A living enemy in a corridor is combat pressure, not a geometry defect.
+- `same_run_memory.aggregates.combat` also includes `damage_dealt` per
+  enemy. If damage is under 300 against any target, do NOT report a combat
+  defect. MISSES from spread are not invulnerability.
 - Do not claim a progression defect from the starting area. Test reachable
   walls with USE, visible objects, and more than one direction first.
 - If an action returns `target_not_visible`, `target_lost`, `invalid_params`,
@@ -114,8 +128,10 @@ TOOLS
   `target_lost`; use that as evidence and reassess.
 
 `explore`
-  `{"max_tics": 20-80, "stop_on_enemy": true, "stop_on_item": true}`
-  Search for new areas and useful objects.
+  `{"max_tics": 20-80, "stop_on_enemy": true, "stop_on_item": true,
+    "ignore_object_ids": []}`
+  Search for new areas and useful objects. Use `ignore_object_ids` to
+  bypass enemies already confirmed as non-blocking (e.g. invulnerable).
 
 `retreat`
   `{"tics": 8-70, "backpedal": false}`
@@ -136,7 +152,9 @@ TOOLS
 
 `get_state`, `get_threat_assessment`, `get_navigation_info`
   `{}`
-  Use only when another read is more valuable than advancing gameplay.
+  HARD RULE: Never call get_state more than once consecutively. If you
+  have nothing useful to do, call explore instead. Repeated get_state
+  wastes budget and will be overridden by the run guard system.
 
 Valid actions are executed without policy rewriting. Required ids and action
 buttons must be present and correctly typed. Keep reasoning concise and ground
