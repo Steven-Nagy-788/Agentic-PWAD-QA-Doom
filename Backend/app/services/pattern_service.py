@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Defect, TestRun
+from app.services.analysis_constants import CELL_SIZE
 
 
 class PatternService:
@@ -37,7 +38,7 @@ class PatternService:
         by_cell = defaultdict(list)
         for d in defects:
             if d.position_x is not None and d.position_y is not None:
-                cell = (round(d.position_x / 128), round(d.position_y / 128))
+                cell = (round(d.position_x / CELL_SIZE), round(d.position_y / CELL_SIZE))
                 by_cell[cell].append(d)
 
         by_difficulty = defaultdict(lambda: {"runs": 0, "completed": 0, "failed": 0, "defects": 0})
@@ -58,7 +59,7 @@ class PatternService:
                 cells = set()
                 for d in group:
                     if d.position_x is not None and d.position_y is not None:
-                        cells.add((round(d.position_x / 128), round(d.position_y / 128)))
+                        cells.add((round(d.position_x / CELL_SIZE), round(d.position_y / CELL_SIZE)))
                 defect_patterns.append({
                     "fingerprint": fingerprint,
                     "defect_type": group[0].defect_type,

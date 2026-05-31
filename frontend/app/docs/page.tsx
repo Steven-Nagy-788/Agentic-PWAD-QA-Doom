@@ -22,13 +22,17 @@ export default function DocsPage() {
           <li>Launch the run and observe the agent in real-time</li>
           <li>Review defects, decisions, and the recording in the Run Detail view</li>
         </ol>
+        <p className="mt-3 text-sm text-neutral-600">
+          This graduation-project proof of concept is intended for localhost use only. It does not provide authentication.
+        </p>
       </DocSection>
 
       <DocSection id="api-reference" title="API Reference" open={openSection === "api-reference"} onToggle={toggle}>
         <p className="text-sm text-neutral-500 mb-3">All endpoints are prefixed with <code className="rounded bg-neutral-100 px-1 py-0.5 text-xs">{API_BASE}</code></p>
         <div className="space-y-1 text-sm">
           <ApiEndpoint method="GET" path="/health" desc="Health check" />
-          <ApiEndpoint method="GET" path="/health/gemini" desc="Gemini LLM health" />
+          <ApiEndpoint method="GET" path="/health/gemini" desc="Gemini cached status" />
+          <ApiEndpoint method="POST" path="/health/gemini/probe" desc="Probe Gemini now" />
           <ApiEndpoint method="GET" path="/health/mcp" desc="MCP Doom server health" />
           <ApiEndpoint method="GET" path="/wads" desc="List all WAD files" />
           <ApiEndpoint method="POST" path="/wads/upload" desc="Upload a WAD file" />
@@ -75,7 +79,7 @@ export default function DocsPage() {
       <DocSection id="behavior-profiles" title="Behavior Profiles" open={openSection === "behavior-profiles"} onToggle={toggle}>
         <p className="text-sm text-neutral-600 mb-3">
           Behavior profiles control how the agent plays through a map. Each profile
-          adjusts stride (how many ticks between decisions), throttle delays, and the system prompt.
+          adjusts throttle delays and the system prompt while recording fidelity remains consistent.
         </p>
         <div className="space-y-3">
           <DocProfileCard name="Thorough" desc="Slow, methodical exploration. Checks every room, every corner. Maximum coverage." />

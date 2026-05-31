@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
 
@@ -97,11 +98,26 @@ def _compact_mcp_output(value: Any) -> Any:
 
 
 def _compact_state_for_llm(state: dict[str, Any]) -> dict[str, Any]:
-    compact = {key: value for key, value in state.items() if key not in {"screenshot_png", "sectors"}}
+    compact = {key: value for key, value in state.items() if key not in {"screenshot_png", "sectors", "depth"}}
+    variables = compact.get("game_variables")
+    if isinstance(variables, dict):
+        variable_names = {
+            "HEALTH", "ARMOR", "POSITION_X", "POSITION_Y", "POSITION_Z", "ANGLE",
+            "SELECTED_WEAPON", "SELECTED_WEAPON_AMMO", "KILLCOUNT", "ITEMCOUNT",
+            "SECRETCOUNT", "AMMO0", "AMMO1", "AMMO2", "AMMO3", "AMMO4", "AMMO5",
+            "AMMO6", "AMMO7", "AMMO8", "AMMO9",
+        }
+        compact["game_variables"] = {
+            key: value for key, value in variables.items() if str(key).upper() in variable_names
+        }
+    if isinstance(compact.get("weapon_state"), dict):
+        compact["weapon_state"] = _compact_weapon_state_for_llm(compact["weapon_state"])
     if isinstance(compact.get("objects"), list):
         objects = []
-        for obj in compact["objects"][:30]:
+        for obj in compact["objects"]:
             if not isinstance(obj, dict):
+                continue
+            if obj.get("type") in {"player", "decoration", "projectile"} or obj.get("is_visible") is False:
                 continue
             objects.append(
                 {
@@ -110,77 +126,215 @@ def _compact_state_for_llm(state: dict[str, Any]) -> dict[str, Any]:
                         "id",
                         "name",
                         "type",
-                        "threat",
-                        "attack_type",
                         "distance",
                         "angle_to_aim",
                         "is_visible",
-                        "screen_x",
-                        "screen_y",
                     )
                     if key in obj
                 }
             )
-        compact["objects"] = objects
+        compact["objects"] = objects[:12]
     return _json_safe(compact)
 
 
-def _lockstep_state_snapshot(state: LockstepState) -> LockstepState:
-    return {
-        "no_progress_polls": int(state.get("no_progress_polls") or 0),
-        "recovery_count": int(state.get("recovery_count") or 0),
-        "wasted_combat_count": int(state.get("wasted_combat_count") or 0),
-        "consecutive_explore_max_tics": int(state.get("consecutive_explore_max_tics") or 0),
-        "low_value_explore_total": int(state.get("low_value_explore_total") or 0),
-        "low_value_explore_cumulative": int(state.get("low_value_explore_cumulative") or 0),
-        "qa_probe_count": int(state.get("qa_probe_count") or 0),
-        "invisible_target_failures": dict(state.get("invisible_target_failures") or {}),
-        "completed_object_ids": dict(state.get("completed_object_ids") or {}),
-        "failed_object_ids": dict(state.get("failed_object_ids") or {}),
-        "out_of_ammo_targets": dict(state.get("out_of_ammo_targets") or {}),
-        "weapon_resource_failures": dict(state.get("weapon_resource_failures") or {}),
-        "blocked_decision_count": int(state.get("blocked_decision_count") or 0),
-        "progress_score": int(state.get("progress_score") or 0),
-        "quality_warnings": list(state.get("quality_warnings") or [])[-8:],
-        "hypotheses": list(state.get("hypotheses") or [])[-8:],
-        "attempted_interactions": list(state.get("attempted_interactions") or [])[-12:],
-        "explored_sectors": _sector_ids_from_state(state),
-        "visited_cells_count": len(state.get("visited_cells") or {}),
-        "total_map_cells_estimate": state.get("total_map_cells_estimate"),
-        "new_cells_last_5_decisions": state.get("new_cells_last_5_decisions", 0),
-        "unvisited_quadrants": _compute_unvisited_quadrants(state),
+def _compact_weapon_state_for_llm(state: dict[str, Any]) -> dict[str, Any]:
+    compact = {
+        key: state.get(key)
+        for key in (
+            "selected_weapon",
+            "selected_weapon_name",
+            "selected_weapon_ammo",
+            "usable_weapons",
+            "usable_ranged_weapons",
+            "usable_melee_weapons",
+            "usable_attack_ammo",
+            "best_viable_weapon",
+            "melee_available",
+        )
+        if key in state
     }
+    inventory = state.get("weapon_inventory")
+    if isinstance(inventory, list):
+        compact["owned_weapons"] = [
+            {
+                key: weapon.get(key)
+                for key in ("slot", "name", "owned_count", "ammo", "usable", "selected")
+                if key in weapon
+            }
+            for weapon in inventory
+            if isinstance(weapon, dict) and (weapon.get("owned") or weapon.get("selected"))
+        ][:6]
+    return compact
 
 
-def _structured_memory_snapshot(state: LockstepState) -> dict[str, Any]:
+def _compact_context_for_llm(context: dict[str, Any], *, list_limit: int = 5) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    for key, value in context.items():
+        if key in {"objects", "visible_objects", "weapon_state", "game_variables", "tic", "tick"}:
+            continue
+        if key == "threats" and isinstance(value, list):
+            compact[key] = [
+                {
+                    threat_key: threat.get(threat_key)
+                    for threat_key in ("id", "name", "type", "distance", "attack_type", "is_visible")
+                    if threat_key in threat
+                }
+                if isinstance(threat, dict)
+                else threat
+                for threat in value
+                if not isinstance(threat, dict) or threat.get("is_visible") is not False
+            ]
+            compact[key] = compact[key][:list_limit]
+        else:
+            compact[key] = value[:list_limit] if isinstance(value, list) else value
+    return _json_safe(compact)
+
+
+def _build_llm_input(
+    state: dict[str, Any],
+    threat_assessment: dict[str, Any],
+    navigation_info: dict[str, Any],
+    lockstep_state: LockstepState,
+    *,
+    game_tic: int,
+    ticks_remaining: int,
+    total_cells: int,
+    coverage_warning: str | None,
+) -> dict[str, Any]:
+    variables = normalize_variables(state)
+    objects = _compact_state_for_llm(state).get("objects") or []
+    visible_threats = [
+        threat
+        for threat in threat_assessment.get("threats") or []
+        if isinstance(threat, dict) and threat.get("is_visible") is not False
+    ][:5]
+    occluded_count = sum(
+        1
+        for threat in threat_assessment.get("threats") or []
+        if isinstance(threat, dict) and threat.get("is_visible") is False
+    )
+    visited_count = len(lockstep_state.get("visited_cells") or {})
+    return _json_safe(
+        {
+            "game_tic": game_tic,
+            "ticks_remaining": ticks_remaining,
+            "player": {
+                "health": variables.get("health"),
+                "armor": variables.get("armor"),
+                "position": {"x": variables.get("x"), "y": variables.get("y")},
+                "angle": variables.get("angle"),
+                "kills": variables.get("kill_count"),
+                "items": variables.get("item_count"),
+                "secrets": variables.get("secret_count"),
+            },
+            "weapon_state": _compact_weapon_state_for_llm(state.get("weapon_state") or {}),
+            "scene_objects": objects[:12],
+            "threat_summary": {
+                "threat_level": threat_assessment.get("threat_level"),
+                "visible_attackable_threats": [
+                    {
+                        key: threat.get(key)
+                        for key in ("id", "name", "type", "distance", "attack_type")
+                        if key in threat
+                    }
+                    for threat in visible_threats
+                ],
+                "occluded_threat_count": occluded_count,
+                "incoming_projectile_count": threat_assessment.get("incoming_projectile_count", 0),
+            },
+            "navigation": _compact_context_for_llm(navigation_info, list_limit=8),
+            "coverage": {
+                "visited_cells_count": visited_count,
+                "total_map_cells_estimate": total_cells,
+                "coverage_percent": round(visited_count / max(total_cells, 1) * 100, 1),
+                "new_cells_last_5_decisions": int(lockstep_state.get("new_cells_last_5_decisions") or 0),
+                "unvisited_quadrants": _compute_unvisited_quadrants(lockstep_state),
+                "warning": coverage_warning,
+            },
+            "same_run_memory": _build_same_run_memory(lockstep_state),
+        }
+    )
+
+
+def _build_same_run_memory(
+    state: LockstepState,
+    *,
+    max_chars: int | None = None,
+    recent_action_limit: int | None = None,
+) -> dict[str, Any]:
+    settings = get_settings()
+    char_limit = max_chars or settings.same_run_ledger_max_chars
+    detail_limit = recent_action_limit or settings.same_run_ledger_recent_actions
+    all_actions = list(state.get("decision_history") or [])
+    split_at = max(0, len(all_actions) - detail_limit)
+    older = all_actions[:split_at]
+    recent = all_actions[split_at:]
+
+    while True:
+        projected = {
+            "older_milestones": _build_older_milestones(older, state),
+            "recent_actions": recent,
+            "aggregates": _build_ledger_aggregates(all_actions, state),
+            "budget": _build_budget_summary(state),
+        }
+        if _serialized_size(projected) <= char_limit:
+            return projected
+        if not recent:
+            return _minimal_ledger_projection(all_actions, state)
+        older.append(recent.pop(0))
+
+
+def _serialized_size(value: Any) -> int:
+    return len(json.dumps(value, separators=(",", ":"), default=str))
+
+
+def _minimal_ledger_projection(actions: list[dict[str, Any]], state: LockstepState) -> dict[str, Any]:
+    """Keep every older action represented by deterministic counts under extreme pressure."""
+    tool_counts = dict(Counter(str(item.get("tool") or "unknown") for item in actions))
+    stop_counts = dict(Counter(str(item.get("stop_reason") or "unknown") for item in actions))
     return {
-        "explored_sectors": _sector_ids_from_state(state),
-        "attempted_interactions": list(state.get("attempted_interactions") or [])[-12:],
-        "hypotheses": list(state.get("hypotheses") or [])[-8:],
-    }
-
-
-def _build_run_history(state: LockstepState) -> dict[str, Any]:
-    return {
-        "decisions": list(state.get("decision_history") or [])[-30:],
-        "events": list(state.get("run_events") or [])[-50:],
-        "position_trail": list(state.get("position_trail") or [])[-30:],
-        "combat": _build_combat_summary(state.get("combat_attempts") or {}),
-        "tool_stats": _build_tool_stats(state),
-        "hypotheses": list(state.get("hypotheses") or [])[-20:],
-        "defects": list(state.get("defects_found") or []),
-        "checkpoints": list(state.get("checkpoints") or [])[-15:],
+        "older_milestones": {
+            "compacted_action_count": len(actions),
+            "tool_counts": tool_counts,
+            "stop_reason_counts": stop_counts,
+        },
+        "recent_actions": [],
+        "aggregates": {
+            "total_actions": len(actions),
+            "combat": _combat_summary_from_actions(actions),
+        },
         "budget": _build_budget_summary(state),
-        "current_objective": _build_objective_summary(state),
+    }
+
+
+def _build_older_milestones(actions: list[dict[str, Any]], state: LockstepState) -> dict[str, Any]:
+    return {
+        "compacted_action_count": len(actions),
+        "tool_counts": dict(Counter(str(item.get("tool") or "unknown") for item in actions)),
+        "stop_reason_counts": dict(Counter(str(item.get("stop_reason") or "unknown") for item in actions)),
+        "completed_targets": _tail_dict(state.get("completed_object_ids"), 24),
+        "failed_targets": _tail_dict(state.get("failed_object_ids"), 24),
+        "checkpoints": list(state.get("checkpoints") or [])[-12:],
+        "hypotheses": list(state.get("hypotheses") or [])[-8:],
+    }
+
+
+def _build_ledger_aggregates(actions: list[dict[str, Any]], state: LockstepState) -> dict[str, Any]:
+    combat_attempts = state.get("combat_attempts") or {}
+    return {
+        "total_actions": len(actions),
+        "tool_counts": dict(Counter(str(item.get("tool") or "unknown") for item in actions)),
+        "stop_reason_counts": dict(Counter(str(item.get("stop_reason") or "unknown") for item in actions)),
+        "combat": _build_combat_summary(combat_attempts) if combat_attempts else _combat_summary_from_actions(actions),
+        "progress_score": int(state.get("progress_score") or 0),
+        "meaningful_progress_events": int(state.get("meaningful_progress_events") or 0),
+        "runtime_warnings": list(state.get("quality_warnings") or [])[-8:],
     }
 
 
 def _build_combat_summary(attempts: dict) -> dict[str, Any]:
     if not attempts:
-        return {
-            "total_engagements": 0, "total_kills": 0, "total_shots": 0,
-            "total_hits": 0, "enemies_engaged": [], "weapon_performance": {},
-        }
+        return {"total_engagements": 0}
     enemies = sorted(attempts.values(), key=lambda e: e.get("shots", 0), reverse=True)
     weapons: dict[str, dict] = {}
     for e in enemies:
@@ -202,31 +356,43 @@ def _build_combat_summary(attempts: dict) -> dict[str, Any]:
         "total_kills": kills,
         "total_shots": total_shots,
         "total_hits": total_hits,
-        "enemies_engaged": enemies[-10:],
+        "enemies_engaged": [
+            {
+                key: enemy.get(key)
+                for key in ("id", "name", "shots", "hits", "killed")
+                if key in enemy
+            }
+            for enemy in enemies[:3]
+        ],
         "weapon_performance": weapons,
     }
 
 
-def _build_tool_stats(state: LockstepState) -> dict[str, Any]:
-    sig_counts = state.get("action_signature_counts") or {}
-    tool_totals: dict[str, dict] = {}
-    for signature, count in sig_counts.items():
-        tool = signature.split(":")[0] if ":" in signature else "unknown"
-        if tool not in tool_totals:
-            tool_totals[tool] = {"total": 0, "success": 0, "timeout": 0, "blocked": 0}
-        tool_totals[tool]["total"] += count
-    for attempt in state.get("attempted_interactions") or []:
-        t = attempt.get("type", "unknown")
-        r = attempt.get("result", "")
-        if t not in tool_totals:
-            tool_totals[t] = {"total": 0, "success": 0, "timeout": 0, "blocked": 0}
-        if r in ("reached", "combat_executed", "probe_executed"):
-            tool_totals[t]["success"] += 1
-        elif r in ("blocked_by_collision", "unreachable_or_interrupted"):
-            tool_totals[t]["blocked"] += 1
-        elif "max_tics" in r:
-            tool_totals[t]["timeout"] += 1
-    return tool_totals
+def _combat_summary_from_actions(actions: list[dict[str, Any]]) -> dict[str, Any]:
+    combat_rows = [
+        row.get("combat")
+        for row in actions
+        if isinstance(row.get("combat"), dict) and row.get("combat")
+    ]
+    if not combat_rows:
+        return {"total_engagements": 0}
+    weapons: dict[str, dict[str, int | float]] = {}
+    for row in combat_rows:
+        weapon = str(row.get("weapon_used") or "unknown")
+        weapon_summary = weapons.setdefault(weapon, {"shots": 0, "hits": 0, "kills": 0})
+        weapon_summary["shots"] += _int_like(row.get("shots_fired"))
+        weapon_summary["hits"] += _int_like(row.get("hits_landed"))
+        weapon_summary["kills"] += _int_like(row.get("kills"))
+    for summary in weapons.values():
+        shots = summary["shots"]
+        summary["accuracy"] = round(summary["hits"] / shots, 3) if shots else 0
+    return {
+        "total_engagements": len(combat_rows),
+        "total_kills": sum(_int_like(row.get("kills")) for row in combat_rows),
+        "total_shots": sum(_int_like(row.get("shots_fired")) for row in combat_rows),
+        "total_hits": sum(_int_like(row.get("hits_landed")) for row in combat_rows),
+        "weapon_performance": weapons,
+    }
 
 
 def _build_budget_summary(state: LockstepState) -> dict[str, Any]:
@@ -252,15 +418,6 @@ def _build_budget_summary(state: LockstepState) -> dict[str, Any]:
     }
 
 
-def _build_objective_summary(state: LockstepState) -> dict[str, Any]:
-    objectives = list(state.get("objective_history") or [])
-    current = objectives[-1] if objectives else "No objective set"
-    return {
-        "current": current,
-        "history": objectives[-5:],
-    }
-
-
 def _record_decision_in_history(
     lockstep_state: LockstepState,
     seq: int,
@@ -274,7 +431,14 @@ def _record_decision_in_history(
     llm_duration_ms: float,
     mcp_duration_ms: float,
     total_budget: int,
+    *,
+    action_summary: dict[str, Any] | None = None,
+    state_before: dict[str, Any] | None = None,
+    state_after: dict[str, Any] | None = None,
+    decision_source: str = "gemini",
+    observed_issue: Any = None,
 ) -> None:
+    action_summary = action_summary or {}
     result = "success"
     if stop_reason in ("stuck", "arrival_blocked", "target_not_visible"):
         result = "blocked"
@@ -293,10 +457,36 @@ def _record_decision_in_history(
         "params": _compact_params(params),
         "key_findings": _extract_key_finding(tool, stop_reason, params),
         "reasoning": (reasoning or "")[:120],
-        "guard_modified": guard_modified,
+        "decision_source": decision_source,
+        "validation_rejection": action_summary.get("validation_error"),
+        "target": {
+            key: action_summary.get(key)
+            for key in ("target_name", "target_type", "target_distance")
+            if action_summary.get(key) is not None
+        },
+        "movement": {
+            key: action_summary.get(key)
+            for key in ("distance_moved", "distance_remaining", "direction_changes")
+            if action_summary.get(key) is not None
+        },
+        "collection": {
+            key: action_summary.get(key)
+            for key in ("collected", "items_seen")
+            if action_summary.get(key) is not None
+        },
+        "combat": {
+            key: action_summary.get(key)
+            for key in ("weapon_used", "shots_fired", "hits_landed", "kills", "ammo_spent")
+            if action_summary.get(key) is not None
+        },
+        "state_delta": _state_delta(state_before, state_after),
+        "final_position": _position_from_state(state_after),
+        "total_budget": total_budget,
         "llm_ms": round(llm_duration_ms, 1),
         "mcp_ms": round(mcp_duration_ms, 1),
     }
+    if observed_issue is not None:
+        entry["observed_issue"] = _summary(observed_issue)[:180]
     history = list(lockstep_state.get("decision_history") or [])
     history.append(entry)
     lockstep_state["decision_history"] = history
@@ -310,6 +500,33 @@ def _compact_params(params: dict) -> dict[str, Any]:
         if key in params:
             out[key] = params[key]
     return out
+
+
+def _position_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+    variables = normalize_variables(state)
+    return {
+        "x": round(float(variables.get("x") or 0), 1),
+        "y": round(float(variables.get("y") or 0), 1),
+        "angle": round(float(variables.get("angle") or 0), 1),
+    }
+
+
+def _state_delta(
+    state_before: dict[str, Any] | None,
+    state_after: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(state_before, dict) or not isinstance(state_after, dict):
+        return {}
+    before = normalize_variables(state_before)
+    after = normalize_variables(state_after)
+    delta: dict[str, Any] = {}
+    for key in ("health", "armor", "ammo_total", "kill_count", "item_count", "secret_count"):
+        change = _bounded_float(after.get(key), 0.0) - _bounded_float(before.get(key), 0.0)
+        if change:
+            delta[key] = round(change, 1)
+    return delta
 
 
 def _extract_key_finding(tool: str, stop_reason: str | None, params: dict) -> str:
@@ -462,14 +679,12 @@ def _initial_lockstep_state() -> LockstepState:
     return {
         "last_signature": None,
         "no_progress_polls": 0,
-        "recovery_count": 0,
         "last_tick": -1,
         "invisible_target_failures": {},
         "wasted_combat_count": 0,
         "consecutive_explore_max_tics": 0,
         "low_value_explore_total": 0,
         "low_value_explore_cumulative": 0,
-        "qa_probe_count": 0,
         "completed_object_ids": {},
         "failed_object_ids": {},
         "out_of_ammo_targets": {},
@@ -490,7 +705,6 @@ def _initial_lockstep_state() -> LockstepState:
         "counter_hypothesis_added": False,
         "use_attempt_count": 0,
         "total_decision_count": 0,
-        "priority_pickup_forced_count": 0,
         "decision_history": [],
         "run_events": [],
         "position_trail": [],
@@ -509,13 +723,19 @@ def _track_visited_cell(state: dict[str, Any], lockstep_state: LockstepState) ->
         raw_vars = state.get("game_variables") or state.get("variables") or {}
         x = float(raw_vars.get("POSITION_X", raw_vars.get("position_x", raw_vars.get("x", 0))) or 0)
         y = float(raw_vars.get("POSITION_Y", raw_vars.get("position_y", raw_vars.get("y", 0))) or 0)
-    cell_key = f"{round(x / CELL_SIZE)}_{round(y / CELL_SIZE)}"
+    cell_key = f"{round(x / CELL_SIZE)},{round(y / CELL_SIZE)}"
     visited = lockstep_state.get("visited_cells") or {}
     was_new = cell_key not in visited
     visited[cell_key] = visited.get(cell_key, 0) + 1
     lockstep_state["visited_cells"] = dict(list(visited.items())[-200:])
     if was_new:
         lockstep_state["_new_cells_current"] = lockstep_state.get("_new_cells_current", 0) + 1
+
+
+def _tail_dict(value: Any, limit: int) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return dict(list(value.items())[-limit:])
 
 
 def _track_explored_sectors(
@@ -667,7 +887,7 @@ def _compute_unvisited_quadrants(lockstep_state: dict[str, Any]) -> int | None:
         return 4
     cells = []
     for key in visited:
-        parts = key.split("_")
+        parts = key.split(",")
         if len(parts) == 2:
             try:
                 cells.append((int(parts[0]), int(parts[1])))
@@ -686,28 +906,14 @@ def _compute_unvisited_quadrants(lockstep_state: dict[str, Any]) -> int | None:
     return 4 - sum(int(v) for v in (nw, ne, sw, se))
 
 
-def _unique_lockstep_tick(state: dict[str, Any], lockstep_state: dict[str, Any]) -> int:
+def _factual_game_tic(state: dict[str, Any], lockstep_state: dict[str, Any]) -> int:
     previous = lockstep_state.get("last_tick")
     last_tick = int(previous) if previous is not None else -1
-    raw_tick = _bounded_int(state.get("tic"), default=last_tick + 1, lower=0)
-    tick = max(raw_tick, last_tick + 1)
-    lockstep_state["last_tick"] = tick
-    return tick
-
-
-def _lockstep_progress_signature(state: dict[str, Any], navigation_info: dict[str, Any]) -> tuple:
-    variables = normalize_variables(state)
-    x = float(variables.get("x") or 0)
-    y = float(variables.get("y") or 0)
-    return (
-        round(x / 128),
-        round(y / 128),
-        int(variables.get("kill_count") or 0),
-        int(variables.get("item_count") or 0),
-        int(variables.get("secret_count") or 0),
-        int(navigation_info.get("cells_explored") or 0),
-        len(navigation_info.get("keys_found") or []),
-    )
+    variables = state.get("game_variables") if isinstance(state.get("game_variables"), dict) else {}
+    raw_tick = state.get("tic", variables.get("TIC"))
+    factual_tick = _bounded_int(raw_tick, default=max(last_tick, 0), lower=0)
+    lockstep_state["last_tick"] = max(last_tick, factual_tick)
+    return factual_tick
 
 
 def _state_report_call(state: dict[str, Any]) -> dict[str, Any]:
@@ -823,9 +1029,9 @@ def _bound_mcp_tool_params(tool: str, params: dict[str, Any]) -> dict[str, Any]:
             params["backpedal"] = bool(params["backpedal"])
     elif tool == "select_weapon":
         params["weapon_slot"] = _bounded_int(params.get("weapon_slot"), default=2, lower=0, upper=9)
-        params["max_tics"] = _bounded_int(params.get("max_tics"), default=12, lower=1, upper=20)
+        params["max_tics"] = _bounded_int(params.get("max_tics"), default=20, lower=1, upper=20)
     if tool in COMPOUND_TELEMETRY_TOOLS and "telemetry_stride" in params:
-        params["telemetry_stride"] = _bounded_int(params.get("telemetry_stride"), default=2, lower=1, upper=10)
+        params["telemetry_stride"] = _bounded_int(params.get("telemetry_stride"), default=1, lower=1, upper=10)
     return params
 
 
@@ -884,20 +1090,3 @@ def _compute_dynamic_throttle(
         return 10.0
 
     return 12.0
-
-
-def _compute_dynamic_stride(
-    state: dict[str, Any],
-    lockstep_state: LockstepState,
-    default_stride: int = 3,
-    combat_stride: int = 1,
-    stuck_stride: int = 5,
-) -> int:
-    variables = normalize_variables(state)
-    objects = state.get("objects") or []
-    visible_monsters = [o for o in objects if o.get("type") == "monster" and o.get("is_visible")]
-    if visible_monsters:
-        return combat_stride
-    if int(lockstep_state.get("no_progress_polls") or 0) > 0:
-        return stuck_stride
-    return default_stride

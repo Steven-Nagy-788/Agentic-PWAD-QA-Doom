@@ -1,4 +1,4 @@
-# LLM Cycle Improvements
+# Historical: LLM Cycle Improvements
 
 This document catalogues concrete improvements to the LLM-driven QA pipeline, ranked by impact and urgency.
 

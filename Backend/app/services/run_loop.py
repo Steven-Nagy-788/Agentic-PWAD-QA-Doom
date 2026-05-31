@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import time
 from datetime import UTC, datetime
@@ -22,15 +23,13 @@ from app.services.defect_service import DefectService
 from app.repositories.config_repository import ConfigRepository
 from app.services.analysis_constants import CELL_SIZE
 from app.services.gemini_service import GeminiService, estimate_llm_cost_usd, is_low_value_texture_defect
+from app.services.environment_service import collect_environment_metadata
 from app.services.mcp_client_service import McpDoomClient, McpStartupError, McpToolTimeoutError, normalize_mcp_state
 from app.services.prompt_service import render_agent_prompt
 from app.services.recording_service import RecordingService, jpeg_b64, png_bytes_to_frame
 from app.services.report_service import ReportService
 from app.services.run_constants import RUN_TASKS
-from app.services.run_guards import (
-    _apply_lockstep_recovery,
-    _combat_target_is_visible,
-    _guard_lockstep_decision,
+from app.services.run_tracking import (
     _lockstep_progress_metrics,
     _lockstep_quality_flags,
     _lockstep_should_stop_as_stuck,
@@ -42,25 +41,21 @@ from app.services.run_telemetry import (
     _broadcast_state,
     _pop_telemetry_frames,
     _record_telemetry_frames,
-    _write_realtime_frame,
 )
 from app.services.run_utils import (
     _bounded_float,
     _bounded_int,
-    _build_run_history,
+    _build_llm_input,
+    _build_same_run_memory,
     _compact_mcp_output,
-    _compact_state_for_llm,
-    _compute_dynamic_stride,
     _compute_dynamic_throttle,
     _finalize_lockstep_decision,
     _infrastructure_failure_fields,
     _initial_lockstep_state,
     _json_safe,
-    _lockstep_state_snapshot,
     _merge_hypotheses,
     _mcp_action_summary,
     _normalize_mcp_params,
-    _normalize_take_action_params,
     _pwad_crash_fields,
     _record_checkpoint,
     _record_decision_in_history,
@@ -70,12 +65,15 @@ from app.services.run_utils import (
     _summary,
     _track_explored_sectors,
     _track_visited_cell,
-    _unique_lockstep_tick,
+    _factual_game_tic,
     _update_combat_log,
     _update_objective_history,
     get_behavior_profile,
 )
 from app.services.websocket_service import websocket_service
+
+
+logger = logging.getLogger(__name__)
 
 
 async def agent_run_task(run_id: UUID) -> None:
@@ -97,43 +95,15 @@ async def agent_run_task(run_id: UUID) -> None:
             )
             await db.commit()
             return
-        memory_svc = RunMemoryService(db)
         settings = get_settings()
         runtime_overrides = await ConfigRepository(db).get_all()
 
         def runtime_value(key: str, fallback: Any = None) -> Any:
             return runtime_overrides.get(key, getattr(settings, key, fallback))
 
-        cross_run_memory = await memory_svc.build_cross_run_memory(
-            run_orm.wad_file_id,
-            run_orm.map_name,
-            current_run_id=run_orm.id,
-        )
-        spatial_briefing = await memory_svc.build_spatial_memory_briefing(
-            run_orm.wad_file_id,
-            run_orm.map_name,
-        )
-        knowledge_document = await memory_svc.build_knowledge_briefing(
-            run_orm.wad_file_id,
-            run_orm.map_name,
-        )
-        hypotheses_briefing = await memory_svc.build_hypotheses_briefing(
-            run_orm.wad_file_id,
-            run_orm.map_name,
-        )
         profile = get_behavior_profile(run_orm)
         total_map_cells_estimate = _estimate_total_map_cells(analysis)
-        prompt = (
-            render_agent_prompt(
-                wad, analysis, run_orm,
-                cross_run_memory=cross_run_memory["prompt"],
-                spatial_briefing=spatial_briefing,
-                knowledge_document=knowledge_document,
-                hypotheses_briefing=hypotheses_briefing,
-            )
-            + "\n\n"
-            + profile.system_prompt_addendum
-        )
+        prompt = render_agent_prompt(wad, analysis, run_orm) + "\n\n" + profile.system_prompt_addendum
 
         # Extract primitive values before session closes
         run_id_val = run_orm.id
@@ -163,6 +133,12 @@ async def agent_run_task(run_id: UUID) -> None:
             settings.llm_throttle_seconds,
         )
         live_frame_fps = max(0.1, _bounded_float(runtime_value("live_frame_fps", settings.live_frame_fps), settings.live_frame_fps))
+        recording_telemetry_stride = _bounded_int(
+            runtime_value("recording_telemetry_stride", settings.recording_telemetry_stride),
+            settings.recording_telemetry_stride,
+            lower=1,
+            upper=10,
+        )
 
     # Phase 1 complete — session closed, all ORM objects detached
     lockstep_state: LockstepState = _initial_lockstep_state()
@@ -198,18 +174,34 @@ async def agent_run_task(run_id: UUID) -> None:
                 episode_timeout=max_ticks,
                 async_player=False,
             )
+            try:
+                mcp_metadata = await mcp.get_runtime_metadata()
+            except Exception:
+                mcp_metadata = {}
+            environment_metadata = await collect_environment_metadata(
+                mcp_metadata,
+                model=llm_model,
+                iwad=iwad_used,
+                difficulty=difficulty_level,
+                max_ticks=max_ticks,
+            )
             # Set status to running in its own short session
             async with SessionLocal() as db:
                 run_orm = await db.get(TestRun, run_id_val)
                 if run_orm is not None:
-                    await RunRepository(db).update(run_orm, status="running", started_at=datetime.now(UTC))
+                    await RunRepository(db).update(
+                        run_orm,
+                        status="running",
+                        started_at=datetime.now(UTC),
+                        environment_metadata=_json_safe(environment_metadata),
+                    )
                     await db.commit()
             runtime_stage = "gameplay"
             sequence_number = 0
 
             while True:
                 state, screenshot_png = await mcp.get_state()
-                tick = _unique_lockstep_tick(state, lockstep_state)
+                tick = _factual_game_tic(state, lockstep_state)
                 _track_visited_cell(state, lockstep_state)
                 frame = png_bytes_to_frame(screenshot_png)
                 if frame is not None:
@@ -228,24 +220,16 @@ async def agent_run_task(run_id: UUID) -> None:
                         f"WARNING: Coverage is {coverage_percent}% with {ticks_remaining} ticks remaining. "
                         "Prioritize exploration over combat immediately."
                     )
-                llm_input = {
-                    "tick": tick,
-                    "ticks_remaining": ticks_remaining,
-                    **_compact_state_for_llm(state),
-                    "threat_assessment": threat_assessment,
-                    "navigation_info": navigation_info,
-                    "run_history": _build_run_history(lockstep_state),
-                    "cross_run_memory": cross_run_memory,
-                    "lockstep_state": _lockstep_state_snapshot(lockstep_state),
-                    "exploration_coverage": {
-                        "visited_cells_count": visited_count,
-                        "total_map_cells_estimate": total_cells,
-                        "coverage_percent": coverage_percent,
-                        "new_cells_last_5_decisions": lockstep_state.get("new_cells_last_5_decisions", 0),
-                        "unvisited_quadrants": _lockstep_state_snapshot(lockstep_state).get("unvisited_quadrants"),
-                        "coverage_warning": coverage_warning,
-                    },
-                }
+                llm_input = _build_llm_input(
+                    state,
+                    threat_assessment,
+                    navigation_info,
+                    lockstep_state,
+                    game_tic=tick,
+                    ticks_remaining=ticks_remaining,
+                    total_cells=total_cells,
+                    coverage_warning=coverage_warning,
+                )
 
                 # Each iteration acquires its own DB session, commits, and releases
                 async with SessionLocal() as db:
@@ -277,6 +261,7 @@ async def agent_run_task(run_id: UUID) -> None:
                                 mcp_input={},
                                 mcp_output=_json_safe(mcp_call["output"]),
                                 mcp_stop_reason=_mcp_action_summary(mcp_call).get("stop_reason"),
+                                decision_source="terminal_state",
                             )
                         )
                         sequence_number += 1
@@ -329,6 +314,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         6,
                     )
                     raw_decision = dict(decision)
+                    decision_source = str(decision.pop("_decision_source", "gemini"))
                     _merge_hypotheses(lockstep_state, raw_decision, state)
                     vision_defect = None
                     if decision_row.sequence_number % 5 == 0:
@@ -361,14 +347,6 @@ async def agent_run_task(run_id: UUID) -> None:
                         lockstep_state["defects_found"] = list(lockstep_state.get("defects_found") or []) + [
                             {"type": dt, "title": title, "tick": tick, "severity": sev}
                         ]
-                    decision = _apply_lockstep_recovery(decision, state, navigation_info, lockstep_state)
-                    decision = _guard_lockstep_decision(decision, state, lockstep_state, navigation_info)
-                    guard_status = "kept"
-                    if (
-                        decision.get("mcp_tool") != raw_decision.get("mcp_tool")
-                        or decision.get("mcp_params") != raw_decision.get("mcp_params")
-                    ):
-                        guard_status = "modified"
                     await decision_repo.update(
                         decision_row,
                         status="llm_complete",
@@ -378,6 +356,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         llm_input_tokens=token_usage.get("prompt_tokens"),
                         llm_output_tokens=token_usage.get("completion_tokens"),
                         llm_cost_estimate_usd=cost_estimate_usd,
+                        decision_source=decision_source,
                     )
                     await websocket_service.broadcast(
                         run_id_val,
@@ -391,9 +370,9 @@ async def agent_run_task(run_id: UUID) -> None:
                             "llm_duration_ms": round(llm_duration_ms, 1),
                             "llm_input": _json_safe(llm_input),
                             "llm_raw_output": _json_safe(raw_decision),
-                            "cross_run_memory_prompt": cross_run_memory.get("prompt", ""),
-                            "hypotheses_briefing": hypotheses_briefing or "",
-                            "spatial_briefing": spatial_briefing or "",
+                            "visited_cells": dict(lockstep_state.get("visited_cells") or {}),
+                            "visited_cell_size": CELL_SIZE,
+                            "decision_source": decision_source,
                             "llm_input_tokens": token_usage.get("prompt_tokens"),
                             "llm_output_tokens": token_usage.get("completion_tokens"),
                             "llm_cost_estimate_usd": cost_estimate_usd,
@@ -411,15 +390,19 @@ async def agent_run_task(run_id: UUID) -> None:
                         },
                     )
                     decision.setdefault("mcp_params", {})
-                    if "telemetry_stride" not in decision["mcp_params"]:
-                        decision["mcp_params"]["telemetry_stride"] = _compute_dynamic_stride(
-                            state, lockstep_state,
-                            default_stride=profile.default_stride,
-                            combat_stride=profile.combat_stride,
-                            stuck_stride=profile.stuck_stride,
+                    from app.services.run_constants import COMPOUND_TELEMETRY_TOOLS
+                    if (
+                        decision.get("mcp_tool") in COMPOUND_TELEMETRY_TOOLS
+                        and "telemetry_stride" not in decision["mcp_params"]
+                    ):
+                        decision["mcp_params"]["telemetry_stride"] = recording_telemetry_stride
+                    if recording_telemetry_stride > 1:
+                        decision["recording_fidelity_warning"] = (
+                            f"Recording telemetry stride is {recording_telemetry_stride}; "
+                            "video evidence may be sparse."
                         )
                     mcp_started = time.monotonic()
-                    response, mcp_call = await _execute_tool(mcp, decision, state, latest_state=llm_input)
+                    response, mcp_call = await _execute_tool(mcp, decision, state)
                     mcp_duration_ms = (time.monotonic() - mcp_started) * 1000
                     total_actions += 1
 
@@ -432,12 +415,12 @@ async def agent_run_task(run_id: UUID) -> None:
                     if not isinstance(result_state, dict) or "game_variables" not in result_state:
                         result_state = state
                     result_x, result_y, result_angle = _history_position_from_state(result_state)
-                    result_tick = _unique_lockstep_tick(result_state, lockstep_state)
+                    result_tick = _factual_game_tic(result_state, lockstep_state)
                     if frame is not None:
                         last_record_frame = frame
                         recorder.write_frame(frame, game_tick=result_tick)
                     record_frame = frame if frame is not None else last_record_frame
-                    _update_lockstep_after_action(decision, mcp_call, lockstep_state)
+                    _update_lockstep_after_action(decision, mcp_call, lockstep_state, result_state)
                     _track_visited_cell(result_state, lockstep_state)
                     _finalize_lockstep_decision(lockstep_state)
 
@@ -452,10 +435,15 @@ async def agent_run_task(run_id: UUID) -> None:
                         stop_reason=stop_reason,
                         params=decision.get("mcp_params") or {},
                         reasoning=decision.get("reasoning_summary"),
-                        guard_modified=(guard_status == "modified"),
+                        guard_modified=False,
                         llm_duration_ms=llm_duration_ms,
                         mcp_duration_ms=mcp_duration_ms,
                         total_budget=max_ticks,
+                        action_summary=_mcp_action_summary(mcp_call),
+                        state_before=state,
+                        state_after=result_state,
+                        decision_source=decision_source,
+                        observed_issue=decision.get("observed_issue"),
                     )
                     if sequence_number % 3 == 0:
                         _record_position_in_trail(
@@ -511,6 +499,8 @@ async def agent_run_task(run_id: UUID) -> None:
                         mcp_input=_json_safe(mcp_call.get("input") or {}),
                         mcp_output=_json_safe(mcp_call.get("output") or {}),
                         mcp_stop_reason=str(summary.get("stop_reason")) if summary.get("stop_reason") is not None else None,
+                        guard_modified=False,
+                        decision_source=decision_source,
                         mcp_duration_ms=mcp_duration_ms,
                     )
                     await websocket_service.broadcast(
@@ -524,18 +514,19 @@ async def agent_run_task(run_id: UUID) -> None:
                             "mcp_input": _json_safe(mcp_call.get("input") or {}),
                             "mcp_output": _json_safe(mcp_call.get("output") or {}),
                             "mcp_duration_ms": round(mcp_duration_ms, 1),
-                            "guard_status": guard_status,
+                            "decision_source": decision_source,
+                            "validation_rejection": summary.get("validation_error"),
                         },
                     )
                     progress_payload = _lockstep_progress_metrics(lockstep_state)
-                    history_snapshot = _build_run_history(lockstep_state)
+                    history_snapshot = _build_same_run_memory(lockstep_state)
                     await websocket_service.broadcast(
                         run_id_val,
                         {
                             "type": "progress",
                             "tick": result_tick,
                             **progress_payload,
-                            "run_history": history_snapshot,
+                            "same_run_memory": history_snapshot,
                         },
                     )
                     event_screenshot_b64 = None
@@ -689,9 +680,13 @@ async def agent_run_task(run_id: UUID) -> None:
                     "agent_quality_flags": _json_safe(agent_quality_flags),
                 },
             )
-            if final_fields.get("status") in {"completed", "cancelled", "failed"}:
-                await DefectService(db, gemini_service=gemini).detect_for_run(run_orm)
-                await db.commit()
+            if run_orm.status in {"completed", "cancelled", "failed"}:
+                try:
+                    await DefectService(db, gemini_service=gemini).detect_for_run(run_orm)
+                    await db.commit()
+                except Exception as exc:
+                    await db.rollback()
+                    logger.warning("Defect detection failed for run %s: %s", run_id_val, exc)
                 for defect in await DefectRepository(db).list_by_run(run_id_val):
                     await websocket_service.broadcast(
                         run_id_val,
@@ -725,36 +720,10 @@ async def agent_run_task(run_id: UUID) -> None:
                         in_run_hypotheses=hyp_list,
                         agent_quality_flags=agent_quality_flags,
                     )
-                    if run_started_at:
-                        dur = int((completed_at - run_started_at).total_seconds())
-                    else:
-                        dur = None
-                    tick_count = run_events[-1].tick_number if run_events else 0
-                    raw_doc = await memory_svc.update_knowledge_document(
-                        run_id=run_id_val,
-                        wad_file_id=wad_file_id,
-                        map_name=map_name_val,
-                        outcome=outcome,
-                        duration=dur,
-                        defect_count=len(run_defects),
-                        action_count=total_actions,
-                        game_tick_count=tick_count,
-                        defects=run_defects,
-                    )
-                    try:
-                        if raw_doc and len(raw_doc) > 300 and version_is_distillable(raw_doc):
-                            distilled = await _distill_knowledge_document(gemini, raw_doc, map_name_val)
-                            if distilled:
-                                await memory_svc.replace_knowledge_summary(
-                                    wad_file_id,
-                                    map_name_val,
-                                    distilled,
-                                )
-                    except Exception:
-                        pass
                     await db.commit()
                 except Exception as exc:
                     await db.rollback()
+                    logger.warning("Reviewer analytics persistence failed for run %s: %s", run_id_val, exc)
                 try:
                     await websocket_service.broadcast(run_id_val, {"type": "report_status", "status": "generating"})
                     await ReportService(db).generate(run_id_val)
@@ -819,30 +788,36 @@ async def _execute_tool(
     mcp: McpDoomClient,
     decision: dict[str, Any],
     state: dict[str, Any] | None = None,
-    latest_state: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     from app.services.run_constants import (
-        COMBAT_TOOLS,
         COMPOUND_TELEMETRY_TOOLS,
         EXPLORE_MAX_TICS_UPPER,
         OBJECT_ID_TOOLS,
+        TOOL_PARAM_ALLOWLIST,
     )
 
-    validate_state = latest_state if latest_state is not None else state
-
-    tool = decision.get("mcp_tool") or "explore"
-    params = _normalize_mcp_params(tool, dict(decision.get("mcp_params") or {}))
-    if tool in OBJECT_ID_TOOLS and "object_id" not in params:
-        decision["tool_param_warning"] = f"{tool} requested without an object_id; fallback explore used."
-        tool = "explore"
-        params = {}
-    if tool in COMBAT_TOOLS and not _combat_target_is_visible(validate_state, params.get("object_id")):
-        decision["tool_param_warning"] = (
-            f"{tool} target {params.get('object_id')} is not a visible monster in the current state; "
-            "fallback explore used."
-        )
-        tool = "explore"
-        params = {}
+    tool = str(decision.get("mcp_tool") or "")
+    raw_params = decision.get("mcp_params")
+    raw_params = dict(raw_params) if isinstance(raw_params, dict) else {}
+    params = _normalize_mcp_params(tool, dict(raw_params))
+    validation_error = _validate_tool_request(tool, params, raw_params, TOOL_PARAM_ALLOWLIST, OBJECT_ID_TOOLS)
+    if validation_error:
+        decision["mcp_tool"] = tool
+        decision["mcp_params"] = params
+        output = {
+            **(state or {}),
+            "action_summary": {
+                "stop_reason": "invalid_params",
+                "validation_error": validation_error,
+                "lockstep_control": True,
+            },
+        }
+        return output, {
+            "service": "backend-validation",
+            "tool": tool or "invalid_tool",
+            "input": _json_safe(params),
+            "output": _json_safe(output),
+        }
     if tool == "explore":
         params["max_tics"] = _bounded_int(params.get("max_tics"), default=EXPLORE_MAX_TICS_UPPER, lower=20, upper=EXPLORE_MAX_TICS_UPPER)
         params.setdefault("stop_on_enemy", True)
@@ -881,6 +856,27 @@ async def _execute_tool(
     }
 
 
+def _validate_tool_request(
+    tool: str,
+    params: dict[str, Any],
+    raw_params: dict[str, Any],
+    allowlist: dict[str, set[str]],
+    object_id_tools: set[str],
+) -> str | None:
+    valid_tools = set(allowlist) | {"take_action"}
+    if tool not in valid_tools:
+        return f"Unsupported MCP tool: {tool or '<missing>'}"
+    if tool in object_id_tools and not isinstance(params.get("object_id"), int):
+        return f"{tool} requires an integer object_id"
+    if tool == "select_weapon" and "weapon_slot" not in raw_params:
+        return "select_weapon requires weapon_slot"
+    if tool == "take_action":
+        actions = params.get("actions")
+        if not isinstance(actions, dict) or not actions:
+            return "take_action requires at least one allowed action button"
+    return None
+
+
 
 def _estimate_total_map_cells(analysis: Any) -> int | None:
     width = getattr(analysis, "map_width_units", None)
@@ -893,46 +889,3 @@ def _estimate_total_map_cells(analysis: Any) -> int | None:
     if parsed_width <= 0 or parsed_height <= 0:
         return None
     return max(1, math.ceil(parsed_width / CELL_SIZE) * math.ceil(parsed_height / CELL_SIZE))
-
-
-async def _distill_knowledge_document(
-    gemini: GeminiService,
-    raw_doc: str,
-    map_name: str,
-) -> str | None:
-    """Summarize accumulated run changelogs into actionable map knowledge."""
-    distill_prompt = (
-        f"You are summarizing QA run history for Doom map {map_name}. "
-        "Below is the accumulated run log. Write 5-8 bullet points of actionable knowledge "
-        "for a QA agent running this map next time. Focus ONLY on:\n"
-        "- Confirmed stuck locations (with coordinates if available)\n"
-        "- Resource balance findings (ammo/health shortage confirmed)\n"
-        "- Successful navigation strategies that led to progress\n"
-        "- Confirmed defects (with type and location)\n"
-        "- Map features discovered (switches, keys, secrets)\n"
-        "Do NOT include: meta-information about runs, timestamps, action counts, or outcomes.\n"
-        "Format: one bullet per line, starting with a dash.\n\n"
-        + raw_doc[:5000]
-    )
-
-    def parse_summary(text: str) -> dict[str, Any]:
-        return {"reasoning_summary": text.strip()}
-
-    try:
-        decision, _ = await gemini._call_with_retry(  # noqa: SLF001 - reuse Gemini retry/rate-limit path.
-            distill_prompt,
-            {},
-            parse_summary,
-            lambda: ({}, {}),
-        )
-        summary = decision.get("reasoning_summary", "")
-        if isinstance(summary, str) and len(summary) > 50:
-            return f"[Distilled knowledge for {map_name}]\n{summary}"
-    except Exception:
-        pass
-    return None
-
-
-def version_is_distillable(doc: str) -> bool:
-    """Return True if the document contains enough changelog entries to distill."""
-    return doc.count("=== Update from run") >= 2

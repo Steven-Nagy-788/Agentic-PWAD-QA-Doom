@@ -75,6 +75,7 @@ export type Run = {
   behavior_profile?: string | null;
   progress_metrics?: Record<string, unknown> | null;
   agent_quality_flags?: Record<string, unknown> | null;
+  environment_metadata?: Record<string, unknown> | null;
   report_pdf_url?: string | null;
   created_at: string;
 };
@@ -119,6 +120,8 @@ export type Decision = {
   mcp_input?: Record<string, unknown> | null;
   mcp_output?: Record<string, unknown> | null;
   mcp_stop_reason?: string | null;
+  decision_source: string;
+  validation_rejection?: string | null;
   llm_duration_ms?: number | null;
   mcp_duration_ms?: number | null;
   llm_input_tokens?: number | null;
@@ -142,6 +145,7 @@ export type PositionSample = {
   tick_number: number;
   x: number;
   y: number;
+  angle?: number;
   health: number;
 };
 
@@ -201,9 +205,6 @@ export type ReportStatus = {
 export type BehaviorProfile = {
   name: string;
   description: string;
-  default_stride: number;
-  combat_stride: number;
-  stuck_stride: number;
 };
 
 export type RecurringDefect = {
@@ -219,7 +220,7 @@ export type MapMemory = {
   map_name: string;
   recurring_defects: RecurringDefect[];
   hypotheses: { tag: string; content: string; confidence: number }[];
-  cross_run_summary: { prior_run_count: number; outcome_counts: Record<string, number> };
+  summary_counts: { prior_run_count: number; outcome_counts: Record<string, number> };
 };
 
 export async function apiGet<T>(path: string): Promise<T> {

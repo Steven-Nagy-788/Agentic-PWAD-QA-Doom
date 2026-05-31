@@ -77,7 +77,8 @@ Max height of scroll container: 540px.
 
 ## 4. ReasoningLog (`components/ReasoningLog.tsx`)
 
-Real-time or historical LLM reasoning feed with guard badges.
+Real-time or historical LLM reasoning feed with decision-source and validation
+rejection badges.
 
 **Props:**
 
@@ -99,7 +100,7 @@ Inline component rendered inside each decision card:
 ### DecisionCard
 
 Each card displays:
-- Sequence number, guard badge, tool name (with tick number)
+- Sequence number, decision-source badge, validation rejection, tool name (with tick number)
 - Reasoning text
 - Expandable "Show details" section with LLM latency, MCP latency, input/output tokens, cost, stop reason, MCP input/output JSON, LLM input/output JSON
 

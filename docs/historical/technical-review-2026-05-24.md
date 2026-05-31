@@ -1,4 +1,4 @@
-# Technical Review - 2026-05-24
+# Historical: Technical Review - 2026-05-24
 
 ## Scope
 

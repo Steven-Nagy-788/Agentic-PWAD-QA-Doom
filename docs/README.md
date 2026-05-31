@@ -34,7 +34,7 @@ For a detailed architectural description with diagrams, see the [Architecture Ov
 | [API Reference](backend/api.md) | Complete REST and WebSocket API surface with endpoint tree diagram |
 | [Data Model](backend/data-model.md) | All 13 SQLAlchemy ORM models, entity-relationship diagram, column reference |
 | [Services Layer](backend/services.md) | 20 service modules: WAD analysis, run orchestration, MCP client, Gemini, recording, reporting |
-| [Run Lifecycle & Agent Loop](backend/run-lifecycle.md) | Lockstep AI loop: state fetch, prompt construction, guard validation, action execution, telemetry |
+| [Run Lifecycle & Agent Loop](backend/run-lifecycle.md) | Lockstep AI loop: state fetch, prompt projection, parameter validation, action execution, telemetry |
 | [Defect Detection](backend/defect-detection.md) | 7 detector algorithms, fingerprinting, deduplication, cross-run pattern analysis |
 
 ### Frontend Documentation

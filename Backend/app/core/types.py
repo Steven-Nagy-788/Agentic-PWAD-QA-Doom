@@ -6,14 +6,13 @@ from typing import TypedDict
 class LockstepState(TypedDict, total=False):
     last_signature: tuple | None
     no_progress_polls: int
-    recovery_count: int
     last_tick: int
+    last_progress_signature: tuple | None
     invisible_target_failures: dict[str, int]
     wasted_combat_count: int
     consecutive_explore_max_tics: int
     low_value_explore_total: int
     low_value_explore_cumulative: int
-    qa_probe_count: int
     completed_object_ids: dict[str, dict[str, object]]
     failed_object_ids: dict[str, int]
     out_of_ammo_targets: dict[str, int]
@@ -41,15 +40,15 @@ class ExplorationCoverage(TypedDict, total=False):
 
 
 class LlmInput(TypedDict, total=False):
-    tick: int
-    threat_assessment: dict
-    navigation_info: dict
-    recent_trace: list[dict]
-    structured_memory: dict
-    lockstep_state: LockstepState
-    exploration_coverage: ExplorationCoverage
-    objects: list[dict]
-    game_variables: dict
+    game_tic: int
+    ticks_remaining: int
+    player: dict
+    weapon_state: dict
+    scene_objects: list[dict]
+    threat_summary: dict
+    navigation: dict
+    coverage: ExplorationCoverage
+    same_run_memory: dict
 
 
 class LlmDecision(TypedDict, total=False):

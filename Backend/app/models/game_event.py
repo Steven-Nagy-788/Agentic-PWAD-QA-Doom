@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, REAL, SmallInteger, String, Text, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, REAL, SmallInteger, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,7 +19,6 @@ if TYPE_CHECKING:
 class GameEvent(Base):
     __tablename__ = "game_events"
     __table_args__ = (
-        UniqueConstraint("run_id", "tick_number"),
         Index("idx_game_events_run_id", "run_id"),
         Index("idx_game_events_run_id_tick", "run_id", "tick_number"),
         Index(

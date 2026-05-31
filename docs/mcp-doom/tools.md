@@ -261,7 +261,8 @@ Get spatial navigation intelligence. Tracks exploration across calls using `Navi
 
 **Returns:** `{cells_explored, explored_directions, unexplored_directions, suggested_direction, keys_found, known_key_locations, nearby_doors, total_doors_found}`
 
-- `cells_explored`: number of 128-unit grid cells visited
+- `cells_explored`: number of MCP navigation's internal 128-unit grid cells
+  visited. Backend QA coverage uses a separate 256-unit grid.
 - `suggested_direction`: best unexplored cardinal direction aligned with player facing
 - `nearby_doors`: detected doors within 512 units
 

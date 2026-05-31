@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AgentPositionTrail, Defect, GameEvent, TestRun
+from app.services.analysis_constants import CELL_SIZE
 from app.repositories.run_repository import RunRepository
 
 
@@ -74,7 +75,9 @@ class RunCompareService:
         return defects
 
     async def _events(self, run_id: UUID) -> list[GameEvent]:
-        result = await self.db.execute(select(GameEvent).where(GameEvent.run_id == run_id).order_by(GameEvent.tick_number))
+        result = await self.db.execute(
+            select(GameEvent).where(GameEvent.run_id == run_id).order_by(GameEvent.tick_number, GameEvent.id)
+        )
         return list(result.scalars().all())
 
     async def _movement_coverage(self, run_id: UUID) -> float:
@@ -83,7 +86,7 @@ class RunCompareService:
             .where(AgentPositionTrail.run_id == run_id)
             .where(AgentPositionTrail.is_sentinel.is_(False))
         )
-        cells = {(round(position.x / 128), round(position.y / 128)) for position in result.scalars().all()}
+        cells = {(round(position.x / CELL_SIZE), round(position.y / CELL_SIZE)) for position in result.scalars().all()}
         return float(len(cells))
 
 

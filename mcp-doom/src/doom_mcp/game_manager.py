@@ -201,29 +201,16 @@ DELTA_BUTTONS = {
 }
 
 _WEAPON_SLOTS = tuple(range(10))
-_MELEE_WEAPON_SLOTS = {1, 8}
+_MELEE_WEAPON_SLOTS = {1}
 _WEAPON_NAMES = {
     0: "weapon0",
-    1: "fist",
+    1: "fist_or_chainsaw",
     2: "pistol",
-    3: "shotgun",
+    3: "shotgun_or_super_shotgun",
     4: "chaingun",
     5: "rocket_launcher",
     6: "plasma_rifle",
     7: "bfg9000",
-    8: "chainsaw",
-    9: "super_shotgun",
-}
-# Maps player key number (1-7) to ViZDoom SELECTED_WEAPON values.
-# Key 1 maps to both fist (1) and chainsaw (8); prefer chainsaw if owned.
-_PLAYER_KEY_TO_VIZDOOM_WEAPON: dict[int, int] = {
-    1: 8,
-    2: 2,
-    3: 3,
-    4: 4,
-    5: 5,
-    6: 6,
-    7: 7,
 }
 _RANGED_WEAPON_PRIORITY = (7, 6, 5, 4, 3, 9, 2)
 _MELEE_RANGE = 128.0
@@ -430,7 +417,8 @@ class GameManager:
         for slot in _WEAPON_SLOTS:
             weapon_var = getattr(vzd.GameVariable, f"WEAPON{slot}")
             ammo_var = getattr(vzd.GameVariable, f"AMMO{slot}")
-            owned = bool(game.get_game_variable(weapon_var))
+            owned_count = int(game.get_game_variable(weapon_var))
+            owned = owned_count > 0
             ammo = int(game.get_game_variable(ammo_var))
             effective_ammo = selected_ammo if slot == selected_weapon else ammo
             requires_ammo = slot not in _MELEE_WEAPON_SLOTS
@@ -439,6 +427,7 @@ class GameManager:
                 "slot": slot,
                 "name": _WEAPON_NAMES.get(slot, f"weapon{slot}"),
                 "owned": owned,
+                "owned_count": owned_count,
                 "ammo": ammo,
                 "effective_ammo": effective_ammo,
                 "requires_ammo": requires_ammo,
@@ -986,7 +975,7 @@ class GameManager:
     def select_weapon(
         self,
         weapon_slot: int,
-        max_tics: int = 12,
+        max_tics: int = 20,
         capture_telemetry: bool = False,
         telemetry_stride: int = 1,
     ) -> dict:
@@ -1073,11 +1062,8 @@ class GameManager:
     # Compound action helpers
     # ------------------------------------------------------------------
 
-    def _select_weapon_slot(self, game: vzd.DoomGame, weapon_slot: int, max_tics: int = 12) -> tuple[bool, int]:
+    def _select_weapon_slot(self, game: vzd.DoomGame, weapon_slot: int, max_tics: int = 20) -> tuple[bool, int]:
         """Select a weapon slot with SELECT_WEAPONn when configured, otherwise cycle."""
-        if weapon_slot == 1:
-            chainsaw_owned = int(game.get_game_variable(vzd.GameVariable.WEAPON8)) > 0
-            weapon_slot = _PLAYER_KEY_TO_VIZDOOM_WEAPON[1] if chainsaw_owned else 1
         target = max(0, min(9, int(weapon_slot)))
         if int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) == target:
             return True, 0
@@ -1089,13 +1075,15 @@ class GameManager:
         if direct_button in button_names:
             self._make_action(game, self._build_action_list({direct_button: 1}), 1)
             tics_used += 1
-            for _ in range(max(0, int(max_tics) - 1)):
+            retry_at = max(1, int(max_tics) // 2)
+            for tic_index in range(1, max(1, int(max_tics))):
                 if game.is_episode_finished():
                     break
                 if int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) == target:
                     self._clear_action(game)
                     return True, tics_used
-                self._make_action(game, self._build_action_list(), 1)
+                actions = {direct_button: 1} if tic_index == retry_at else {}
+                self._make_action(game, self._build_action_list(actions), 1)
                 tics_used += 1
             self._clear_action(game)
             return int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) == target, tics_used

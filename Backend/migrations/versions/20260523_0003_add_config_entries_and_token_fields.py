@@ -8,8 +8,6 @@ Create Date: 2026-05-23
 from __future__ import annotations
 
 from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
 
 revision = "20260523_0003"
@@ -19,11 +17,14 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "config_entries",
-        sa.Column("key", sa.String(128), primary_key=True),
-        sa.Column("value", postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS config_entries (
+            key VARCHAR(128) PRIMARY KEY,
+            value JSONB NOT NULL DEFAULT '{}'::jsonb,
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        """
     )
     op.execute(
         "ALTER TABLE agent_decisions "

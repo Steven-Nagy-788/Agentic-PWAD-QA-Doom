@@ -151,7 +151,7 @@ View and edit application settings, view behavior profiles.
 | Recording Config | Live FPS, Recording FPS, Telemetry stride |
 | General | App name, Environment, IWAD (read-only except IWAD) |
 
-**Behavior Profiles:** Grid of profile cards showing name, description, default/combat/stuck stride values.
+**Behavior Profiles:** Grid of profile cards showing name, description, and throttle values. Recording stride is configured independently.
 
 ---
 
@@ -188,7 +188,7 @@ RunStreamMessage types dispatched by WebSocket
     │ decision │   Accumulates token/cost totals
     ├──────────┤
     │ mcp_call │ → Patches the matching pending decision with
-    │ _result  │   MCP output, stop reason, guard status, duration
+    │ _result  │   MCP output, stop reason, decision source, duration
     ├──────────┤
     │  defect  │ → Appends Defect to defects array (max 200)
     ├──────────┤
@@ -276,7 +276,7 @@ sequenceDiagram
         WS-->>Browser: onmessage → append decision, update token totals
         API->>MCP: Execute action via MCP tool
         MCP-->>API: Tool result
-        API->>WS: mcp_call_result { output, stop_reason, guard_status }
+        API->>WS: mcp_call_result { output, stop_reason, decision_source, validation_rejection }
         WS-->>Browser: onmessage → patch decision with MCP output
     end
 

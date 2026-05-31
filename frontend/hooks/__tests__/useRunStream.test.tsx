@@ -51,7 +51,7 @@ function liveSnapshot() {
     progress_metrics: {},
     agent_quality_flags: {},
     report_status: { status: "pending" },
-    run_history: null,
+    same_run_memory: null,
   };
 }
 
@@ -156,6 +156,32 @@ describe("useRunStream", () => {
     });
 
     expect(screen.getByTestId("error").textContent).toContain("invalid live stream payload");
+  });
+
+  it("reads visited coverage cells from the dedicated decision payload", async () => {
+    const { useRunStream } = await import("@/hooks/useRunStream");
+
+    function TestHarness() {
+      const stream = useRunStream("test-run-id");
+      return (
+        <div>
+          <span data-testid="visited">{stream.visitedCells["1,-1"] ?? 0}</span>
+          <span data-testid="cell-size">{stream.visitedCellSize}</span>
+        </div>
+      );
+    }
+
+    render(<TestHarness />);
+    await waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
+
+    act(() => {
+      MockWebSocket.instances[0].onmessage?.({
+        data: JSON.stringify({ type: "llm_decision", visited_cells: { "1,-1": 3 }, visited_cell_size: 256 }),
+      } as MessageEvent<string>);
+    });
+
+    expect(screen.getByTestId("visited").textContent).toBe("3");
+    expect(screen.getByTestId("cell-size").textContent).toBe("256");
   });
 
   it("decisions array slicer truncates to 500", () => {

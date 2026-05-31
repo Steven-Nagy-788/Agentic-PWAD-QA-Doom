@@ -12,8 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
-from app.models import AgentDecision, AgentPositionTrail, Defect, GameEvent, StaticAnalysisResult, TestReport, TestRun
-from app.repositories.agent_decision_repository import AgentDecisionRepository
+from app.core.behavior_profiles import PROFILES
+from app.models import GameEvent, TestRun
 from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.config_repository import ConfigRepository
 from app.repositories.defect_repository import DefectRepository
@@ -21,31 +21,18 @@ from app.repositories.run_repository import RunRepository
 from app.repositories.wad_repository import WadRepository
 from app.serializers.run_serializers import RunCreate
 from app.services.analysis_service import AnalysisService, player_start_counts
-from app.services.collector_service import CollectorService
 from app.services.defect_service import DefectService
-from app.services.gemini_service import GeminiService
 from app.services.mcp_client_service import McpDoomClient, probe_mcp_sse_url
-from app.services.prompt_service import render_agent_prompt
-from app.services.recording_service import RecordingService, jpeg_b64, png_bytes_to_frame
 from app.services.report_service import ReportService
 from app.services.run_constants import (
-    DIRECTOR_POLL_SECONDS,
-    DIRECTOR_STUCK_POLL_THRESHOLD,
-    DIRECTOR_STUCK_RECOVERY_LIMIT,
-    PWAD_CRASH_CATEGORY,
     RUN_TASKS,
     _ACTIVE_RUN_LOCK_ID,
 )
 from app.services.run_loop import agent_run_task
-from app.services.run_memory import RunMemoryService
 from app.services.run_utils import (
-    _bounded_float,
     _bounded_int,
-    _compact_mcp_output,
     _ensure_aware,
-    _json_safe,
 )
-from app.services.websocket_service import websocket_service
 
 logger = logging.getLogger(__name__)
 
@@ -104,12 +91,11 @@ class RunService:
                 f"Another test run is already active: {active_run.id}",
             )
 
-        behavior_profile = await RunMemoryService(self.db).recommend_behavior_profile(
-            wad.id,
-            map_name,
-            data.behavior_profile,
-            str(runtime_value("default_agent_behavior", self.settings.default_agent_behavior)),
+        behavior_profile = data.behavior_profile or str(
+            runtime_value("default_agent_behavior", self.settings.default_agent_behavior)
         )
+        if behavior_profile not in PROFILES:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unknown behavior profile")
         queue_mode = runtime_value("run_worker_mode", self.settings.run_worker_mode)
         run = await self.repo.create(
             TestRun(
@@ -262,6 +248,5 @@ async def finalize_stopped_run(db: AsyncSession, run_id: UUID, outcome: str) -> 
             await db.commit()
     await db.refresh(run)
     return run
-
 
 

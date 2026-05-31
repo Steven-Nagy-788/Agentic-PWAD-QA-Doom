@@ -84,4 +84,5 @@ class PositionTrailOut(BaseModel):
     tick_number: int
     x: float
     y: float
+    angle: float
     health: int

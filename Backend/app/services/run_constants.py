@@ -19,18 +19,7 @@ COMPOUND_TELEMETRY_TOOLS = {
 }
 OBJECT_ID_TOOLS = {"aim_and_shoot", "strafe_and_shoot", "move_to"}
 COMBAT_TOOLS = {"aim_and_shoot", "strafe_and_shoot"}
-STUCK_RUN_ABORT_THRESHOLD = 5
-WASTED_COMBAT_ABORT_THRESHOLD = 3
-LOW_VALUE_EXPLORE_OVERRIDE_THRESHOLD = 2
-LOW_VALUE_EXPLORE_STUCK_LIMIT = 6
-QA_PROBE_BURST_LIMIT = 4
 EXPLORE_MAX_TICS_UPPER = 80
-REPEATED_ACTION_ABORT_THRESHOLD = 4
-BLOCKED_DECISION_ABORT_THRESHOLD = 6
-PICKUP_OBJECT_TYPES = {"item", "ammo", "weapon", "key"}
-DIRECTOR_POLL_SECONDS = 1.25
-DIRECTOR_STUCK_POLL_THRESHOLD = 5
-DIRECTOR_STUCK_RECOVERY_LIMIT = 4
 PWAD_CRASH_CATEGORY = "pwad_crash"
 INFRASTRUCTURE_CATEGORY = "infrastructure"
 TAKE_ACTION_BUTTONS = {
@@ -75,7 +64,6 @@ TAKE_ACTION_BINARY_BUTTONS = {
     "JUMP",
     "CROUCH",
 }
-CARDINAL_DIRECTION_ANGLES = {"east": 0.0, "north": 90.0, "west": 180.0, "south": 270.0}
 OBJECT_ID_ALIASES: dict[str, tuple[str, ...]] = {
     "aim_and_shoot": ("object_id", "enemy_id", "target_id", "monster_id"),
     "strafe_and_shoot": ("object_id", "enemy_id", "target_id", "monster_id"),

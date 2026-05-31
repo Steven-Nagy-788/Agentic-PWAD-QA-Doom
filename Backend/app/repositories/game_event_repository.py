@@ -32,7 +32,7 @@ class GameEventRepository:
         result = await self.db.execute(
             select(GameEvent)
             .where(GameEvent.run_id == run_id)
-            .order_by(GameEvent.tick_number)
+            .order_by(GameEvent.tick_number, GameEvent.id)
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
@@ -44,7 +44,7 @@ class GameEventRepository:
             query = query.where(GameEvent.event_type.in_(event_types))
         else:
             query = query.where(GameEvent.event_type != "normal")
-        result = await self.db.execute(query.order_by(GameEvent.tick_number))
+        result = await self.db.execute(query.order_by(GameEvent.tick_number, GameEvent.id))
         return list(result.scalars().all())
 
     async def list_position_trail(self, run_id: UUID) -> list[AgentPositionTrail]:
@@ -52,6 +52,6 @@ class GameEventRepository:
             select(AgentPositionTrail)
             .where(AgentPositionTrail.run_id == run_id)
             .where(AgentPositionTrail.is_sentinel.is_(False))
-            .order_by(AgentPositionTrail.tick_number)
+            .order_by(AgentPositionTrail.tick_number, AgentPositionTrail.id)
         )
         return list(result.scalars().all())

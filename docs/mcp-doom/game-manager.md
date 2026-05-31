@@ -402,7 +402,10 @@ The `NavigationMemory` class (`navigation.py:18`) tracks spatial exploration sta
 
 ### Grid-Based Cell Tracking
 
-The map is divided into 128×128 unit cells. Each tick, the player's current cell `(int(x)//128, int(y)//128)` is added to a visited set:
+MCP navigation uses its own internal 128×128 unit cells. This is intentionally
+separate from the backend's 256-unit QA coverage grid. Each tick, the player's
+current MCP-navigation cell `(int(x)//128, int(y)//128)` is added to a visited
+set:
 - `cells_explored`: size of the visited set
 - `explored_directions` / `unexplored_directions`: checks the 4 cardinal neighbors of the current cell
 - `suggested_direction`: picks the unexplored direction closest to the player's facing angle

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,9 @@ import cv2
 import numpy as np
 
 from app.core.config import get_settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class RecordingService:
@@ -178,10 +182,16 @@ class RecordingService:
                 check=False,
                 capture_output=True,
                 text=True,
+                timeout=max(0.1, self.settings.ffmpeg_timeout_seconds),
             )
             if completed.returncode != 0:
                 self._transcode_errors.append(_trim_ffmpeg_error(completed.stderr))
+        except subprocess.TimeoutExpired:
+            logger.warning("ffmpeg transcode timed out for run %s", self.run_id)
+            self._transcode_errors.append("ffmpeg_transcode_timed_out")
+            return self.source_path
         except Exception:
+            logger.exception("ffmpeg transcode failed for run %s", self.run_id)
             self._transcode_errors.append("ffmpeg_transcode_failed")
             return self.source_path
 

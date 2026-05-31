@@ -41,6 +41,13 @@ describe("MapCanvas", () => {
     expect(trailCircles).toHaveLength(3);
   });
 
+  it("renders visited coverage cells from comma-delimited keys", () => {
+    const { container } = render(<MapCanvas map={mockMap} visitedCells={{ "1,-1": 3 }} visitedCellSize={256} />);
+    const coverage = container.querySelector('rect[fill="#22c55e"]');
+    expect(coverage).toBeInTheDocument();
+    expect(Number(coverage?.getAttribute("width"))).toBeGreaterThanOrEqual(2);
+  });
+
   it("renders event markers with correct colors", () => {
     const events: TraceEntry[] = [
       { id: 1, run_id: "r1", tick_number: 5, player_x: 150, player_y: 150, player_angle: 0, health: 100, armor: 0, ammo_bullets: 10, ammo_shells: 0, ammo_rockets: 0, ammo_cells: 0, kill_count: 1, item_count: 0, secret_count: 0, event_type: "kill" },

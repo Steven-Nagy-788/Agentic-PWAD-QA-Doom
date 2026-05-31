@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { Search } from "lucide-react";
 import { Run, RunList, WadFile, apiGet } from "@/lib/api";
-import { OutcomeBadge } from "@/lib/components/shared";
+import { InlineError, OutcomeBadge, SkeletonRows, errorMessage } from "@/lib/components/shared";
 import { HealthSparkline } from "@/lib/components/HealthSparkline";
 
 type RunFilters = { wad: string; map: string; outcome: string; difficulty: string; after: string; before: string };
@@ -93,7 +93,11 @@ export default function RunHistoryPage() {
       </div>
 
       <div className="overflow-x-auto rounded border border-neutral-200 bg-white">
-        {visibleRuns.length === 0 ? (
+        {runs.isLoading || wads.isLoading ? (
+          <div className="p-3"><SkeletonRows /></div>
+        ) : runs.error || wads.error ? (
+          <div className="p-3"><InlineError message={errorMessage(runs.error ?? wads.error) ?? "Failed to load run history"} /></div>
+        ) : visibleRuns.length === 0 ? (
           <div className="p-6 text-center text-sm text-neutral-500">
             No runs yet. Upload a WAD to get started.
           </div>

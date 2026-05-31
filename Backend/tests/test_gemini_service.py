@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.services.gemini_service import GeminiService, estimate_llm_cost_usd
 
 
@@ -62,14 +64,14 @@ def test_parse_decision_valid_json() -> None:
     assert result["reasoning_summary"] == "moving"
 
 
-def test_parse_decision_missing_mcp_tool_defaults_to_explore() -> None:
-    result = GeminiService().parse_decision("{}")
-    assert result["mcp_tool"] == "explore"
+def test_parse_decision_missing_mcp_tool_is_rejected_for_retry() -> None:
+    with pytest.raises(ValueError, match="omitted mcp_tool"):
+        GeminiService().parse_decision("{}")
 
 
-def test_parse_decision_invalid_tool_falls_back_to_explore() -> None:
+def test_parse_decision_invalid_tool_is_preserved_for_structured_rejection() -> None:
     result = GeminiService().parse_decision('{"mcp_tool": "fly_away"}')
-    assert result["mcp_tool"] == "explore"
+    assert result["mcp_tool"] == "fly_away"
 
 
 def test_parse_decision_missing_reasoning_fills_default() -> None:
@@ -82,20 +84,24 @@ def test_parse_decision_missing_mcp_params_defaults_to_empty_dict() -> None:
     assert result["mcp_params"] == {}
 
 
-def test_parse_decision_empty_string_returns_defaults() -> None:
-    result = GeminiService().parse_decision("")
-    assert result["mcp_tool"] == "explore"
-    assert result["mcp_params"] == {}
+def test_parse_decision_empty_string_is_rejected_for_retry() -> None:
+    with pytest.raises(ValueError, match="Could not parse"):
+        GeminiService().parse_decision("")
 
 
-def test_parse_decision_none_input_returns_defaults() -> None:
-    result = GeminiService().parse_decision("")  # type: ignore[arg-type]
-    assert result["mcp_tool"] == "explore"
+def test_parse_decision_none_input_is_rejected_for_retry() -> None:
+    with pytest.raises(ValueError, match="Could not parse"):
+        GeminiService().parse_decision(None)  # type: ignore[arg-type]
 
 
-def test_parse_decision_garbage_text_returns_defaults() -> None:
-    result = GeminiService().parse_decision("this is not json at all")
-    assert result["mcp_tool"] == "explore"
+def test_parse_decision_json_array_is_rejected_for_retry() -> None:
+    with pytest.raises(ValueError, match="Could not parse"):
+        GeminiService().parse_decision("[]")
+
+
+def test_parse_decision_garbage_text_is_rejected_for_retry() -> None:
+    with pytest.raises(ValueError, match="Could not parse"):
+        GeminiService().parse_decision("this is not json at all")
 
 
 def test_parse_decision_markdown_fenced_json() -> None:
@@ -165,6 +171,7 @@ def test_fallback_decision_selects_best_weapon_when_selected_weapon_empty() -> N
 
     assert decision["mcp_tool"] == "select_weapon"
     assert decision["mcp_params"]["weapon_slot"] == 2
+    assert decision["mcp_params"]["max_tics"] == 20
 
 
 def test_cost_estimate_uses_per_million_rates() -> None:

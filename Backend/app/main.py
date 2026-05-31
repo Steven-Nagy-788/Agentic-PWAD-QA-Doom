@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 import os
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +23,7 @@ from sqlalchemy import select, func, text
 
 
 settings = get_settings()
+_gemini_probe_cache: dict[str, Any] | None = None
 
 
 @asynccontextmanager
@@ -92,12 +94,36 @@ def health_check() -> dict[str, str]:
 
 
 @app.get("/health/gemini", tags=["Health"])
-async def gemini_health_check() -> dict[str, str]:
+async def gemini_health_check() -> dict[str, Any]:
+    if not settings.gemini_api_key:
+        return {"status": "error", "configured": False, "model": settings.llm_model}
+    return {
+        "status": _gemini_probe_cache.get("status", "configured") if _gemini_probe_cache else "configured",
+        "configured": True,
+        "model": settings.llm_model,
+        "last_probe": _gemini_probe_cache,
+    }
+
+
+@app.post("/health/gemini/probe", tags=["Health"])
+async def probe_gemini_health() -> dict[str, Any]:
+    global _gemini_probe_cache
     try:
         result = await GeminiService().probe_model()
-        return {"status": "ok", "model": result["model"], "response": result["response"][:200]}
+        _gemini_probe_cache = {
+            "status": "ok",
+            "model": result["model"],
+            "response": result["response"][:200],
+            "checked_at": datetime.now(UTC).isoformat(),
+        }
     except Exception as exc:
-        return {"status": "error", "model": settings.llm_model, "error": str(exc)}
+        _gemini_probe_cache = {
+            "status": "error",
+            "model": settings.llm_model,
+            "error": str(exc),
+            "checked_at": datetime.now(UTC).isoformat(),
+        }
+    return _gemini_probe_cache
 
 
 @app.get("/health/mcp", tags=["Health"])

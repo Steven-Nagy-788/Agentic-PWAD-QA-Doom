@@ -25,6 +25,9 @@ class SettingsUpdatePayload(BaseModel):
     live_frame_fps: Optional[float] = None
     recording_fps: Optional[float] = None
     recording_telemetry_stride: Optional[int] = None
+    same_run_ledger_max_chars: Optional[int] = None
+    same_run_ledger_recent_actions: Optional[int] = None
+    no_progress_decision_abort_threshold: Optional[int] = None
     default_agent_behavior: Optional[str] = None
     iwad_used: Optional[str] = None
 
@@ -46,6 +49,15 @@ def _merge_settings(env: Any, overrides: dict[str, Any]) -> dict[str, Any]:
         "live_frame_fps": overrides.get("live_frame_fps", env.live_frame_fps),
         "recording_fps": overrides.get("recording_fps", env.recording_fps),
         "recording_telemetry_stride": overrides.get("recording_telemetry_stride", env.recording_telemetry_stride),
+        "same_run_ledger_max_chars": overrides.get("same_run_ledger_max_chars", env.same_run_ledger_max_chars),
+        "same_run_ledger_recent_actions": overrides.get(
+            "same_run_ledger_recent_actions",
+            env.same_run_ledger_recent_actions,
+        ),
+        "no_progress_decision_abort_threshold": overrides.get(
+            "no_progress_decision_abort_threshold",
+            env.no_progress_decision_abort_threshold,
+        ),
         "default_agent_behavior": overrides.get("default_agent_behavior", env.default_agent_behavior),
         "iwad_used": overrides.get("iwad_used", env.iwad_used),
     }
@@ -78,9 +90,6 @@ def behavior_profiles_route() -> dict:
         name: {
             "name": p.name,
             "description": p.description,
-            "default_stride": p.default_stride,
-            "combat_stride": p.combat_stride,
-            "stuck_stride": p.stuck_stride,
         }
         for name, p in PROFILES.items()
     }

@@ -6,6 +6,7 @@ from typing import Any
 from app.core.config import get_settings
 from app.services.gemini_service import GeminiService
 from app.services.mcp_client_service import McpDoomClient, probe_mcp_sse_url
+from app.services.collector_service import normalize_variables
 
 
 class SmokeService:
@@ -93,11 +94,11 @@ class SmokeService:
         try:
             state, screenshot = await client.get_state()
             has_screenshot = screenshot is not None
-            player = state.get("player", {}) if isinstance(state, dict) else {}
+            variables = normalize_variables(state) if isinstance(state, dict) else {}
             return _pass(label, start, {
                 "has_screenshot": has_screenshot,
-                "player_health": player.get("health"),
-                "player_ammo": player.get("ammo"),
+                "player_health": variables.get("health"),
+                "player_ammo": variables.get("usable_attack_ammo"),
             })
         except Exception as exc:
             return _fail(label, start, str(exc))

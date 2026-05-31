@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS test_runs (
     recording_metadata      JSONB,
     progress_metrics        JSONB,
     agent_quality_flags     JSONB,
+    environment_metadata    JSONB,
     report_pdf_path         TEXT,
     created_at              TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
@@ -112,9 +113,7 @@ CREATE TABLE IF NOT EXISTS game_events (
     llm_input_summary   TEXT,
     event_type          VARCHAR(32)     NOT NULL DEFAULT 'normal',
     killed_enemy_type   VARCHAR(64),
-    damage_received     SMALLINT,
-
-    UNIQUE (run_id, tick_number)
+    damage_received     SMALLINT
 );
 
 CREATE INDEX IF NOT EXISTS idx_game_events_run_id ON game_events(run_id);
@@ -144,6 +143,8 @@ CREATE TABLE IF NOT EXISTS agent_decisions (
     mcp_input           JSONB,
     mcp_output          JSONB,
     mcp_stop_reason     VARCHAR(64),
+    guard_modified      BOOLEAN     NOT NULL DEFAULT FALSE,
+    decision_source     VARCHAR(32) NOT NULL DEFAULT 'gemini',
     llm_duration_ms     REAL,
     mcp_duration_ms     REAL,
     llm_input_tokens    INTEGER,
@@ -173,7 +174,9 @@ CREATE TABLE IF NOT EXISTS agent_position_trail (
     tick_number INTEGER     NOT NULL,
     x           REAL        NOT NULL,
     y           REAL        NOT NULL,
-    health      SMALLINT    NOT NULL
+    angle       REAL        NOT NULL DEFAULT 0,
+    health      SMALLINT    NOT NULL,
+    is_sentinel BOOLEAN     NOT NULL DEFAULT FALSE
 );
 
 CREATE INDEX IF NOT EXISTS idx_position_trail_run_id ON agent_position_trail(run_id);
@@ -278,20 +281,6 @@ CREATE TABLE IF NOT EXISTS wad_hypotheses (
 CREATE INDEX IF NOT EXISTS idx_hypotheses_wad_map ON wad_hypotheses(wad_file_id, map_name);
 CREATE INDEX IF NOT EXISTS idx_hypotheses_tag ON wad_hypotheses(wad_file_id, map_name, tag);
 
-CREATE TABLE IF NOT EXISTS wad_knowledge_base (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    wad_file_id         UUID        NOT NULL REFERENCES wad_files(id) ON DELETE CASCADE,
-    map_name            VARCHAR(16) NOT NULL,
-    document_text       TEXT        NOT NULL DEFAULT '',
-    version             INTEGER     NOT NULL DEFAULT 0,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-    CONSTRAINT uq_knowledge_wad_map UNIQUE (wad_file_id, map_name)
-);
-
-CREATE INDEX IF NOT EXISTS idx_knowledge_wad_map ON wad_knowledge_base(wad_file_id, map_name);
-
 ALTER TABLE IF EXISTS wad_files
     ADD COLUMN IF NOT EXISTS iwad_required VARCHAR(16) NOT NULL DEFAULT 'freedoom2';
 
@@ -318,6 +307,24 @@ ALTER TABLE IF EXISTS test_runs
 
 ALTER TABLE IF EXISTS test_runs
     ADD COLUMN IF NOT EXISTS agent_quality_flags JSONB;
+
+ALTER TABLE IF EXISTS test_runs
+    ADD COLUMN IF NOT EXISTS environment_metadata JSONB;
+
+ALTER TABLE IF EXISTS agent_decisions
+    ADD COLUMN IF NOT EXISTS guard_modified BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE IF EXISTS agent_decisions
+    ADD COLUMN IF NOT EXISTS decision_source VARCHAR(32) NOT NULL DEFAULT 'gemini';
+
+ALTER TABLE IF EXISTS agent_position_trail
+    ADD COLUMN IF NOT EXISTS angle REAL NOT NULL DEFAULT 0;
+
+ALTER TABLE IF EXISTS agent_position_trail
+    ADD COLUMN IF NOT EXISTS is_sentinel BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE IF EXISTS game_events
+    DROP CONSTRAINT IF EXISTS game_events_run_id_tick_number_key;
 
 ALTER TABLE IF EXISTS game_events
     ADD COLUMN IF NOT EXISTS llm_input_summary TEXT;

@@ -12,10 +12,9 @@ fi
 
 DB_NAME="${POSTGRES_DB:-doom_agentic_qa}"
 DB_USER="${POSTGRES_USER:-doom_agentic}"
-DB_PASSWORD="${POSTGRES_PASSWORD:-doom_agentic_password}"
+DB_PASSWORD="${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD before initializing the database}"
 DB_HOST="${POSTGRES_HOST:-localhost}"
 DB_PORT="${POSTGRES_PORT:-5432}"
-SUDO_PASSWORD="${SUDO_PASSWORD:-}"
 
 mkdir -p \
     "$ROOT_DIR/${WAD_STORAGE_DIR:-storage/wads}" \
@@ -24,11 +23,7 @@ mkdir -p \
     "$ROOT_DIR/${SCREENSHOT_STORAGE_DIR:-storage/screenshots}"
 
 run_as_postgres() {
-    if [ -n "$SUDO_PASSWORD" ]; then
-        printf '%s\n' "$SUDO_PASSWORD" | sudo -S -u postgres "$@"
-    else
-        sudo -u postgres "$@"
-    fi
+    sudo -u postgres "$@"
 }
 
 run_as_postgres psql -v ON_ERROR_STOP=1 -c "DO \$\$

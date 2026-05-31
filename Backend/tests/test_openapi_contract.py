@@ -25,7 +25,8 @@ def test_openapi_exposes_map_metadata_and_trace_fields() -> None:
         assert prop in _props(schemas, "WadMapOut"), f"Missing {prop} in WadMapOut"
     for prop in ("agent_decision_id", "mcp_tool", "mcp_executed_tool", "mcp_params", "mcp_action_summary", "mcp_stop_reason"):
         assert prop in _props(schemas, "TraceEntryOut"), f"Missing {prop} in TraceEntryOut"
-    for prop in ("failure_category", "failure_stage", "failure_summary", "failure_diagnostics", "recording_mp4_url", "report_pdf_url"):
+    for prop in ("failure_category", "failure_stage", "failure_summary", "failure_diagnostics", "recording_mp4_url", "report_pdf_url", "environment_metadata"):
         assert prop in RunOut.model_fields, f"Missing {prop} in RunOut"
-    for prop in ("llm_input_summary", "llm_decision", "reasoning_summary", "mcp_input", "mcp_output", "mcp_stop_reason"):
+    for prop in ("llm_input_summary", "llm_decision", "reasoning_summary", "mcp_input", "mcp_output", "mcp_stop_reason", "guard_modified", "decision_source"):
         assert prop in _props(schemas, "AgentDecisionOut"), f"Missing {prop} in AgentDecisionOut"
+    assert "angle" in _props(schemas, "PositionTrailOut"), "Missing angle in PositionTrailOut"

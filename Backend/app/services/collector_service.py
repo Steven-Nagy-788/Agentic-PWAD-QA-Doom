@@ -92,6 +92,7 @@ class CollectorService:
                 tick_number=tick * 1000 + 999,
                 x=event.player_x,
                 y=event.player_y,
+                angle=event.player_angle,
                 health=event.health,
                 is_sentinel=True,
             )
@@ -140,6 +141,7 @@ class CollectorService:
                 tick_number=tick_number,
                 x=float(variables["x"]),
                 y=float(variables["y"]),
+                angle=float(variables["angle"]),
                 health=int(variables["health"]),
             )
         )

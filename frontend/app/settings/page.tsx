@@ -106,11 +106,6 @@ export default function SettingsPage() {
             <div key={key} className="rounded border border-neutral-200 bg-white p-4">
               <h4 className="font-semibold capitalize mb-2">{profile.name}</h4>
               <p className="text-sm text-neutral-600 mb-3">{profile.description}</p>
-              <div className="grid grid-cols-3 gap-2 text-xs">
-                <SettingsRow label="Default stride" value={String(profile.default_stride)} />
-                <SettingsRow label="Combat stride" value={String(profile.combat_stride)} />
-                <SettingsRow label="Stuck stride" value={String(profile.stuck_stride)} />
-              </div>
             </div>
           ))}
         </div>

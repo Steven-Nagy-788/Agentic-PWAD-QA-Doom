@@ -11,6 +11,7 @@ type MapCanvasProps = {
   events?: TraceEntry[];
   livePosition?: { x: number; y: number } | null;
   visitedCells?: Record<string, number>;
+  visitedCellSize?: number;
   className?: string;
 };
 
@@ -18,7 +19,7 @@ const STEP = 15;
 const VIEW_SIZE = 1024;
 const MAP_MARGIN = 20;
 
-export function MapCanvas({ map, trail = [], events = [], livePosition, visitedCells = {}, className = "" }: MapCanvasProps) {
+export function MapCanvas({ map, trail = [], events = [], livePosition, visitedCells = {}, visitedCellSize = 256, className = "" }: MapCanvasProps) {
   const imageUrl = assetUrl(map?.map_overview_png_url);
   const points = livePosition ? [...trail, { id: -1, run_id: "", tick_number: 0, x: livePosition.x, y: livePosition.y, health: 0 }] : trail;
   const bounds = getBounds(points, map);
@@ -67,10 +68,11 @@ export function MapCanvas({ map, trail = [], events = [], livePosition, visitedC
           if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
             return null;
           }
-          const worldX = cx * 256;
-          const worldY = cy * 256;
-          const topLeft = project(worldX - 128, worldY + 128, bounds);
-          const bottomRight = project(worldX + 128, worldY - 128, bounds);
+          const worldX = cx * visitedCellSize;
+          const worldY = cy * visitedCellSize;
+          const halfCell = visitedCellSize / 2;
+          const topLeft = project(worldX - halfCell, worldY + halfCell, bounds);
+          const bottomRight = project(worldX + halfCell, worldY - halfCell, bounds);
           const opacity = Math.min(0.4, 0.1 + count * 0.05);
           return (
             <rect

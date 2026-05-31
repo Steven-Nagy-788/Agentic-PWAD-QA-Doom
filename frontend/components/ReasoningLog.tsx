@@ -3,16 +3,12 @@
 import { useState } from "react";
 import { LiveDecision } from "@/hooks/useRunStream";
 
-function GuardBadge({ status }: { status?: "kept" | "modified" | "blocked" }) {
-  if (!status) return null;
-  const colors: Record<string, string> = {
-    kept: "bg-green-100 text-green-800 border-green-300",
-    modified: "bg-yellow-100 text-yellow-800 border-yellow-300",
-    blocked: "bg-red-100 text-red-800 border-red-300",
-  };
+function SourceBadge({ source }: { source?: string }) {
+  if (!source) return null;
+  const fallback = source === "deterministic_fallback";
   return (
-    <span className={`rounded border px-2 py-0.5 text-[11px] font-medium ${colors[status] ?? "bg-neutral-100 text-neutral-600 border-neutral-200"}`}>
-      {status}
+    <span className={`rounded border px-2 py-0.5 text-[11px] font-medium ${fallback ? "border-amber-300 bg-amber-100 text-amber-800" : "border-neutral-200 bg-white text-neutral-600"}`}>
+      {source}
     </span>
   );
 }
@@ -25,7 +21,7 @@ function DecisionCard({ decision, defaultExpanded = false }: { decision: LiveDec
       <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <span className="text-xs font-semibold text-neutral-950">#{decision.sequenceNumber}</span>
-          <GuardBadge status={decision.guardStatus} />
+          <SourceBadge source={decision.decisionSource} />
         </div>
         <span className="shrink-0 rounded border border-neutral-200 bg-white px-2 py-0.5 text-[11px] text-neutral-700">
           {decision.tool ?? "pending"} {decision.tick !== undefined ? `@ ${decision.tick}` : ""}
@@ -78,6 +74,11 @@ function DecisionCard({ decision, defaultExpanded = false }: { decision: LiveDec
               <span className="text-neutral-600">{decision.stopReason}</span>
             </div>
           )}
+          {decision.validationRejection ? (
+            <div className="rounded border border-red-200 bg-red-50 px-2 py-1 text-red-700">
+              Validation rejection: {decision.validationRejection}
+            </div>
+          ) : null}
           {decision.params && Object.keys(decision.params).length > 0 && (
             <div>
               <span className="mb-0.5 block font-medium">MCP input</span>

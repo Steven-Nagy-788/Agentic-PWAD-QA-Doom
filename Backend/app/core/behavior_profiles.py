@@ -12,9 +12,6 @@ class BehaviorProfile:
     name: BehaviorProfileName
     description: str
     system_prompt_addendum: str
-    default_stride: int
-    combat_stride: int
-    stuck_stride: int
     throttle_delays: dict[str, float]
     allowlist_overrides: list[str] | None = None
 
@@ -32,9 +29,6 @@ THOROUGH = BehaviorProfile(
         "Look for HOM effects, misaligned textures, missing geometry, and softlocks. "
         "Report every anomaly you find with precise position coordinates."
     ),
-    default_stride=1,
-    combat_stride=1,
-    stuck_stride=2,
     throttle_delays={
         "combat": 0.5,
         "low_health": 0.75,
@@ -56,9 +50,6 @@ FAST = BehaviorProfile(
         "Report any doors, lifts, or teleporters that block your path as defects. "
         "Prioritise covering new cells over re-examining areas you have already seen."
     ),
-    default_stride=5,
-    combat_stride=2,
-    stuck_stride=10,
     throttle_delays={
         "combat": 0.1,
         "low_health": 0.25,
@@ -80,9 +71,6 @@ EXPLOIT_FOCUSED = BehaviorProfile(
         "Report crashes, freezes, stuck states, visual glitches, and out-of-bounds positions. "
         "Be aggressive — if something works once, do it five more times to check for instability."
     ),
-    default_stride=1,
-    combat_stride=1,
-    stuck_stride=1,
     throttle_delays={
         "combat": 0.05,
         "low_health": 0.1,

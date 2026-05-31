@@ -1,6 +1,8 @@
 """MCP server exposing ViZDoom as tools for AI agents."""
 
 import atexit
+from importlib.metadata import PackageNotFoundError, version
+import platform
 import warnings
 
 
@@ -24,6 +26,24 @@ from doom_mcp.game_manager import GameManager
 mcp = FastMCP("doom")
 manager = GameManager()
 atexit.register(manager.stop)
+
+
+def _package_version(name: str) -> str:
+    try:
+        return version(name)
+    except PackageNotFoundError:
+        return "not reported"
+
+
+@mcp.tool
+def get_runtime_metadata() -> dict[str, str]:
+    """Return factual MCP runtime versions for QA evidence."""
+    return {
+        "python": platform.python_version(),
+        "fastmcp": _package_version("fastmcp"),
+        "vizdoom": _package_version("vizdoom"),
+        "doom_mcp": _package_version("doom-mcp"),
+    }
 
 
 @mcp.tool
@@ -267,7 +287,7 @@ def aim_and_shoot(
 @mcp.tool
 def select_weapon(
     weapon_slot: int,
-    max_tics: int = 12,
+    max_tics: int = 20,
     capture_telemetry: bool = False,
     telemetry_stride: int = 1,
 ):

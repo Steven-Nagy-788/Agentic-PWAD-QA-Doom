@@ -78,6 +78,7 @@ class TestRun(Base):
     recording_metadata: Mapped[dict | None] = mapped_column(JSONB)
     progress_metrics: Mapped[dict | None] = mapped_column(JSONB)
     agent_quality_flags: Mapped[dict | None] = mapped_column(JSONB)
+    environment_metadata: Mapped[dict | None] = mapped_column(JSONB)
     report_pdf_path: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 

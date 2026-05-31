@@ -12,19 +12,6 @@ from typing import Any
 from app.core.config import get_settings
 
 
-ALLOWED_TOOLS = {
-    "get_state",
-    "explore",
-    "aim_and_shoot",
-    "move_to",
-    "strafe_and_shoot",
-    "retreat",
-    "get_threat_assessment",
-    "get_navigation_info",
-    "take_action",
-    "select_weapon",
-}
-DIRECTOR_TOOLS = {"get_situation_report", "set_objective", "set_strategy"}
 LOW_VALUE_TEXTURE_DEFECT_TYPES = {"visual_texture_misalignment"}
 LOW_VALUE_TEXTURE_TERMS = (
     "alignment",
@@ -264,25 +251,6 @@ class GeminiService:
         except Exception:
             return None
 
-    async def decide_director(self, system_prompt: str, llm_input: dict[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
-        if not self.settings.gemini_api_key:
-            return self._fallback_director_decision(
-                llm_input,
-                "Gemini API key is not configured; using deterministic director fallback.",
-            ), {}
-        return await self._call_with_retry(
-            system_prompt,
-            llm_input,
-            self.parse_director_decision,
-            lambda: (
-                self._fallback_director_decision(
-                    llm_input,
-                    "Model response failed or was rate limited; using deterministic director fallback.",
-                ),
-                {},
-            ),
-        )
-
     async def _call_with_retry(
         self,
         system_prompt: str,
@@ -425,11 +393,14 @@ class GeminiService:
     @staticmethod
     def _decode_json(text: str) -> dict[str, Any] | None:
         try:
-            return json.loads(text)
+            decoded = json.loads(text)
         except json.JSONDecodeError:
             return None
+        return decoded if isinstance(decoded, dict) else None
 
     def _parse_json_response(self, text: str) -> dict[str, Any]:
+        if not isinstance(text, str):
+            raise ValueError("Could not parse LLM response as JSON")
         strategies = [
             self._extract_json_block,
             self._extract_json_balanced,
@@ -444,13 +415,10 @@ class GeminiService:
         raise ValueError("Could not parse LLM response as JSON")
 
     def parse_decision(self, text: str) -> dict[str, Any]:
-        try:
-            data = self._parse_json_response(text)
-        except ValueError:
-            data = {}
-        tool = data.get("mcp_tool") or "explore"
-        if tool not in ALLOWED_TOOLS:
-            tool = "explore"
+        data = self._parse_json_response(text)
+        tool = data.get("mcp_tool")
+        if not isinstance(tool, str) or not tool:
+            raise ValueError("LLM response omitted mcp_tool")
         params = data.get("mcp_params")
         if not isinstance(params, dict):
             params = {}
@@ -466,44 +434,16 @@ class GeminiService:
             "mcp_params": params,
             "hypotheses": _normalize_hypotheses(data.get("hypotheses")),
             "observed_issue": observed_issue,
-        }
-
-    def parse_director_decision(self, text: str) -> dict[str, Any]:
-        try:
-            data = self._parse_json_response(text)
-        except ValueError:
-            data = {}
-        tool = data.get("mcp_tool") or "get_situation_report"
-        if tool not in DIRECTOR_TOOLS:
-            tool = "get_situation_report"
-        params = data.get("mcp_params")
-        if not isinstance(params, dict):
-            params = {}
-        reasoning = data.get("reasoning_summary")
-        if not isinstance(reasoning, str):
-            reasoning = "Director requested the current situation."
-        observed_issue = data.get("observed_issue")
-        if observed_issue is not None and not isinstance(observed_issue, (str, dict)):
-            observed_issue = None
-        return {
-            "reasoning_summary": reasoning,
-            "mcp_tool": tool,
-            "mcp_params": params,
-            "hypotheses": _normalize_hypotheses(data.get("hypotheses")),
-            "observed_issue": observed_issue,
+            "_decision_source": "gemini",
         }
 
     def _fallback_decision(self, llm_input: dict[str, Any], reason: str) -> dict[str, Any]:
-        objects = [obj for obj in llm_input.get("objects", []) if isinstance(obj, dict)]
-        lockstep_state = llm_input.get("lockstep_state") if isinstance(llm_input.get("lockstep_state"), dict) else {}
-        navigation_info = llm_input.get("navigation_info") if isinstance(llm_input.get("navigation_info"), dict) else {}
-        completed_object_ids = {str(key) for key in (lockstep_state.get("completed_object_ids") or {})}
-        failed_object_ids = {
-            str(key)
-            for key, value in (lockstep_state.get("failed_object_ids") or {}).items()
-            if _number(value, 0) >= 2
-        }
-        invisible_target_failures = {str(key) for key in (lockstep_state.get("invisible_target_failures") or {})}
+        objects = [obj for obj in llm_input.get("scene_objects", []) if isinstance(obj, dict)]
+        same_run = llm_input.get("same_run_memory") if isinstance(llm_input.get("same_run_memory"), dict) else {}
+        milestones = same_run.get("older_milestones") if isinstance(same_run.get("older_milestones"), dict) else {}
+        navigation_info = llm_input.get("navigation") if isinstance(llm_input.get("navigation"), dict) else {}
+        completed_object_ids = {str(key) for key in (milestones.get("completed_targets") or {})}
+        failed_object_ids = {str(key) for key in (milestones.get("failed_targets") or {})}
         weapon_state = llm_input.get("weapon_state") if isinstance(llm_input.get("weapon_state"), dict) else {}
         best_weapon = weapon_state.get("best_viable_weapon")
         usable_attack_ammo = _number(weapon_state.get("usable_attack_ammo"), 0)
@@ -513,14 +453,14 @@ class GeminiService:
             return {
                 "reasoning_summary": f"{reason} The selected weapon is empty but weapon {best_weapon} is usable, so switching before combat.",
                 "mcp_tool": "select_weapon",
-                "mcp_params": {"weapon_slot": best_weapon, "max_tics": 12},
+                "mcp_params": {"weapon_slot": best_weapon, "max_tics": 20},
                 "observed_issue": None,
+                "_decision_source": "deterministic_fallback",
             }
         visible_monsters = [
             obj
             for obj in objects
             if obj.get("type") == "monster" and obj.get("is_visible") and obj.get("id") is not None
-            and str(obj.get("id")) not in invisible_target_failures
         ]
         if visible_monsters:
             target = min(visible_monsters, key=lambda obj: float(obj.get("distance") or 999999))
@@ -530,6 +470,7 @@ class GeminiService:
                 "mcp_tool": tool,
                 "mcp_params": {"object_id": target["id"]},
                 "observed_issue": None,
+                "_decision_source": "deterministic_fallback",
             }
 
         visible_pickups = [
@@ -546,6 +487,7 @@ class GeminiService:
                 "mcp_tool": "move_to",
                 "mcp_params": {"object_id": target["id"], "stop_on_enemy": True},
                 "observed_issue": None,
+                "_decision_source": "deterministic_fallback",
             }
 
         if not usable_weapons:
@@ -554,14 +496,7 @@ class GeminiService:
                 "mcp_tool": "retreat",
                 "mcp_params": {"tics": 28},
                 "observed_issue": None,
-            }
-
-        if int(lockstep_state.get("low_value_explore_total") or 0) >= 2:
-            return {
-                "reasoning_summary": f"{reason} Recent exploration did not progress, so probing a nearby door/use interaction.",
-                "mcp_tool": "take_action",
-                "mcp_params": {"actions": {"USE": 1}, "tics": 3},
-                "observed_issue": None,
+                "_decision_source": "deterministic_fallback",
             }
 
         unexplored_direction = navigation_info.get("unexplored_direction") if isinstance(navigation_info, dict) else None
@@ -571,91 +506,15 @@ class GeminiService:
                 "mcp_tool": "explore",
                 "mcp_params": {"max_tics": 80, "stop_on_enemy": True, "stop_on_item": True},
                 "observed_issue": None,
-            }
-
-        unvisited_quadrants = int(lockstep_state.get("unvisited_quadrants") or 0)
-        if unvisited_quadrants > 0:
-            return {
-                "reasoning_summary": f"{reason} {unvisited_quadrants} quadrant(s) remain unexplored; turning to probe new directions.",
-                "mcp_tool": "take_action",
-                "mcp_params": {"actions": {"TURN_LEFT_RIGHT_DELTA": 90}, "tics": 3},
-                "observed_issue": None,
+                "_decision_source": "deterministic_fallback",
             }
 
         return {
-            "reasoning_summary": f"{reason} No targets or navigation cues available, retreating to reassess from a safer position.",
-            "mcp_tool": "retreat",
-            "mcp_params": {"tics": 35},
+            "reasoning_summary": f"{reason} No actionable target is visible, so exploring for new evidence.",
+            "mcp_tool": "explore",
+            "mcp_params": {"max_tics": 80, "stop_on_enemy": True, "stop_on_item": True},
             "observed_issue": None,
-        }
-
-    def _fallback_director_decision(self, llm_input: dict[str, Any], reason: str) -> dict[str, Any]:
-        situation = llm_input.get("situation") if isinstance(llm_input.get("situation"), dict) else {}
-        variables = situation.get("game_variables") if isinstance(situation.get("game_variables"), dict) else {}
-        objects = [obj for obj in situation.get("objects", []) if isinstance(obj, dict)]
-        objectives = situation.get("objectives") if isinstance(situation.get("objectives"), list) else []
-        executor_state = str(situation.get("executor_state") or "unknown")
-        health = _number(variables.get("HEALTH") or variables.get("health"), 100)
-        selected_ammo = _number(variables.get("SELECTED_WEAPON_AMMO") or variables.get("selected_weapon_ammo"), 0)
-        visible_pickups = [
-            obj
-            for obj in objects
-            if obj.get("is_visible")
-            and obj.get("id") is not None
-            and obj.get("type") in {"item", "ammo", "weapon", "key"}
-        ]
-        visible_monsters = [
-            obj
-            for obj in objects
-            if obj.get("is_visible") and obj.get("id") is not None and obj.get("type") == "monster"
-        ]
-        progress = situation.get("executor_progress") if isinstance(situation.get("executor_progress"), dict) else {}
-        if int(progress.get("stuck_recovery_count") or 0) > int(llm_input.get("last_stuck_recovery_count") or 0):
-            return {
-                "reasoning_summary": f"{reason} Executor reported stuck recovery, so replacing the objective with exploration.",
-                "mcp_tool": "set_objective",
-                "mcp_params": {
-                    "objective_type": "explore",
-                    "priority": 80,
-                    "timeout_tics": 280,
-                    "replace": True,
-                },
-                "event_type_override": "stuck",
-                "observed_issue": None,
-            }
-        if health <= 25:
-            return {
-                "reasoning_summary": f"{reason} Health is low, so directing a retreat before continuing coverage.",
-                "mcp_tool": "set_objective",
-                "mcp_params": {"objective_type": "retreat", "priority": 100, "timeout_tics": 140, "replace": True},
-                "observed_issue": None,
-            }
-        if selected_ammo <= 2 and any(obj.get("type") in {"ammo", "weapon"} for obj in visible_pickups):
-            return {
-                "reasoning_summary": f"{reason} Ammo is low and a useful pickup is visible, so directing collection.",
-                "mcp_tool": "set_objective",
-                "mcp_params": {"objective_type": "collect", "priority": 95, "timeout_tics": 220, "replace": True},
-                "observed_issue": None,
-            }
-        if visible_monsters:
-            return {
-                "reasoning_summary": f"{reason} Visible monsters are present; tuning aggression while executor handles combat.",
-                "mcp_tool": "set_strategy",
-                "mcp_params": {"aggression": 0.85, "engage_range": 1400, "prefer_cover": True},
-                "observed_issue": None,
-            }
-        if not objectives or executor_state in {"idle", "unknown"}:
-            return {
-                "reasoning_summary": f"{reason} No active objective is driving coverage, so directing exploration.",
-                "mcp_tool": "set_objective",
-                "mcp_params": {"objective_type": "explore", "priority": 40, "timeout_tics": 350, "replace": False},
-                "observed_issue": None,
-            }
-        return {
-            "reasoning_summary": f"{reason} Existing objective is still active; continuing to monitor.",
-            "mcp_tool": "get_situation_report",
-            "mcp_params": {},
-            "observed_issue": None,
+            "_decision_source": "deterministic_fallback",
         }
 
 

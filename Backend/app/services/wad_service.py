@@ -34,17 +34,44 @@ class WadService:
         self.repo = WadRepository(db)
 
     async def upload(self, file: UploadFile) -> WadFile:
-        data = await file.read()
-        self._validate_binary(data)
-        sha256_hash = hashlib.sha256(data).hexdigest()
+        self.settings.wad_storage_dir.mkdir(parents=True, exist_ok=True)
+        temp_path = self.settings.wad_storage_dir / f".{uuid.uuid4()}.upload"
+        digest = hashlib.sha256()
+        size = 0
+        header = b""
+        previous_tail = b""
+        try:
+            with temp_path.open("wb") as staged:
+                while chunk := await file.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > self.settings.max_wad_upload_bytes:
+                        raise HTTPException(
+                            status.HTTP_413_CONTENT_TOO_LARGE,
+                            f"WAD exceeds the {self.settings.max_wad_upload_bytes}-byte upload limit",
+                        )
+                    if len(header) < 12:
+                        header += chunk[: 12 - len(header)]
+                        if len(header) >= 4:
+                            self._validate_binary(header, require_full_header=False)
+                    if b"TEXTMAP" in previous_tail + chunk:
+                        raise HTTPException(status.HTTP_400_BAD_REQUEST, "UDMF maps are not supported")
+                    previous_tail = chunk[-6:]
+                    digest.update(chunk)
+                    staged.write(chunk)
+            self._validate_binary(header)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+
+        sha256_hash = digest.hexdigest()
         existing = await self.repo.get_by_hash(sha256_hash)
         if existing is not None:
+            temp_path.unlink(missing_ok=True)
             return existing
 
-        self.settings.wad_storage_dir.mkdir(parents=True, exist_ok=True)
         wad_id = uuid.uuid4()
         stored_path = self.settings.wad_storage_dir / f"{wad_id}.wad"
-        stored_path.write_bytes(data)
+        temp_path.replace(stored_path)
 
         try:
             map_names = await asyncio.to_thread(detect_map_names, str(stored_path))
@@ -81,7 +108,7 @@ class WadService:
             id=wad_id,
             original_filename=file.filename or "upload.wad",
             stored_path=str(stored_path.resolve()),
-            file_size_bytes=len(data),
+            file_size_bytes=size,
             sha256_hash=sha256_hash,
             validation_status="valid_pwad",
             detected_maps=map_names,
@@ -94,16 +121,16 @@ class WadService:
         return wad_file
 
     @staticmethod
-    def _validate_binary(data: bytes) -> None:
-        if len(data) < 12:
+    def _validate_binary(data: bytes, *, require_full_header: bool = True) -> None:
+        if require_full_header and len(data) < 12:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "File is too small to be a WAD")
+        if len(data) < 4:
+            return
         magic = data[:4]
         if magic == b"IWAD":
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "IWAD files are not accepted; upload a PWAD")
         if magic != b"PWAD":
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid WAD header; expected PWAD")
-        if b"TEXTMAP" in data[: min(len(data), 1024 * 1024)] or b"TEXTMAP" in data:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "UDMF maps are not supported")
 
     async def get(self, wad_id: uuid.UUID) -> WadFile:
         wad = await self.repo.get_by_id(wad_id)

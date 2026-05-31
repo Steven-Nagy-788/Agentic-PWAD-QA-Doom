@@ -1,4 +1,4 @@
-# Agentic PWAD QA Backend Implementation
+# Historical: Agentic PWAD QA Backend Implementation
 
 This document describes the current backend and MCP integration for the Agentic PWAD QA Doom project.
 

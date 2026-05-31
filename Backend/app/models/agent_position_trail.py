@@ -26,6 +26,7 @@ class AgentPositionTrail(Base):
     tick_number: Mapped[int] = mapped_column(Integer, nullable=False)
     x: Mapped[float] = mapped_column(REAL, nullable=False)
     y: Mapped[float] = mapped_column(REAL, nullable=False)
+    angle: Mapped[float] = mapped_column(REAL, nullable=False, default=0)
     health: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     is_sentinel: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

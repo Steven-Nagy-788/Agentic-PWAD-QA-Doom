@@ -75,7 +75,6 @@ graph TB
         NotableEventScreenshot
         WadSpatialMemory
         WadHypothesis
-        WadKnowledgeBase
         ConfigEntry
     end
 
@@ -108,8 +107,10 @@ graph TB
 - **Async end-to-end**: FastAPI async handlers, SQLAlchemy async sessions, async Gemini SDK, async MCP SSE transport — no thread pool blocking.
 - **Layered separation**: Routers never call repositories directly; services sit between to compose multi-repository workflows and run background tasks.
 - **Run loop as state machine**: `TestRun.status` transitions through `pending → running → completed | failed | cancelled`. The `RunService.cancel()` method is safe to call at any point.
-- **Behaviour profiles**: Three canned agent personalities (`thorough`, `fast`, `exploit_focused`) control stride length, throttle delays, and the LLM system prompt — enabling diverse coverage strategies without code changes.
-- **Cross-run memory**: Three memory models (`WadSpatialMemory`, `WadHypothesis`, `WadKnowledgeBase`) persist knowledge across runs of the same WAD, enabling the agent to learn from previous playthroughs.
+- **Behaviour profiles**: Three canned agent personalities (`thorough`, `fast`, `exploit_focused`) control throttle delays and the LLM system prompt. Recording stride is configured independently.
+- **Reviewer analytics**: `WadSpatialMemory`, `WadHypothesis`, outcome counts,
+  and recurring defects remain available for reviewers without influencing
+  future agent actions.
 - **Prometheus instrumentation**: Counters for runs, LLM calls, MCP calls, and defects; histograms for LLM/MCP latency; active-run gauge. Exposed at `/metrics`.
 - **Sentry integration**: Automatic error capture with 0.1 trace sample rate when `SENTRY_DSN` is set.
 

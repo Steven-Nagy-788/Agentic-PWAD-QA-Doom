@@ -25,6 +25,9 @@ class AgentDecisionOut(BaseModel):
     mcp_input: dict[str, Any] | None = None
     mcp_output: dict[str, Any] | None = None
     mcp_stop_reason: str | None = None
+    guard_modified: bool = False
+    decision_source: str = "gemini"
+    validation_rejection: str | None = None
     llm_duration_ms: float | None = None
     mcp_duration_ms: float | None = None
     llm_input_tokens: int | None = None

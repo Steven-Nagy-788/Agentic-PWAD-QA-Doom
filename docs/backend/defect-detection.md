@@ -228,7 +228,7 @@ Screenshots are captured during the run loop for notable events: `kill`, `death`
 `PatternService.get_patterns(wad_id)` groups defects across all runs of the same WAD:
 
 1. **Fingerprint grouping**: Defects with the same fingerprint are grouped together. Groups with ≥2 occurrences become patterns.
-2. **Spatial clustering**: Defects with position data are grouped into 128-unit grid cells, ordered by density.
+2. **Spatial clustering**: Defects with position data are grouped into shared 256-unit QA grid cells, ordered by density.
 3. **Difficulty coverage**: Aggregates run outcomes and defect counts by difficulty level.
 
 Returns:
@@ -236,4 +236,4 @@ Returns:
 - `defect_clusters`: top 10 spatial clusters by cell
 - `difficulty_coverage`: per-difficulty run counts, completion/failure stats, defect totals
 
-The pattern service feeds into cross-run memory (`RunMemoryService.build_cross_run_memory`) and the report pass/fail summary.
+The pattern service feeds reviewer-facing recurring-defect analytics and the report pass/fail summary. It does not influence gameplay decisions.

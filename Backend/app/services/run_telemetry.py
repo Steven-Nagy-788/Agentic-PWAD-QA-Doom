@@ -74,24 +74,6 @@ async def _record_telemetry_frames(
             _last_telemetry_frame_at[run_key] = now
 
 
-def _write_realtime_frame(
-    recorder: RecordingService,
-    frame: Any,
-    last_record_frame_at: float | None,
-) -> float | None:
-    if frame is None:
-        return last_record_frame_at
-    now = time.monotonic()
-    if last_record_frame_at is None:
-        recorder.write_frame(frame)
-        return now
-    elapsed = max(0.0, now - last_record_frame_at)
-    repeats = max(1, min(60, int(round(elapsed * recorder.fps))))
-    for _ in range(repeats):
-        recorder.write_frame(frame)
-    return now
-
-
 async def _broadcast_state(
     run_id: UUID,
     event: Any,

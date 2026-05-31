@@ -6,17 +6,23 @@ from app.core.behavior_profiles import PROFILES
 from app.services.run_utils import (
     _bounded_float,
     _bounded_int,
-    _compute_dynamic_stride,
+    _build_llm_input,
+    _build_same_run_memory,
+    _compact_context_for_llm,
+    _compact_state_for_llm,
     _compute_dynamic_throttle,
+    _compute_unvisited_quadrants,
     _ensure_aware,
     _int_like,
     _json_safe,
     _merge_hypotheses,
     _normalize_take_action_params,
-    _structured_memory_snapshot,
+    _record_decision_in_history,
+    _sector_ids_from_state,
     _summary,
     _track_explored_sectors,
-    _unique_lockstep_tick,
+    _track_visited_cell,
+    _factual_game_tic,
     get_behavior_profile,
 )
 
@@ -39,31 +45,101 @@ def _lockstep(**overrides):
     return data
 
 
-# ── _compute_dynamic_stride ──────────────────────────────────────────────────
+# ── compact LLM context and QA coverage cells ────────────────────────────────
 
 
-def test_stride_returns_one_when_visible_monsters_exist() -> None:
-    state = _state(objects=[{"type": "monster", "is_visible": True, "id": 1}])
-    assert _compute_dynamic_stride(state, _lockstep()) == 1
+def test_compact_state_caps_objects_and_removes_depth() -> None:
+    state = _state(objects=[{"id": item, "type": "monster", "is_visible": True} for item in range(20)])
+    state["depth"] = {"left": 12}
+    compact = _compact_state_for_llm(state)
+    assert "depth" not in compact
+    assert len(compact["objects"]) == 12
 
 
-def test_stride_returns_five_when_stuck() -> None:
-    assert _compute_dynamic_stride(_state(), _lockstep(no_progress_polls=1)) == 5
-    assert _compute_dynamic_stride(_state(), _lockstep(no_progress_polls=5)) == 5
+def test_compact_state_removes_objects_duplicated_by_threat_context() -> None:
+    state = _state(objects=[
+        {"id": 1, "type": "player"},
+        {"id": 2, "type": "projectile"},
+        {"id": 3, "type": "decoration"},
+        {"id": 4, "type": "monster"},
+    ])
+    compact = _compact_state_for_llm(state)
+    assert compact["objects"] == [{"id": 4, "type": "monster"}]
 
 
-def test_stride_returns_three_by_default() -> None:
-    assert _compute_dynamic_stride(_state(), _lockstep()) == 3
+def test_compact_context_caps_lists_and_removes_duplicate_objects() -> None:
+    compact = _compact_context_for_llm({"threats": list(range(10)), "objects": [1], "weapon_state": {"owned": True}, "level": "high"})
+    assert compact == {"threats": [0, 1, 2, 3, 4], "level": "high"}
 
 
-def test_stride_honors_only_visible_monsters() -> None:
-    state = _state(objects=[{"type": "monster", "is_visible": False, "id": 2}])
-    assert _compute_dynamic_stride(state, _lockstep()) == 3
+def test_llm_input_has_no_prior_run_fields_and_hides_occluded_target_ids() -> None:
+    payload = _build_llm_input(
+        _state(),
+        {"threats": [{"id": 1, "is_visible": True}, {"id": 2, "is_visible": False}]},
+        {},
+        {},
+        game_tic=10,
+        ticks_remaining=90,
+        total_cells=4,
+        coverage_warning=None,
+    )
+    assert "cross_run_memory" not in payload
+    assert "lockstep_state" not in payload
+    assert payload["threat_summary"]["visible_attackable_threats"] == [{"id": 1}]
+    assert payload["threat_summary"]["occluded_threat_count"] == 1
 
 
-def test_stride_combat_overrides_stuck() -> None:
-    state = _state(objects=[{"type": "monster", "is_visible": True, "id": 1}])
-    assert _compute_dynamic_stride(state, _lockstep(no_progress_polls=5)) == 1
+def test_track_visited_cell_uses_comma_delimited_256_unit_grid() -> None:
+    lockstep = {}
+    _track_visited_cell({"game_variables": {"x": 260, "y": -260}}, lockstep)
+    assert lockstep["visited_cells"] == {"1,-1": 1}
+
+
+def test_unvisited_quadrants_parses_comma_delimited_cells() -> None:
+    assert _compute_unvisited_quadrants({"visited_cells": {"-1,-1": 1, "1,1": 1}}) == 2
+
+
+def test_run_history_uses_persisted_tick_budget() -> None:
+    lockstep = {}
+    _record_decision_in_history(
+        lockstep,
+        seq=0,
+        tick_before=10,
+        tick_after=70,
+        tool="explore",
+        stop_reason="max_tics",
+        params={"max_tics": 60},
+        reasoning="Explore north",
+        guard_modified=False,
+        llm_duration_ms=1,
+        mcp_duration_ms=2,
+        total_budget=5000,
+    )
+    assert _build_same_run_memory(lockstep)["budget"]["total_ticks"] == 5000
+
+
+def test_same_run_ledger_compacts_older_actions_deterministically_and_stays_bounded() -> None:
+    lockstep = {}
+    for seq in range(30):
+        _record_decision_in_history(
+            lockstep,
+            seq=seq,
+            tick_before=seq,
+            tick_after=seq + 1,
+            tool="explore",
+            stop_reason="max_tics",
+            params={"max_tics": 80},
+            reasoning="x" * 120,
+            guard_modified=False,
+            llm_duration_ms=1,
+            mcp_duration_ms=2,
+            total_budget=5000,
+        )
+    ledger = _build_same_run_memory(lockstep, max_chars=4000, recent_action_limit=16)
+    import json
+    assert len(json.dumps(ledger, separators=(",", ":"))) <= 4000
+    assert ledger == _build_same_run_memory(lockstep, max_chars=4000, recent_action_limit=16)
+    assert ledger["older_milestones"]["compacted_action_count"] + len(ledger["recent_actions"]) == 30
 
 
 # ── _compute_dynamic_throttle ────────────────────────────────────────────────
@@ -176,22 +252,22 @@ def test_ensure_aware_none() -> None:
     assert _ensure_aware(None) is None
 
 
-# ── _unique_lockstep_tick ────────────────────────────────────────────────────
+# ── factual game tic ─────────────────────────────────────────────────────────
 
 
-def test_unique_lockstep_tick_increments() -> None:
+def test_factual_game_tic_allows_repeated_or_lower_tics_without_fabrication() -> None:
     ls = {"last_tick": -1}
-    t1 = _unique_lockstep_tick({"tic": 10}, ls)
+    t1 = _factual_game_tic({"tic": 10}, ls)
     assert t1 == 10
     assert ls["last_tick"] == 10
-    t2 = _unique_lockstep_tick({"tic": 5}, ls)
-    assert t2 == 11
-    assert ls["last_tick"] == 11
+    t2 = _factual_game_tic({"tic": 5}, ls)
+    assert t2 == 5
+    assert ls["last_tick"] == 10
 
 
-def test_unique_lockstep_tick_default_when_missing_tic() -> None:
+def test_factual_game_tic_defaults_to_last_observed_when_missing() -> None:
     ls = {"last_tick": -1}
-    tick = _unique_lockstep_tick({}, ls)
+    tick = _factual_game_tic({}, ls)
     assert tick == 0
     assert ls["last_tick"] == 0
 
@@ -230,8 +306,7 @@ def test_take_action_filters_unknown_buttons() -> None:
 def test_structured_memory_tracks_sector_ids_from_navigation() -> None:
     lockstep = {}
     _track_explored_sectors({}, {"current_sector_id": 2, "visited_sector_ids": [1, "3"]}, lockstep)
-    memory = _structured_memory_snapshot(lockstep)
-    assert memory["explored_sectors"] == [1, 2, 3]
+    assert _sector_ids_from_state(lockstep) == [1, 2, 3]
 
 
 def test_merge_hypotheses_deduplicates_and_limits() -> None:

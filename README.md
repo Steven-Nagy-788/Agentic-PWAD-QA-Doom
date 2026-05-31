@@ -2,7 +2,9 @@
 
 Autonomous QA system for Doom PWAD maps. It uploads and analyzes a WAD, starts a ViZDoom run through an MCP server, lets a Gemini model choose high-level actions in a lockstep loop, records telemetry/video/evidence, detects map and agent-run defects, and generates an audit-ready PDF report.
 
-Current status as of 2026-05-24: local development is supported and tested end to end with PostgreSQL, FastAPI, FastMCP, ViZDoom, Gemini, and the Next.js frontend. Docker deployment is intentionally not part of the current setup.
+This repository is a localhost-only proof of concept. It has no authentication, authorization, or multi-user ownership boundary. Do not expose its ports to an untrusted network.
+
+Local development and Docker Compose operation are supported with PostgreSQL, FastAPI, FastMCP, ViZDoom, Gemini, and the Next.js frontend.
 
 ## What the System Does
 
@@ -56,11 +58,11 @@ Gemini decision service
 
 Supplemental docs:
 
-- `docs/progress_report.md`
-- `docs/technical_review_2026-05-24.md`
 - `docs/db schema.md`
-- `docs/backend implementation.md`
-- `docs/backendcontinueimpl.md`
+- `docs/backend/`
+- `docs/frontend/`
+- `docs/operations/`
+- `docs/historical/` for superseded reviews and implementation notes
 
 ## Core Design
 
@@ -69,9 +71,9 @@ Supplemental docs:
 The active production loop is lockstep:
 
 1. Backend asks MCP for state/screenshot.
-2. Backend builds the LLM input from static analysis, current state, recent trace, progress metrics, and cross-run memory.
+2. Backend builds compact current-state JSON plus a bounded same-run action ledger.
 3. Gemini returns one structured MCP action.
-4. Backend validates/guards the decision.
+4. Backend normalizes technical parameters and rejects malformed requests without inventing a replacement.
 5. MCP executes the action and advances the game.
 6. Backend records the decision, telemetry, video frame, cost, and progress.
 
@@ -97,17 +99,16 @@ PostgreSQL stores:
 - `config_entries`
 - `wad_spatial_memory`
 - `wad_hypotheses`
-- `wad_knowledge_base`
 
-The memory tables allow future runs on the same WAD/map to receive prior spatial context, recurring stuck/death/resource locations, and text knowledge from previous runs.
+Spatial cells and hypotheses are reviewer-only analytics. They are not injected into later gameplay decisions.
 
 ### Reports
 
 Reports are rendered from `Backend/app/templates/report.html.j2` through Jinja2 and compiled with WeasyPrint. PDF rendering runs in a worker thread so the FastAPI event loop is not blocked by CPU-bound PDF work.
 
-### Director Mode
+### MCP Executor
 
-The codebase contains an experimental async-player Director/Executor path. The active product uses lockstep mode. Director helpers are kept because the MCP executor supports them and tests cover the normalization/recovery logic, but they are not the default runtime path.
+MCP-Doom retains its standalone async executor for direct MCP use. The backend product runtime is lockstep-only and does not include a Director adapter.
 
 ## Repository Layout
 
@@ -181,8 +182,8 @@ POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
 POSTGRES_DB=doom_agentic_qa
 POSTGRES_USER=doom_agentic
-POSTGRES_PASSWORD=change_me
-DATABASE_URL=postgresql+asyncpg://doom_agentic:change_me@localhost:5432/doom_agentic_qa
+POSTGRES_PASSWORD=
+DATABASE_URL=
 
 GEMINI_API_KEY=your_key_here
 LLM_MODEL=gemini-2.5-flash-lite
@@ -190,6 +191,9 @@ MCP_DOOM_SSE_URL=http://localhost:8001/sse
 LLM_THROTTLE_SECONDS=2
 GEMINI_RATE_LIMIT_CALLS_PER_MINUTE=15
 ```
+
+Set `POSTGRES_PASSWORD` to a generated local secret. Leave `DATABASE_URL` blank to derive it
+from the `POSTGRES_*` fields, or provide a complete async SQLAlchemy URL.
 
 Create the database and apply the schema:
 
@@ -353,7 +357,7 @@ The defaults are intentionally editable because the correct values depend on the
 
 ## Behavior Profiles
 
-Profiles tune stride, throttle, and prompt stance:
+Profiles tune throttle and prompt stance. Recording fidelity is controlled independently through `RECORDING_TELEMETRY_STRIDE`, which defaults to `1`.
 
 - `thorough`: slower, coverage-oriented, default for defensible QA.
 - `fast`: faster exploration and lower delays.
@@ -363,13 +367,7 @@ Each profile must define throttle keys `combat`, `low_health`, `stuck`, and `def
 
 ## AI Memory
 
-Cross-run memory has three layers:
-
-- Outcome/defect memory: prior run results, recurring failures, and defect patterns.
-- Spatial memory: grid cells associated with visited, stuck, death, resource, key, and secret events.
-- Knowledge documents/hypotheses: text summaries and hypotheses associated with a WAD/map.
-
-At run start, the backend builds a briefing from these tables so the model can avoid known stuck cells, revisit key/secret locations, and understand historical failure patterns.
+Gameplay decisions use same-run memory only. The prompt receives the latest detailed actions and deterministic milestones for older actions, capped by `SAME_RUN_LEDGER_MAX_CHARS`. Cross-run spatial cells, hypotheses, summary counts, and recurring defects remain available to reviewers on the WAD detail page but never influence the agent.
 
 ## Defect Detection Notes
 
@@ -434,7 +432,7 @@ Latest local verification on 2026-05-24:
 - Active run tasks are stored in the process-local `RUN_TASKS` dictionary. This is correct for a single Uvicorn process but does not support canceling a run from another backend replica.
 - Run cancellation across multiple backend replicas is not supported.
 - Report PDF generation and WAD analysis use CPU-bound libraries. PDF generation is threaded; map analysis should remain off the event loop when called from async paths.
-- The current deployment story is local services plus CI. Docker files and compose orchestration are not present.
+- Docker Compose binds host ports to `127.0.0.1` for local demonstration use.
 
 ## Troubleshooting
 
@@ -481,7 +479,6 @@ Recording is missing:
 
 High-value remaining work:
 
-- Dockerfile and docker-compose for repeatable deployment.
 - Worker queue for report regeneration and heavier analysis jobs.
 - Multi-replica run orchestration with persistent task state.
 - Backup/restore scripts for PostgreSQL and storage artifacts.

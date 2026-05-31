@@ -250,7 +250,7 @@ async def test_get_patterns_cell_clustering() -> None:
     # but cell cluster should exist
     clusters = result["defect_clusters"]
     assert len(clusters) == 1
-    assert clusters[0]["cell"] == {"x": 2, "y": 2}
+    assert clusters[0]["cell"] == {"x": 1, "y": 1}
 
 
 @pytest.mark.asyncio
@@ -346,7 +346,7 @@ async def test_get_patterns_defects_without_position_skip_grid_clusters() -> Non
 
     clusters = result["defect_clusters"]
     assert len(clusters) == 1
-    assert clusters[0]["cell"] == {"x": 1, "y": 2}
+    assert clusters[0]["cell"] == {"x": 0, "y": 1}
 
 
 @pytest.mark.asyncio
@@ -429,7 +429,7 @@ async def test_get_patterns_multiple_defects_same_cell() -> None:
 
     clusters = result["defect_clusters"]
     assert len(clusters) == 1
-    assert clusters[0]["cell"] == {"x": 2, "y": 2}
+    assert clusters[0]["cell"] == {"x": 1, "y": 1}
     assert clusters[0]["count"] == 3
 
 

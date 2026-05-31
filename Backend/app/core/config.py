@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     postgres_port: int = 5432
     postgres_db: str = "doom_agentic_qa"
     postgres_user: str = "doom_agentic"
-    postgres_password: str = "doom_agentic_password"
+    postgres_password: str = ""
     database_url: str | None = None
 
     storage_dir: Path = Field(default=Path("storage"), validation_alias=AliasChoices("STORAGE_BASE", "STORAGE_DIR"))
@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     live_frame_fps: float = 10.0
     recording_fps: float = 30.0
     recording_telemetry_stride: int = 1
+    ffmpeg_timeout_seconds: float = 60.0
+    report_gemini_timeout_seconds: float = 60.0
+    report_pdf_timeout_seconds: float = 60.0
+    max_wad_upload_bytes: int = 67_108_864
+    same_run_ledger_max_chars: int = 24_000
+    same_run_ledger_recent_actions: int = 16
+    no_progress_decision_abort_threshold: int = 8
     default_agent_behavior: str = "thorough"
     run_worker_mode: bool = False
     cors_origins: list[str] | str = "http://localhost:3000"
@@ -75,7 +82,14 @@ class Settings(BaseSettings):
             return [str(origin).strip() for origin in value if str(origin).strip()]
         return []
 
-    @field_validator("gemini_max_concurrency", "recording_telemetry_stride")
+    @field_validator(
+        "gemini_max_concurrency",
+        "recording_telemetry_stride",
+        "max_wad_upload_bytes",
+        "same_run_ledger_max_chars",
+        "same_run_ledger_recent_actions",
+        "no_progress_decision_abort_threshold",
+    )
     @classmethod
     def _positive_int(cls, value: int) -> int:
         if value <= 0:
@@ -94,6 +108,9 @@ class Settings(BaseSettings):
         "gemini_retry_max_delay_seconds",
         "mcp_probe_timeout_seconds",
         "mcp_tool_timeout_seconds",
+        "ffmpeg_timeout_seconds",
+        "report_gemini_timeout_seconds",
+        "report_pdf_timeout_seconds",
         "llm_input_cost_per_million",
         "llm_output_cost_per_million",
         mode="after",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
+import logging
 import math
 import re
 import asyncio
@@ -17,12 +18,17 @@ from weasyprint import HTML
 from PIL import Image, ImageDraw
 
 from app.core.config import get_settings
+from app.core.database import engine
 from app.models import AgentDecision, AgentPositionTrail, Defect, GameEvent, StaticAnalysisResult, TestReport, TestRun, WadFile
 from app.repositories.defect_repository import DefectRepository
 from app.repositories.report_repository import ReportRepository
 from app.repositories.run_repository import RunRepository
 from app.services.analysis_service import map_bounds_for_wad, selected_skill_spawn_summary
+from app.services.analysis_constants import CELL_SIZE
 from app.services.prompt_service import report_prompt_path
+
+
+logger = logging.getLogger(__name__)
 
 
 class ReportService:
@@ -32,13 +38,43 @@ class ReportService:
         self.repo = ReportRepository(db)
 
     async def generate(self, run_id: UUID) -> TestReport:
-        await self.db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": f"report:{run_id}"})
+        lock_key = f"report:{run_id}"
+        async with engine.connect() as raw_lock_connection:
+            lock_connection = await raw_lock_connection.execution_options(isolation_level="AUTOCOMMIT")
+            acquired = await lock_connection.scalar(
+                text("SELECT pg_try_advisory_lock(hashtext(:key))"),
+                {"key": lock_key},
+            )
+            if not acquired:
+                existing = await self.repo.get_by_run(run_id)
+                if existing is not None:
+                    return existing
+                raise RuntimeError("Report generation is already in progress")
+            try:
+                return await self._generate_locked(run_id)
+            except Exception as exc:
+                logger.warning("Report generation failed for run %s: %s", run_id, exc)
+                with contextlib.suppress(Exception):
+                    await self.db.rollback()
+                    await self.mark_error(run_id, str(exc))
+                    await self.db.commit()
+                raise
+            finally:
+                with contextlib.suppress(Exception):
+                    await lock_connection.execute(
+                        text("SELECT pg_advisory_unlock(hashtext(:key))"),
+                        {"key": lock_key},
+                    )
+
+    async def _generate_locked(self, run_id: UUID) -> TestReport:
         existing = await self.repo.get_by_run(run_id)
         if existing is not None and existing.generation_status == "complete" and existing.pdf_path:
             if Path(self.settings.report_storage_dir.parent, existing.pdf_path).exists():
                 return existing
         if existing is not None:
             await self.repo.update(existing, generation_status="generating", generation_error=None)
+        else:
+            existing = await self.repo.create(TestReport(run_id=run_id, generation_status="generating"))
         run = await self.db.get(TestRun, run_id)
         if run is None:
             raise ValueError("Run not found")
@@ -48,7 +84,7 @@ class ReportService:
         events = list(
             (
                 await self.db.execute(
-                    select(GameEvent).where(GameEvent.run_id == run_id).order_by(GameEvent.tick_number)
+                    select(GameEvent).where(GameEvent.run_id == run_id).order_by(GameEvent.tick_number, GameEvent.id)
                 )
             )
             .scalars()
@@ -60,7 +96,7 @@ class ReportService:
                     select(AgentPositionTrail)
                     .where(AgentPositionTrail.run_id == run_id)
                     .where(AgentPositionTrail.is_sentinel.is_(False))
-                    .order_by(AgentPositionTrail.tick_number)
+                    .order_by(AgentPositionTrail.tick_number, AgentPositionTrail.id)
                 )
             )
             .scalars()
@@ -91,16 +127,33 @@ class ReportService:
             "map_bounds": map_bounds,
             "metrics": self._build_metrics(run, analysis, events, positions, decisions),
         }
+        await self.db.commit()
         report_json = await self._call_gemini_or_fallback(payload)
         render_report = self._sanitize_report_voice(self._normalize_report_sections(report_json))
-        pdf_path = await asyncio.to_thread(self._render_pdf, run_id, render_report, payload)
+        pdf_path = await self._render_pdf_with_timeout(run_id, render_report, payload)
         fields = self._report_fields(run, render_report, pdf_path)
-        if existing is not None:
-            created = await self.repo.update(existing, **fields)
-        else:
-            created = await self.repo.create(TestReport(run_id=run_id, **fields))
+        created = await self.repo.update(existing, **fields)
         await RunRepository(self.db).update(run, report_pdf_path=str(pdf_path))
+        await self.db.commit()
         return created
+
+    async def _render_pdf_with_timeout(
+        self,
+        run_id: UUID,
+        report: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> Path:
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._render_pdf, run_id, report, payload),
+                timeout=max(0.1, self.settings.report_pdf_timeout_seconds),
+            )
+        except asyncio.TimeoutError:
+            logger.warning("PDF rendering timed out for run %s", run_id)
+            raise RuntimeError("PDF rendering timed out") from None
+        except Exception as exc:
+            logger.warning("PDF rendering failed for run %s: %s", run_id, exc)
+            raise
 
     async def mark_error(self, run_id: UUID, error: str) -> TestReport:
         existing = await self.repo.get_by_run(run_id)
@@ -345,6 +398,7 @@ class ReportService:
     ) -> dict[str, Any]:
         event_type_counts: dict[str, int] = {}
         action_counts: dict[str, int] = {}
+        decision_source_counts: dict[str, int] = {}
         for event in events:
             event_type_counts[event.event_type] = event_type_counts.get(event.event_type, 0) + 1
             action = event.action_taken or {}
@@ -355,7 +409,7 @@ class ReportService:
         clusters: set[tuple[int, int]] = set()
         previous: AgentPositionTrail | None = None
         for position in positions:
-            clusters.add((round(position.x / 128), round(position.y / 128)))
+            clusters.add((round(position.x / CELL_SIZE), round(position.y / CELL_SIZE)))
             if previous is not None:
                 movement_distance += math.hypot(position.x - previous.x, position.y - previous.y)
             previous = position
@@ -368,6 +422,9 @@ class ReportService:
         spawned_enemy_count = int(skill_summary.get("thing_count_enemies") or 0)
         raw_item_count = int(analysis.thing_count_items or 0) if analysis else 0
         spawned_item_count = int(skill_summary.get("thing_count_items") or 0)
+        for decision in decisions or []:
+            source = str(decision.decision_source or "gemini")
+            decision_source_counts[source] = decision_source_counts.get(source, 0) + 1
         return {
             "event_count": len(events),
             "decision_count": len(decisions or []),
@@ -376,6 +433,11 @@ class ReportService:
             "movement_distance_units": round(movement_distance, 1),
             "event_type_counts": event_type_counts,
             "action_counts": action_counts,
+            "decision_source_counts": decision_source_counts,
+            "fallback_action_count": decision_source_counts.get("deterministic_fallback", 0),
+            "validation_rejection_count": sum(
+                1 for decision in decisions or [] if decision.mcp_stop_reason == "invalid_params"
+            ),
             "difficulty_level": run.difficulty_level,
             "raw_enemy_count": raw_enemy_count,
             "spawned_enemy_count": spawned_enemy_count,
@@ -440,20 +502,24 @@ class ReportService:
                 )
                 return response.text or "{}"
 
-            text = await asyncio.to_thread(generate)
+            text = await asyncio.wait_for(
+                asyncio.to_thread(generate),
+                timeout=max(0.1, self.settings.report_gemini_timeout_seconds),
+            )
             start, end = text.find("{"), text.rfind("}")
             if start < 0 or end < start:
                 raise ValueError("Report model did not return JSON")
             generated = json.loads(text[start : end + 1])
             return self._merge_report_defaults(fallback, generated)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Report Gemini generation failed; using deterministic fallback: %s", exc)
             return fallback
 
     @staticmethod
     def _merge_report_defaults(defaults: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:
         merged = dict(defaults)
         for key, value in generated.items():
-            if key == "pass_fail_summary":
+            if key in {"pass_fail_summary", "hardware_spec", "software_spec", "test_environment_summary"}:
                 continue
             if value not in (None, "", [], {}):
                 merged[key] = value
@@ -518,6 +584,7 @@ class ReportService:
         recording_meta = metrics.get("recording_metadata") or {}
         progress_metrics = metrics.get("progress_metrics") or {}
         quality_flags = metrics.get("agent_quality_flags") or {}
+        environment = ReportService._factual_environment_fields(run)
         recording_note = (
             f" Recording quality status: {recording_meta.get('quality_status', 'unknown')}; "
             f"{recording_meta.get('frame_count', 0)} frames, "
@@ -530,6 +597,18 @@ class ReportService:
             f" Agent progress score: {progress_metrics.get('progress_score', 0)} with "
             f"{progress_metrics.get('meaningful_progress_events', 0)} meaningful progress event(s). "
             f"Quality flags: {quality_flags.get('quality_status', 'unknown')}."
+        )
+        runtime_warnings = [str(item) for item in quality_flags.get("warnings", [])]
+        variance_summary = (
+            "The run finished inside the requested tick budget."
+            if run.status == "completed"
+            else f"The run did not complete normally: {run.error_message or outcome}."
+        )
+        if runtime_warnings:
+            variance_summary += " Runtime warnings: " + "; ".join(runtime_warnings)
+        variance_summary += (
+            f" Deterministic fallback actions: {metrics.get('fallback_action_count', 0)}."
+            f" Validation rejections: {metrics.get('validation_rejection_count', 0)}."
         )
 
         return {
@@ -545,27 +624,10 @@ class ReportService:
                 f"Static analysis context: {analysis_phrase} At difficulty {run.difficulty_level}, "
                 f"{spawned_enemies} of {raw_enemies} raw enemies spawn."
             ),
-            "test_environment_summary": (
-                f"The run used IWAD {run.iwad_used}, difficulty {run.difficulty_level}, "
-                f"model {run.llm_model}, and a maximum budget of {run.max_ticks} game ticks. "
-                f"Duration values distinguish wall-clock orchestration time from recorded gameplay time."
-            ),
-            "hardware_spec": {
-                "runner": "Local backend host",
-                "rendering": "ViZDoom offscreen frame capture",
-                "database": "PostgreSQL run history and telemetry store",
-            },
-            "software_spec": {
-                "backend": "FastAPI",
-                "game_runtime": "ViZDoom through MCP",
-                "report_renderer": "WeasyPrint PDF generation",
-                "agent_model": run.llm_model,
-            },
-            "variances_from_plan": (
-                "The run finished inside the requested tick budget."
-                if run.status == "completed"
-                else f"The run did not complete normally: {run.error_message or outcome}."
-            ),
+            "test_environment_summary": environment["summary"],
+            "hardware_spec": environment["hardware"],
+            "software_spec": environment["software"],
+            "variances_from_plan": variance_summary,
             "test_procedure_variances": (
                 "No manual gameplay intervention was used. The report reflects lockstep LLM tool decisions and MCP telemetry."
             ),
@@ -650,6 +712,41 @@ class ReportService:
         return run.failure_category == "pwad_crash" or run.outcome == "pwad_crash"
 
     @staticmethod
+    def _factual_environment_fields(run: TestRun) -> dict[str, Any]:
+        metadata = run.environment_metadata if isinstance(getattr(run, "environment_metadata", None), dict) else {}
+        hardware = metadata.get("hardware") if isinstance(metadata.get("hardware"), dict) else {}
+        software = metadata.get("software") if isinstance(metadata.get("software"), dict) else {}
+        run_context = metadata.get("run") if isinstance(metadata.get("run"), dict) else {}
+        factual_hardware = {
+            "cpu": hardware.get("cpu", "not reported"),
+            "ram_gb": hardware.get("ram_gb", "not reported"),
+            "os": hardware.get("os", "not reported"),
+        }
+        factual_software = {
+            "backend_python": software.get("backend_python", "not reported"),
+            "fastapi": software.get("fastapi", "not reported"),
+            "weasyprint": software.get("weasyprint", "not reported"),
+            "ffmpeg": software.get("ffmpeg", "not reported"),
+            "mcp_python": software.get("mcp_python", "not reported"),
+            "fastmcp": software.get("fastmcp", "not reported"),
+            "vizdoom": software.get("vizdoom", "not reported"),
+            "doom_mcp": software.get("doom_mcp", "not reported"),
+            "agent_model": run_context.get("llm_model", run.llm_model),
+        }
+        return {
+            "summary": (
+                f"The run used IWAD {run_context.get('iwad', run.iwad_used)}, "
+                f"difficulty {run_context.get('difficulty', run.difficulty_level)}, "
+                f"model {run_context.get('llm_model', run.llm_model)}, and a maximum budget of "
+                f"{run_context.get('max_ticks', run.max_ticks)} game ticks. "
+                "Environment versions below are measured values or explicitly marked not reported. "
+                "Duration values distinguish wall-clock orchestration time from recorded gameplay time."
+            ),
+            "hardware": factual_hardware,
+            "software": factual_software,
+        }
+
+    @staticmethod
     def _pwad_crash_report(payload: dict[str, Any]) -> dict[str, Any]:
         run: TestRun = payload["run"]
         analysis: StaticAnalysisResult | None = payload["analysis"]
@@ -657,6 +754,7 @@ class ReportService:
         metrics: dict[str, Any] = payload["metrics"]
         analysis_phrase = ReportService._analysis_phrase(analysis)
         diagnostic = run.error_message or run.failure_summary or "No raw runtime error was stored."
+        environment = ReportService._factual_environment_fields(run)
         return {
             "report_purpose": (
                 "Document that the PWAD crashed or failed to initialize under the configured "
@@ -673,21 +771,10 @@ class ReportService:
                 f"Static analysis context: {analysis_phrase}"
             ),
             "test_environment_summary": (
-                f"The run used IWAD {run.iwad_used}, difficulty {run.difficulty_level}, "
-                f"model {run.llm_model}, and a maximum budget of {run.max_ticks} game ticks. "
-                f"Failure stage: {run.failure_stage or 'runtime initialization'}."
+                f"{environment['summary']} Failure stage: {run.failure_stage or 'runtime initialization'}."
             ),
-            "hardware_spec": {
-                "runner": "Local backend host",
-                "rendering": "ViZDoom offscreen frame capture",
-                "database": "PostgreSQL run history and telemetry store",
-            },
-            "software_spec": {
-                "backend": "FastAPI",
-                "game_runtime": "ViZDoom through MCP",
-                "report_renderer": "WeasyPrint PDF generation",
-                "agent_model": run.llm_model,
-            },
+            "hardware_spec": environment["hardware"],
+            "software_spec": environment["software"],
             "variances_from_plan": "Gameplay did not start because the PWAD crashed or failed runtime initialization.",
             "test_procedure_variances": (
                 "No manual intervention was used. Trace, event, and recording endpoints remain valid even when empty."
@@ -796,7 +883,7 @@ class ReportService:
     def _covered_objectives(run: TestRun, metrics: dict[str, Any]) -> list[dict[str, Any]]:
         covered = [
             {"objective": "Map launch and initial state capture", "evidence": f"Run status: {run.status}."},
-            {"objective": "Director decision logging", "evidence": f"{metrics['event_count']} decision event(s) recorded."},
+            {"objective": "Agent decision logging", "evidence": f"{metrics['event_count']} decision event(s) recorded."},
         ]
         if metrics["position_sample_count"]:
             covered.append(
@@ -1030,6 +1117,12 @@ class ReportService:
             "mcp_tool": decision.mcp_tool,
             "mcp_input": decision.mcp_input,
             "mcp_stop_reason": decision.mcp_stop_reason,
+            "decision_source": decision.decision_source,
+            "validation_rejection": (
+                (decision.mcp_output or {}).get("action_summary", {}).get("validation_error")
+                if isinstance(decision.mcp_output, dict)
+                else None
+            ),
             "llm_duration_ms": decision.llm_duration_ms,
             "mcp_duration_ms": decision.mcp_duration_ms,
             "error_message": decision.error_message,
@@ -1056,7 +1149,13 @@ class ReportService:
     def _position_snapshot(position: AgentPositionTrail | None) -> dict[str, Any] | None:
         if position is None:
             return None
-        return {"tick": position.tick_number, "x": position.x, "y": position.y, "health": position.health}
+        return {
+            "tick": position.tick_number,
+            "x": position.x,
+            "y": position.y,
+            "angle": position.angle,
+            "health": position.health,
+        }
 
     @staticmethod
     def _image_data_uri(path_value: str | None) -> str | None:
@@ -1225,6 +1324,12 @@ class ReportService:
                 "tick_after": decision.tick_after,
                 "mcp_tool": decision.mcp_tool,
                 "mcp_stop_reason": decision.mcp_stop_reason,
+                "decision_source": getattr(decision, "decision_source", "gemini"),
+                "validation_rejection": (
+                    (getattr(decision, "mcp_output", None) or {}).get("action_summary", {}).get("validation_error")
+                    if isinstance(getattr(decision, "mcp_output", None), dict)
+                    else None
+                ),
                 "reasoning_summary": decision.reasoning_summary,
                 "mcp_input": ReportService._json_block(getattr(decision, "mcp_input", None), limit=700),
                 "mcp_output": ReportService._json_block(getattr(decision, "mcp_output", None), limit=900),

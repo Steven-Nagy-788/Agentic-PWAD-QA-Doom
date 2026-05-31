@@ -12,7 +12,7 @@ Three configuration layers exist — **environment variables** (`.env` file), **
 | `POSTGRES_PORT` | `5432` | PostgreSQL port |
 | `POSTGRES_DB` | `doom_agentic_qa` | Database name |
 | `POSTGRES_USER` | `doom_agentic` | Database user |
-| `POSTGRES_PASSWORD` | `doom_agentic_password` | Database password |
+| `POSTGRES_PASSWORD` | required if `DATABASE_URL` is unset | Database password; generate a local secret |
 | `DATABASE_URL` | derived | Full asyncpg URL — auto-derived if unset, must be `postgresql+asyncpg://` or `sqlite+aiosqlite://` |
 
 ### Storage Paths
@@ -65,7 +65,8 @@ All paths are resolved relative to the project root unless absolute. Directories
 |---|---|---|
 | `LIVE_FRAME_FPS` | `10.0` | Frame rate for live WebSocket streaming |
 | `RECORDING_FPS` | `30.0` | Frame rate for saved MP4 recordings |
-| `RECORDING_TELEMETRY_STRIDE` | `1` | Tick interval between telemetry samples |
+| `RECORDING_TELEMETRY_STRIDE` | `1` | Tick interval between telemetry samples. Values above `1` emit a recording-quality warning. |
+| `FFMPEG_TIMEOUT_SECONDS` | `60` | Maximum time allowed for FFmpeg finalization |
 
 ### Run
 
@@ -75,6 +76,12 @@ All paths are resolved relative to the project root unless absolute. Directories
 | `DEFAULT_RUN_TICKS` | `3000` | Default tick limit per run |
 | `DEFAULT_AGENT_BEHAVIOR` | `thorough` | Behavior profile name |
 | `IWAD_USED` | `freedoom2` | IWAD identifier for test metadata |
+| `REPORT_GEMINI_TIMEOUT_SECONDS` | `60` | Maximum time allowed for report narrative generation before deterministic fallback |
+| `REPORT_PDF_TIMEOUT_SECONDS` | `60` | Maximum time allowed for PDF rendering |
+| `MAX_WAD_UPLOAD_BYTES` | `67108864` | Maximum streamed WAD upload size |
+| `SAME_RUN_LEDGER_MAX_CHARS` | `24000` | Maximum serialized same-run ledger projected into an LLM decision |
+| `SAME_RUN_LEDGER_RECENT_ACTIONS` | `16` | Number of latest actions kept in detailed ledger form |
+| `NO_PROGRESS_DECISION_ABORT_THRESHOLD` | `8` | Consecutive no-progress decisions before an inconclusive stall stop |
 
 ## Database Overrides
 
@@ -92,6 +99,9 @@ Stored in the `config_entries` table (key-value pairs, JSONB values). Queried an
 | `live_frame_fps` | `float` | Override live stream FPS |
 | `recording_fps` | `float` | Override recording FPS |
 | `recording_telemetry_stride` | `int` | Override telemetry stride |
+| `same_run_ledger_max_chars` | `int` | Override projected ledger size cap |
+| `same_run_ledger_recent_actions` | `int` | Override detailed recent-action count |
+| `no_progress_decision_abort_threshold` | `int` | Override no-progress abort threshold |
 | `default_agent_behavior` | `str` | Override behavior profile |
 | `iwad_used` | `str` | Override IWAD identifier |
 
@@ -101,11 +111,11 @@ All values are optional — only supplied keys override their env counterparts. 
 
 Three hardcoded profiles in `app/core/behavior_profiles.py`.
 
-| Profile | Default Stride | Combat Stride | Stuck Stride | Throttle (default) | Goal |
-|---|---|---|---|---|---|
-| `thorough` | 1 | 1 | 2 | 1.5 s | Methodical, every room, maximum coverage |
-| `fast` | 5 | 2 | 10 | 0.4 s | Breadth-first, covers ground quickly |
-| `exploit_focused` | 1 | 1 | 1 | 0.1 s | Aggressive boundaries, crash bugs, softlocks |
+| Profile | Throttle (default) | Goal |
+|---|---|---|
+| `thorough` | 1.5 s | Methodical, every room, maximum coverage |
+| `fast` | 0.4 s | Breadth-first, covers ground quickly |
+| `exploit_focused` | 0.1 s | Aggressive boundaries, crash bugs, softlocks |
 
 ### THOROUGH
 
@@ -113,7 +123,7 @@ System prompt emphasizes slow exploration, checking every corner, interactable, 
 
 ### FAST
 
-Prioritises covering new cells over re-examining. Higher stride values skip ticks between actions. Fast throttle (0.1–0.8 s range).
+Prioritises covering new cells over re-examining. Fast throttle (0.1–0.8 s range).
 
 ### EXPLOIT_FOCUSED
 

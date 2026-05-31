@@ -32,7 +32,7 @@ async def test_websocket_replays_cached_live_messages_on_connect() -> None:
     await service.broadcast(run_id, {"type": "llm_decision", "sequence_number": 2, "mcp_tool": "explore"})
     await service.broadcast(run_id, {"type": "mcp_call_result", "sequence_number": 2, "mcp_stop_reason": "max_tics"})
     await service.broadcast(run_id, {"type": "state", "tick": 120, "health": 82})
-    await service.broadcast(run_id, {"type": "progress", "tick": 120, "run_history": {"decisions": []}})
+    await service.broadcast(run_id, {"type": "progress", "tick": 120, "same_run_memory": {"recent_actions": []}})
     await service.broadcast(run_id, {"type": "frame", "tick": 120, "frame_b64": "abc"})
     await service.broadcast(run_id, {"type": "defect", "fingerprint": "softlock:120", "title": "Softlock"})
 

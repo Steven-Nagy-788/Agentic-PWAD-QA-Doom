@@ -1,4 +1,4 @@
-# Backend Continuation Notes
+# Historical: Backend Continuation Notes
 
 This file replaces the original planning notes with the current implementation reality. Use the top-level `README.md` for setup and operation.
 

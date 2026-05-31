@@ -101,6 +101,11 @@ are not present in the input. If a section cannot be filled from the available
 data, write a specific explanation of why that data was not collected rather
 than a generic placeholder.
 
+Do not claim multiplayer quality, engine/source-port compatibility, encounter
+coverage, performance-limit safety, or speedrunning viability unless the input
+contains direct evidence. For unsupported claims write `not evaluated` and name
+the missing evidence.
+
 Use neutral product QA language. Do not blame the controller/player or write
 phrases like "the agent failed", "the agent was unable", or "the agent played
 badly". Prefer "the automated playthrough did not reach...", "coverage did not
@@ -161,8 +166,9 @@ You will receive:
 
   decision_trace    — ordered lockstep LLM/MCP decisions:
                       Each has sequence_number, tick_before, tick_after,
-                      reasoning_summary, mcp_tool, mcp_input, mcp_stop_reason,
-                      llm_duration_ms, mcp_duration_ms, and error_message.
+                      reasoning_summary, decision_source, mcp_tool, mcp_input,
+                      mcp_stop_reason, validation_rejection, llm_duration_ms,
+                      mcp_duration_ms, and error_message.
 
 ═══════════════════════════════════════════════════════════
 PASS / FAIL CRITERIA — apply these exactly, do not invent your own
@@ -211,8 +217,9 @@ OUTPUT FORMAT — return ONLY this JSON, no other text
     for release readiness.",
 
   "problem_and_escalation": "Describe any technical problems during the run:
-    rate limit hits (count them from total_llm_calls vs total_actions_taken),
-    fallback actions used, MCP errors, or recording failures. If none, write
+    rate limit hits, fallback actions used (use metrics.fallback_action_count),
+    validation rejections (use metrics.validation_rejection_count), MCP errors,
+    or recording failures. If none, write
     'No technical problems encountered during this test run.'",
 
   "executive_summary": "Complete section #1. Provide a concise professional overview of overall map quality, gameplay health, technical stability, and release readiness.",
@@ -247,26 +254,15 @@ OUTPUT FORMAT — return ONLY this JSON, no other text
     IWAD, difficulty, enemy types from enemy_breakdown, item types, key count,
     secret count, and map dimensions. Describe the map's static complexity.",
 
-  "test_environment_summary": "Describe the test environment: ViZDoom as the
-    game engine, the LLM model used, the MCP tool interface. Reference the
-    difficulty level and max_ticks cap.",
+  "test_environment_summary": "Omit this field. The backend supplies measured environment metadata.",
 
-  "hardware_spec": {
-    "cpu": "<cpu info>",
-    "ram_gb": <ram>,
-    "os": "<os info>"
-  },
+  "hardware_spec": "Omit this field. The backend supplies measured values.",
 
-  "software_spec": {
-    "vizdoom": "<vizdoom version>",
-    "python": "<python version>",
-    "llm_model": "<llm_model from run_summary>",
-    "ffmpeg": "<ffmpeg info>"
-  },
+  "software_spec": "Omit this field. The backend supplies measured values.",
 
   "variances_from_plan": "List any deviations from expected test execution.
     Include: if Gemini was rate-limited and how many fallback actions occurred
-    (calculate: total_actions_taken - total_llm_calls = fallback count),
+    (use metrics.fallback_action_count from persisted decision_source),
     if the run ended before max_ticks, if the player died unexpectedly.
     If no variances: 'Test executed as planned with no significant deviations.'",
 

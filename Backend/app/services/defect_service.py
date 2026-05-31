@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 from uuid import UUID
@@ -16,6 +17,9 @@ from app.services.analysis_service import selected_skill_spawn_summary
 
 if TYPE_CHECKING:
     from app.services.gemini_service import GeminiService
+
+
+logger = logging.getLogger(__name__)
 
 
 _RESOURCE_STOP_REASONS = {
@@ -39,10 +43,11 @@ class DefectService:
         analysis = await self.db.get(StaticAnalysisResult, run.static_analysis_id) if run.static_analysis_id else None
         await self._difficulty_spawn_mismatch(run, analysis)
         await self._static_resource_balance(run, analysis)
-        result = await self.db.execute(select(GameEvent).where(GameEvent.run_id == run.id).order_by(GameEvent.tick_number))
+        result = await self.db.execute(
+            select(GameEvent).where(GameEvent.run_id == run.id).order_by(GameEvent.tick_number, GameEvent.id)
+        )
         events = list(result.scalars().all())
         await self._vision_defects(run.id)
-        await self._weapon_failures(run)
         if not events:
             return
         await self._repeated_deaths(run.id, events)
@@ -173,7 +178,7 @@ class DefectService:
             )
 
     async def _vision_defects(self, run_id: UUID) -> None:
-        if self.gemini is None:
+        if self.gemini is None or not self.gemini.settings.gemini_api_key:
             return
         result = await self.db.execute(
             select(NotableEventScreenshot).where(NotableEventScreenshot.run_id == run_id)
@@ -191,7 +196,11 @@ class DefectService:
                     batch.append((s.screenshot_path, buf.tobytes()))
         if not batch:
             return
-        visual_defects = await self.gemini.detect_visual_defects(batch)
+        try:
+            visual_defects = await self.gemini.detect_visual_defects(batch)
+        except Exception as exc:
+            logger.warning("Visual defect analysis failed for run %s: %s", run_id, exc)
+            return
         path_to_screenshot_id: dict[str, UUID] = {s.screenshot_path: s.id for s in screenshots}
         for vd in visual_defects:
             if is_low_value_texture_defect(vd):
@@ -292,9 +301,6 @@ class DefectService:
             confirmed_stuck = [event for event in stuck_events if _is_confirmed_map_stuck_event(event)]
             if len(confirmed_stuck) >= 3:
                 first = confirmed_stuck[0]
-                if run.outcome == "timeout":
-                    run.outcome = "stuck"
-                    await self.db.flush()
                 await self.repo.create(
                     Defect(
                         run_id=run.id,
@@ -313,8 +319,6 @@ class DefectService:
                 )
             else:
                 first = stuck_events[0]
-                run.outcome = "inconclusive_agent_stall"
-                await self.db.flush()
                 await self.repo.create(
                     Defect(
                         run_id=run.id,
@@ -342,8 +346,6 @@ class DefectService:
         if moved < 20:
             first = tail[0]
             if _has_agent_or_resource_limitation(tail):
-                run.outcome = "inconclusive_agent_stall"
-                await self.db.flush()
                 await self.repo.create(
                     Defect(
                         run_id=run.id,
@@ -400,44 +402,6 @@ class DefectService:
                         f"after reaching {coverage_percent:.1f}% coarse cell coverage."
                     ),
                     detected_at_tick=events[-1].tick_number,
-                )
-            )
-
-    async def _weapon_failures(self, run: TestRun) -> None:
-        """Create defects for weapon_switch_failed events stored in quality flags."""
-        quality_flags = run.agent_quality_flags if isinstance(run.agent_quality_flags, dict) else {}
-        weapon_failures = quality_flags.get("weapon_resource_failures", {})
-        if not isinstance(weapon_failures, dict) or not weapon_failures:
-            return
-        for key, count in weapon_failures.items():
-            key_text = str(key)
-            if "weapon_switch_failed" not in key_text:
-                continue
-            if not isinstance(count, int) or count < 1:
-                continue
-            fingerprint = f"weapon_malfunction:{key_text}"
-            if await self.repo.exists_by_fingerprint(run.id, fingerprint):
-                continue
-            await self.repo.create(
-                Defect(
-                    run_id=run.id,
-                    severity=2,
-                    priority=2,
-                    defect_type="weapon_malfunction",
-                    fingerprint=fingerprint,
-                    title=f"Weapon failed to activate ({count}x)",
-                    description=(
-                        f"The weapon system reported '{key_text}' {count} time(s) during the run. "
-                        "This indicates a weapon could not be selected or fired when expected. "
-                        "Possible causes: weapon pickup animation conflict, ammo check error, "
-                        "or ViZDoom weapon slot numbering mismatch."
-                    ),
-                    detected_at_tick=0,
-                    recommendation=(
-                        "Verify that the map's weapon placement does not trigger weapon state "
-                        "conflicts on pickup. Ensure the weapon slot numbering in MCP tools matches "
-                        "ViZDoom's SELECTED_WEAPON variable (1=fist, 8=chainsaw)."
-                    ),
                 )
             )
 

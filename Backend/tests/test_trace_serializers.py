@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from app.models import AgentDecision
 from app.serializers.game_event_serializers import TraceEntryOut
 from app.serializers.agent_decision_serializers import AgentDecisionOut
 
@@ -60,6 +61,8 @@ def test_agent_decision_serializer_exposes_llm_and_mcp_trace() -> None:
         mcp_input={"max_tics": 80},
         mcp_output={"action_summary": {"stop_reason": "item_found"}},
         mcp_stop_reason="item_found",
+        guard_modified=True,
+        decision_source="deterministic_fallback",
         llm_duration_ms=12.5,
         mcp_duration_ms=4.0,
         created_at=datetime.now(UTC),
@@ -71,3 +74,22 @@ def test_agent_decision_serializer_exposes_llm_and_mcp_trace() -> None:
     assert dumped["mcp_tool"] == "explore"
     assert dumped["mcp_stop_reason"] == "item_found"
     assert dumped["llm_input_summary"] == {"tick": 100}
+    assert dumped["guard_modified"] is True
+    assert dumped["decision_source"] == "deterministic_fallback"
+
+
+def test_agent_decision_serializer_exposes_validation_rejection() -> None:
+    decision = AgentDecision(
+        id=uuid4(),
+        run_id=uuid4(),
+        sequence_number=4,
+        status="complete",
+        guard_modified=False,
+        decision_source="gemini",
+        mcp_output={"action_summary": {"stop_reason": "invalid_params", "validation_error": "move_to requires object_id"}},
+        created_at=datetime.now(UTC),
+    )
+
+    dumped = AgentDecisionOut.model_validate(decision).model_dump()
+
+    assert dumped["validation_rejection"] == "move_to requires object_id"

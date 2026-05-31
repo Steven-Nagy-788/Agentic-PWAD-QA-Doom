@@ -26,8 +26,10 @@ from pydantic import BaseModel
 
 from app.core.behavior_profiles import PROFILES, BehaviorProfileName
 from app.serializers.run_serializers import RunCompareOut, RunCreate, RunListOut, RunOut
+from app.services.analysis_constants import CELL_SIZE
 from app.services.run_compare_service import RunCompareService
 from app.services.run_service import RunService
+from app.services.run_utils import _build_same_run_memory, _initial_lockstep_state, _record_decision_in_history
 
 
 class BehaviorUpdatePayload(BaseModel):
@@ -113,7 +115,9 @@ async def get_live_snapshot(run_id: UUID, db: AsyncSession = Depends(get_db)) ->
             "progress_metrics": run.progress_metrics or {},
             "agent_quality_flags": run.agent_quality_flags or {},
             "report_status": report_status,
-            "run_history": _persisted_run_history(run, decisions, trace, trail, defects),
+            "same_run_memory": _persisted_same_run_memory(run, decisions, trace, defects),
+            "visited_cells": _visited_cells_from_trail(trail),
+            "visited_cell_size": CELL_SIZE,
         }
     )
 
@@ -192,132 +196,55 @@ def _latest_state_payload(run: Any, event: Any | None) -> dict[str, Any] | None:
     }
 
 
-def _persisted_run_history(
+def _visited_cells_from_trail(trail: list[Any]) -> dict[str, int]:
+    cells: Counter[str] = Counter()
+    for sample in trail:
+        cells[f"{round(sample.x / CELL_SIZE)},{round(sample.y / CELL_SIZE)}"] += 1
+    return dict(cells)
+
+
+def _persisted_same_run_memory(
     run: Any,
     decisions: list[Any],
     trace: list[Any],
-    trail: list[Any],
     defects: list[Any],
 ) -> dict[str, Any]:
-    decision_entries = []
-    tool_stats: dict[str, dict[str, int]] = {}
-    for item in decisions[-30:]:
-        tool = item.mcp_tool or "pending"
-        stop_reason = item.mcp_stop_reason or "unknown"
-        result = _decision_result(stop_reason)
-        stats = tool_stats.setdefault(tool, {"total": 0, "success": 0, "timeout": 0, "blocked": 0})
-        stats["total"] += 1
-        if result == "success":
-            stats["success"] += 1
-        elif result == "timeout":
-            stats["timeout"] += 1
-        elif result == "blocked":
-            stats["blocked"] += 1
-        decision_entries.append(
-            {
-                "seq": item.sequence_number,
-                "tick_before": item.tick_before or 0,
-                "tick_after": item.tick_after or item.tick_before or 0,
-                "tool": tool,
-                "stop_reason": stop_reason,
-                "result": result,
-                "params": item.mcp_input or {},
-                "key_findings": stop_reason,
-                "reasoning": (item.reasoning_summary or "")[:120],
-                "guard_modified": False,
-                "llm_ms": round(float(item.llm_duration_ms or 0), 1),
-                "mcp_ms": round(float(item.mcp_duration_ms or 0), 1),
-            }
-        )
-    event_entries = [
+    state = _initial_lockstep_state()
+    state["defects_found"] = [
+        {"defect_type": item.defect_type, "title": item.title, "severity": item.severity}
+        for item in defects
+    ]
+    state["checkpoints"] = [
         {
             "tick": event.tick_number,
-            "type": event.event_type,
-            "detail": event.mcp_stop_reason if hasattr(event, "mcp_stop_reason") else event.event_type,
+            "event": event.event_type,
             "pos": {"x": round(event.player_x, 1), "y": round(event.player_y, 1)},
         }
-        for event in trace[-50:]
-    ]
-    trail_entries = [
-        {"tick": sample.tick_number, "x": round(sample.x, 1), "y": round(sample.y, 1), "angle": 0}
-        for sample in trail[-30:]
-    ]
-    latest_tick = trace[-1].tick_number if trace else 0
-    first_tick = trace[0].tick_number if trace else 0
-    ticks_used = max(0, latest_tick - first_tick)
-    decision_count = len(decisions)
-    avg_ticks = round(ticks_used / max(decision_count, 1), 1) if decision_count else 0
-    ticks_remaining = max(0, int(run.max_ticks or 0) - latest_tick)
-    return {
-        "decisions": decision_entries,
-        "events": event_entries,
-        "position_trail": trail_entries,
-        "combat": {
-            "total_engagements": sum(1 for item in decisions if item.mcp_tool in {"aim_and_shoot", "strafe_and_shoot"}),
-            "total_kills": run.total_kills or 0,
-            "total_shots": 0,
-            "total_hits": 0,
-            "enemies_engaged": [],
-            "weapon_performance": {},
-        },
-        "tool_stats": tool_stats,
-        "hypotheses": [],
-        "defects": [
-            {
-                "defect_type": defect.defect_type,
-                "title": defect.title,
-                "severity": defect.severity,
-                "fingerprint": defect.fingerprint,
-            }
-            for defect in defects
-        ],
-        "checkpoints": [
-            {
-                "tick": event.tick_number,
-                "event": event.event_type,
-                "pos": {"x": round(event.player_x, 1), "y": round(event.player_y, 1)},
-            }
-            for event in trace
-            if event.event_type != "normal"
-        ][-15:],
-        "budget": {
-            "total_ticks": run.max_ticks,
-            "ticks_used": latest_tick,
-            "ticks_remaining": ticks_remaining,
-            "decisions_made": decision_count,
-            "avg_ticks_per_decision": avg_ticks,
-            "estimated_decisions_remaining": max(0, round(ticks_remaining / max(avg_ticks, 1))) if avg_ticks else 0,
-        },
-        "current_objective": {
-            "current": _objective_from_reasoning(decisions[-1].reasoning_summary if decisions else None),
-            "history": [_objective_from_reasoning(item.reasoning_summary) for item in decisions[-5:]],
-        },
-    }
-
-
-def _decision_result(stop_reason: str) -> str:
-    if stop_reason in {"stuck", "arrival_blocked", "target_not_visible"}:
-        return "blocked"
-    if stop_reason == "max_tics":
-        return "timeout"
-    if stop_reason in {"out_of_ammo", "no_usable_weapon", "no_target", "weapon_switch_failed"}:
-        return "failed"
-    return "success"
-
-
-def _objective_from_reasoning(reasoning: str | None) -> str:
-    if not reasoning:
-        return "No objective set"
-    lower = reasoning.lower()
-    if any(token in lower for token in ("shoot", "attack", "combat", "kill")):
-        return "combat"
-    if any(token in lower for token in ("pickup", "collect", "resource", "weapon", "ammo")):
-        return "collecting"
-    if any(token in lower for token in ("stuck", "blocked", "softlock")):
-        return "diagnosing_blockage"
-    if any(token in lower for token in ("use", "switch", "door")):
-        return "interacting"
-    return "exploring"
+        for event in trace
+        if event.event_type != "normal"
+    ][-15:]
+    for item in decisions:
+        output = item.mcp_output if isinstance(item.mcp_output, dict) else {}
+        summary = output.get("action_summary") if isinstance(output.get("action_summary"), dict) else {}
+        _record_decision_in_history(
+            state,
+            seq=item.sequence_number,
+            tick_before=item.tick_before or 0,
+            tick_after=item.tick_after or item.tick_before or 0,
+            tool=item.mcp_tool or "pending",
+            stop_reason=item.mcp_stop_reason,
+            params=item.mcp_input or {},
+            reasoning=item.reasoning_summary,
+            guard_modified=False,
+            llm_duration_ms=float(item.llm_duration_ms or 0),
+            mcp_duration_ms=float(item.mcp_duration_ms or 0),
+            total_budget=int(run.max_ticks or 0),
+            action_summary=summary,
+            state_after=output,
+            decision_source=item.decision_source,
+            observed_issue=(item.llm_decision or {}).get("observed_issue"),
+        )
+    return _build_same_run_memory(state)
 
 
 @router.patch("/{run_id}/behavior", response_model=RunOut)

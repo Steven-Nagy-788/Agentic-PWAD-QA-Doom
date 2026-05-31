@@ -8,7 +8,6 @@ Create Date: 2026-05-23
 from __future__ import annotations
 
 from alembic import op
-import sqlalchemy as sa
 
 
 revision = "20260523_0002"
@@ -18,11 +17,13 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "test_runs",
-        sa.Column("behavior_profile", sa.String(32), server_default="thorough", nullable=True),
+    op.execute(
+        """
+        ALTER TABLE test_runs
+        ADD COLUMN IF NOT EXISTS behavior_profile VARCHAR(32) DEFAULT 'thorough';
+        """
     )
 
 
 def downgrade() -> None:
-    op.drop_column("test_runs", "behavior_profile")
+    op.execute("ALTER TABLE test_runs DROP COLUMN IF EXISTS behavior_profile;")

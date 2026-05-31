@@ -312,7 +312,8 @@
     {% endif %}
     {% for decision in decisions %}
     <div class="decision-card">
-      <div class="decision-meta">#{{ decision.sequence_number }} | ticks {{ decision.tick_before }} -> {{ decision.tick_after }} | tool <span class="mono">{{ decision.mcp_tool or "" }}</span> | stop <span class="mono">{{ decision.mcp_stop_reason or "" }}</span></div>
+      <div class="decision-meta">#{{ decision.sequence_number }} | ticks {{ decision.tick_before }} -> {{ decision.tick_after }} | source <span class="mono">{{ decision.decision_source or "gemini" }}</span> | tool <span class="mono">{{ decision.mcp_tool or "" }}</span> | stop <span class="mono">{{ decision.mcp_stop_reason or "" }}</span></div>
+      {% if decision.validation_rejection %}<div class="decision-meta">Validation rejection: {{ decision.validation_rejection }}</div>{% endif %}
       <div>{{ decision.reasoning_summary or "" }}</div>
       {% if decision.mcp_input or decision.mcp_output %}
       <div class="two-col">

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 
 from app.models import WadFile
 from app.services.wad_service import WadService, _analysis_map_bounds
@@ -55,6 +56,19 @@ async def test_get_raises_404_when_not_found() -> None:
         await service.get(uuid4())
 
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_upload_rejects_file_above_configured_limit(tmp_path) -> None:
+    service = WadService(AsyncMock())
+    service.settings = SimpleNamespace(wad_storage_dir=tmp_path, max_wad_upload_bytes=12)
+    upload = UploadFile(filename="large.wad", file=BytesIO(b"PWAD" + b"x" * 32))
+
+    with pytest.raises(HTTPException) as exc:
+        await service.upload(upload)
+
+    assert exc.value.status_code == 413
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.asyncio

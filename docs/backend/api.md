@@ -198,7 +198,7 @@ Router: `app/routers/settings.py`
 |----------|-----------------------------------|------------------------------------------------------|
 | `GET`    | `/settings`                       | Get merged settings (env + database overrides).       |
 | `PATCH`  | `/settings`                       | Update runtime settings. Body: partial `SettingsUpdatePayload`. |
-| `GET`    | `/settings/behavior-profiles`     | List all available behavior profiles with descriptions and stride configs. |
+| `GET`    | `/settings/behavior-profiles`     | List all available behavior profiles with descriptions and throttle configs. |
 
 Settings that can be overridden at runtime via `PATCH /settings`:
 

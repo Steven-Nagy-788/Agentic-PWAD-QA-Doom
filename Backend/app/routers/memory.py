@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models import Defect, TestRun, WadHypothesis, WadSpatialMemory
-from app.services.run_memory import RunMemoryService
 
 
 router = APIRouter(prefix="/wads", tags=["Memory"])
@@ -20,13 +19,7 @@ async def get_wad_map_memory(
     map_name: str,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    svc = RunMemoryService(db)
     map_name_upper = map_name.upper()
-
-    cross_run = await svc.build_cross_run_memory(wad_id, map_name_upper)
-    spatial = await svc.build_spatial_memory_briefing(wad_id, map_name_upper)
-    hypotheses = await svc.build_hypotheses_briefing(wad_id, map_name_upper)
-    knowledge = await svc.build_knowledge_briefing(wad_id, map_name_upper)
 
     spatial_result = await db.execute(
         select(
@@ -71,12 +64,17 @@ async def get_wad_map_memory(
     ]
 
     run_result = await db.execute(
-        select(TestRun.id).where(
+        select(TestRun.id, TestRun.outcome).where(
             TestRun.wad_file_id == wad_id,
             TestRun.map_name == map_name_upper,
         )
     )
-    run_ids = [row[0] for row in run_result.all()]
+    run_rows = run_result.all()
+    run_ids = [row.id for row in run_rows]
+    outcome_counts: dict[str, int] = {}
+    for row in run_rows:
+        outcome = str(row.outcome or "unknown")
+        outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
     recurring = []
     if run_ids:
         distinct_run_count = func.count(func.distinct(Defect.run_id))
@@ -107,14 +105,11 @@ async def get_wad_map_memory(
     return {
         "wad_id": str(wad_id),
         "map_name": map_name_upper,
-        "cross_run_summary": cross_run,
+        "summary_counts": {
+            "prior_run_count": len(run_ids),
+            "outcome_counts": outcome_counts,
+        },
         "spatial_cells": spatial_cells,
         "hypotheses": hypotheses_list,
-        "knowledge_document": knowledge,
         "recurring_defects": recurring,
-        "briefing_text": {
-            "spatial": spatial,
-            "hypotheses": hypotheses,
-            "knowledge": knowledge,
-        },
     }

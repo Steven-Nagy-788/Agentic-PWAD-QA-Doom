@@ -8,7 +8,7 @@ import pytest
 
 from app.models import StaticAnalysisResult, TestRun, WadFile
 from app.services.mcp_client_service import McpStartupError
-from app.services.run_loop import _classify_startup_failure, _estimate_total_map_cells, _history_position_from_state
+from app.services.run_loop import _classify_startup_failure, _estimate_total_map_cells, _execute_tool, _history_position_from_state
 
 
 def _mock_run():
@@ -81,6 +81,60 @@ def test_history_position_uses_uppercase_vizdoom_variables() -> None:
     assert angle == 270
 
 
+@pytest.mark.asyncio
+async def test_execute_tool_passes_valid_stale_target_to_mcp_unchanged_after_normalization() -> None:
+    mcp = AsyncMock()
+    mcp.call_tool.return_value = {"game_variables": {"POSITION_X": 0, "POSITION_Y": 0}}
+    decision = {"mcp_tool": "aim_and_shoot", "mcp_params": {"object_id": 99, "shots": 2}}
+
+    _, call = await _execute_tool(mcp, decision, {"objects": []})
+
+    mcp.call_tool.assert_awaited_once()
+    assert call["tool"] == "aim_and_shoot"
+    assert call["input"]["object_id"] == 99
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_rejects_invalid_params_without_fallback_explore() -> None:
+    mcp = AsyncMock()
+    decision = {"mcp_tool": "move_to", "mcp_params": {}}
+
+    response, call = await _execute_tool(mcp, decision, {"tic": 12, "game_variables": {}})
+
+    mcp.call_tool.assert_not_called()
+    assert call["service"] == "backend-validation"
+    assert call["tool"] == "move_to"
+    assert response["action_summary"]["stop_reason"] == "invalid_params"
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_explore_keeps_technical_defaults_without_runtime_error() -> None:
+    mcp = AsyncMock()
+    mcp.call_tool.return_value = {"game_variables": {"POSITION_X": 0, "POSITION_Y": 0}}
+    decision = {"mcp_tool": "explore", "mcp_params": {}}
+
+    await _execute_tool(mcp, decision)
+
+    mcp.call_tool.assert_awaited_once()
+    params = mcp.call_tool.await_args.args[1]
+    assert params["max_tics"] == 80
+    assert params["stop_on_enemy"] is True
+    assert params["stop_on_item"] is True
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_select_weapon_uses_full_settling_window_by_default() -> None:
+    mcp = AsyncMock()
+    mcp.call_tool.return_value = {"game_variables": {"SELECTED_WEAPON": 2}}
+    decision = {"mcp_tool": "select_weapon", "mcp_params": {"weapon_slot": 2}}
+
+    await _execute_tool(mcp, decision)
+
+    params = mcp.call_tool.await_args.args[1]
+    assert params["weapon_slot"] == 2
+    assert params["max_tics"] == 20
+
+
 def _base_patches():
     return [
         patch("app.services.run_loop.SessionLocal"),
@@ -101,7 +155,7 @@ def _base_patches():
 def _setup_loop_patches():
     return [
         patch("app.services.run_loop._lockstep_should_stop_as_stuck", return_value=False),
-        patch("app.services.run_loop._unique_lockstep_tick", return_value=1),
+        patch("app.services.run_loop._factual_game_tic", return_value=1),
         patch("app.services.run_loop._track_visited_cell"),
         patch("app.services.run_loop._finalize_lockstep_decision"),
         patch("app.services.run_loop._lockstep_progress_metrics", return_value={"progress_score": 0}),
@@ -150,6 +204,7 @@ def _make_mcp(mock_mcp_cls, start_side_effect=None, state_data=None):
     if state_data is None:
         state_data = {"episode_finished": True, "game_variables": {"x": 0, "y": 0, "health": 100}}
     mcp.get_state = AsyncMock(return_value=(state_data, b""))
+    mcp.get_runtime_metadata = AsyncMock(return_value={})
     mcp.stop_game = AsyncMock()
     mock_mcp_cls.return_value.__aenter__.return_value = mcp
     mock_mcp_cls.return_value.__aexit__.return_value = None
@@ -216,7 +271,7 @@ async def test_normal_completion():
         patch("app.services.run_loop.render_agent_prompt") as mock_render_prompt,
         patch("app.services.run_loop.RUN_TASKS", {}),
         patch("app.services.run_loop._lockstep_should_stop_as_stuck", return_value=False),
-        patch("app.services.run_loop._unique_lockstep_tick", return_value=1),
+        patch("app.services.run_loop._factual_game_tic", return_value=1),
         patch("app.services.run_loop._track_visited_cell"),
         patch("app.services.run_loop._finalize_lockstep_decision"),
         patch("app.services.run_loop._lockstep_progress_metrics", return_value={"progress_score": 0}),
@@ -241,7 +296,6 @@ async def test_normal_completion():
         _make_recorder(mock_rec_cls)
 
         mock_get_profile.return_value = MagicMock(
-            default_stride=3, combat_stride=1, stuck_stride=5,
             throttle_delays={"combat": 0.5, "low_health": 1.0, "stuck": 2.0, "default": 1.5},
         )
         mock_render_prompt.return_value = "Test prompt."
@@ -313,7 +367,6 @@ async def test_pwad_crash():
         mock_rec_cls.return_value = rec
 
         mock_get_profile.return_value = MagicMock(
-            default_stride=3, combat_stride=1, stuck_stride=5,
             throttle_delays={"combat": 0.5, "low_health": 1.0, "stuck": 2.0, "default": 1.5},
         )
         mock_render_prompt.return_value = "Test prompt."
@@ -384,7 +437,6 @@ async def test_cancelled():
         _make_mcp(mock_mcp_cls, start_side_effect=asyncio.CancelledError())
 
         mock_get_profile.return_value = MagicMock(
-            default_stride=3, combat_stride=1, stuck_stride=5,
             throttle_delays={"combat": 0.5, "low_health": 1.0, "stuck": 2.0, "default": 1.5},
         )
         mock_render_prompt.return_value = "Test prompt."

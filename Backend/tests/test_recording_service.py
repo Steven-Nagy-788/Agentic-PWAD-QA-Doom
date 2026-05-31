@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import subprocess
 
 from app.services.recording_service import RecordingService
 
@@ -75,3 +76,21 @@ def test_crash_recording_metadata_is_expected_missing() -> None:
     assert metadata["frame_count"] == 0
     assert metadata["path"] is None
     assert "No recording is expected" in metadata["validation_warnings"][0]
+
+
+def test_ffmpeg_timeout_retains_source_recording(tmp_path, monkeypatch) -> None:
+    recorder = RecordingService("timeout-run", fps=15)
+    recorder.path = tmp_path / "timeout-run.mp4"
+    recorder.source_path = tmp_path / "timeout-run.source.mp4"
+    recorder.source_path.write_bytes(b"source")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired("ffmpeg", 60)),
+    )
+
+    path = recorder._transcode_h264()
+
+    assert path == recorder.source_path
+    assert recorder.source_path.exists()
+    assert "ffmpeg_transcode_timed_out" in recorder._transcode_errors

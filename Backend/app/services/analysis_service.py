@@ -152,15 +152,6 @@ def map_bounds_for_wad(wad_path: str, map_name: str) -> dict[str, int] | None:
     return AnalysisService._map_bounds_from_editor(MapEditor(wad.maps[map_name]))
 
 
-def map_has_single_player_start(wad_path: str, map_name: str) -> bool:
-    return player_one_start_count(wad_path, map_name) == 1
-
-
-def map_can_be_normalized_for_single_player(wad_path: str, map_name: str) -> bool:
-    counts = player_start_counts(wad_path, map_name)
-    return counts["player_one"] > 0 or counts["deathmatch"] > 0
-
-
 def thing_spawns_at_skill(thing: Any, difficulty: int) -> bool:
     """Return whether a Doom-format thing appears in backend single-player mode."""
     skill_flag = "medium"

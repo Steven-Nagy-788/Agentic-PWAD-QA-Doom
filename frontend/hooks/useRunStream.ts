@@ -33,26 +33,37 @@ export type RunStreamMessage = {
   llm_duration_ms?: number;
   llm_input?: Record<string, unknown>;
   llm_raw_output?: Record<string, unknown>;
-  cross_run_memory_prompt?: string;
-  hypotheses_briefing?: string;
-  spatial_briefing?: string;
+  visited_cells?: Record<string, number>;
+  visited_cell_size?: number;
   mcp_duration_ms?: number;
-  guard_status?: string;
+  decision_source?: string;
+  validation_rejection?: string;
   llm_input_tokens?: number;
   llm_output_tokens?: number;
   llm_cost_estimate_usd?: number;
-  run_history?: RunHistory;
+  same_run_memory?: SameRunMemory;
 };
 
-export type RunHistory = {
-  decisions: RunHistoryDecision[];
-  events: RunHistoryEvent[];
-  position_trail: { tick: number; x: number; y: number; angle: number }[];
-  combat: RunHistoryCombat;
-  tool_stats: Record<string, { total: number; success: number; timeout: number; blocked: number }>;
-  hypotheses: string[];
-  defects: { defect_type: string; title: string; severity: number; fingerprint?: string | null }[];
-  checkpoints: { tick: number; event: string; pos: { x: number; y: number } }[];
+export type SameRunMemory = {
+  older_milestones: {
+    compacted_action_count: number;
+    tool_counts: Record<string, number>;
+    stop_reason_counts: Record<string, number>;
+    completed_targets: Record<string, unknown>;
+    failed_targets: Record<string, unknown>;
+    checkpoints: { tick: number; event: string; pos: { x: number; y: number } }[];
+    hypotheses: string[];
+  };
+  recent_actions: SameRunAction[];
+  aggregates: {
+    total_actions: number;
+    tool_counts: Record<string, number>;
+    stop_reason_counts: Record<string, number>;
+    combat: RunHistoryCombat;
+    progress_score: number;
+    meaningful_progress_events: number;
+    runtime_warnings: string[];
+  };
   budget: {
     total_ticks: number;
     ticks_used: number;
@@ -61,13 +72,9 @@ export type RunHistory = {
     avg_ticks_per_decision: number;
     estimated_decisions_remaining: number;
   };
-  current_objective: { current: string; history: string[] };
-  cross_run_memory: string;
-  hypotheses_briefing: string;
-  spatial_briefing: string;
 };
 
-export type RunHistoryDecision = {
+export type SameRunAction = {
   seq: number;
   tick_before: number;
   tick_after: number;
@@ -77,16 +84,16 @@ export type RunHistoryDecision = {
   params: Record<string, unknown>;
   key_findings: string;
   reasoning: string;
-  guard_modified: boolean;
+  decision_source: string;
+  validation_rejection?: string | null;
+  target?: Record<string, unknown>;
+  movement?: Record<string, unknown>;
+  collection?: Record<string, unknown>;
+  combat?: Record<string, unknown>;
+  state_delta?: Record<string, unknown>;
+  final_position?: { x?: number; y?: number; angle?: number };
   llm_ms: number;
   mcp_ms: number;
-};
-
-export type RunHistoryEvent = {
-  tick: number;
-  type: string;
-  detail: string;
-  pos: { x: number; y: number };
 };
 
 export type RunHistoryCombat = {
@@ -108,7 +115,8 @@ export type LiveDecision = {
   mcpOutput?: Record<string, unknown>;
   llmInput?: Record<string, unknown>;
   llmOutput?: Record<string, unknown>;
-  guardStatus?: "kept" | "modified" | "blocked";
+  decisionSource?: string;
+  validationRejection?: string;
   mcpDurationMs?: number;
   llmDurationMs?: number;
   llmInputTokens?: number;
@@ -136,7 +144,9 @@ export type LiveSnapshot = {
   progress_metrics: Record<string, unknown>;
   agent_quality_flags: Record<string, unknown>;
   report_status: ReportStatus;
-  run_history: RunHistory | null;
+  same_run_memory: SameRunMemory | null;
+  visited_cells?: Record<string, number>;
+  visited_cell_size?: number;
 };
 
 export type RunStreamPhase = "idle" | "loading_snapshot" | "connecting" | "connected" | "reconnecting" | "closed" | "error";
@@ -159,8 +169,9 @@ export function useRunStream(runId?: string) {
   const [retryCount, setRetryCount] = useState(0);
   const [retryDelay, setRetryDelay] = useState(0);
   const [lastMessageAt, setLastMessageAt] = useState(0);
-  const [runHistory, setRunHistory] = useState<RunHistory | null>(null);
+  const [sameRunMemory, setSameRunMemory] = useState<SameRunMemory | null>(null);
   const [visitedCells, setVisitedCells] = useState<Record<string, number>>({});
+  const [visitedCellSize, setVisitedCellSize] = useState(256);
   const [snapshot, setSnapshot] = useState<LiveSnapshot | null>(null);
   const [phase, setPhase] = useState<RunStreamPhase>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -184,7 +195,9 @@ export function useRunStream(runId?: string) {
         if (cancelled || !data) return;
         setSnapshot(data);
         setState(data.state ?? null);
-        setRunHistory(data.run_history ?? null);
+        setSameRunMemory(data.same_run_memory ?? null);
+        setVisitedCells(data.visited_cells ?? {});
+        setVisitedCellSize(data.visited_cell_size ?? 256);
         setDefects(data.defects ?? []);
         setDecisions(data.decisions.map(decisionFromSnapshot).slice(-500));
       })
@@ -271,17 +284,8 @@ export function useRunStream(runId?: string) {
         }));
       }
       if (payload.type === "llm_decision") {
-        const crossRunMemory = payload.cross_run_memory_prompt ?? "";
-        const hypothesesBriefing = payload.hypotheses_briefing ?? "";
-        const spatialBriefing = payload.spatial_briefing ?? "";
-        setVisitedCells(visitedCellsFromInput(payload.llm_input));
-        if (crossRunMemory || hypothesesBriefing || spatialBriefing) {
-          setRunHistory((current) => mergeRunHistoryMemory(current, {
-            cross_run_memory: crossRunMemory,
-            hypotheses_briefing: hypothesesBriefing,
-            spatial_briefing: spatialBriefing,
-          }));
-        }
+        setVisitedCells(payload.visited_cells ?? {});
+        setVisitedCellSize(payload.visited_cell_size ?? 256);
         setDecisions((current) => mergeDecision(current, {
           sequenceNumber: payload.sequence_number ?? current.length,
           tick: payload.tick,
@@ -294,6 +298,7 @@ export function useRunStream(runId?: string) {
           llmInputTokens: payload.llm_input_tokens ?? 0,
           llmOutputTokens: payload.llm_output_tokens ?? 0,
           llmCostEstimateUsd: payload.llm_cost_estimate_usd ?? 0,
+          decisionSource: payload.decision_source,
         }));
       }
       if (payload.type === "mcp_call_start") {
@@ -313,16 +318,13 @@ export function useRunStream(runId?: string) {
           mcpOutput: payload.mcp_output,
           stopReason: payload.mcp_stop_reason,
           mcpDurationMs: payload.mcp_duration_ms,
-          guardStatus: normalizeGuardStatus(payload.guard_status),
+          decisionSource: payload.decision_source,
+          validationRejection: payload.validation_rejection,
         }));
       }
       if (payload.type === "progress") {
-        if (payload.run_history) {
-          setRunHistory((current) => mergeRunHistoryMemory(payload.run_history!, {
-            cross_run_memory: current?.cross_run_memory ?? "",
-            hypotheses_briefing: current?.hypotheses_briefing ?? "",
-            spatial_briefing: current?.spatial_briefing ?? "",
-          }));
+        if (payload.same_run_memory) {
+          setSameRunMemory(payload.same_run_memory);
         }
       }
       if (payload.type === "defect") {
@@ -360,74 +362,15 @@ export function useRunStream(runId?: string) {
       decisions,
       defects,
       tokenTotals,
-      runHistory,
+      sameRunMemory,
       visitedCells,
+      visitedCellSize,
       snapshot,
       phase,
       error,
     }),
-    [connected, retryCount, retryDelay, lastMessageAt, messages, frame, state, decisions, defects, tokenTotals, runHistory, visitedCells, snapshot, phase, error],
+    [connected, retryCount, retryDelay, lastMessageAt, messages, frame, state, decisions, defects, tokenTotals, sameRunMemory, visitedCells, visitedCellSize, snapshot, phase, error],
   );
-}
-
-function mergeRunHistoryMemory(
-  current: RunHistory | null,
-  memory: Pick<RunHistory, "cross_run_memory" | "hypotheses_briefing" | "spatial_briefing">,
-): RunHistory {
-  return {
-    ...(current ?? emptyRunHistory()),
-    cross_run_memory: memory.cross_run_memory,
-    hypotheses_briefing: memory.hypotheses_briefing,
-    spatial_briefing: memory.spatial_briefing,
-  };
-}
-
-function emptyRunHistory(): RunHistory {
-  return {
-    decisions: [],
-    events: [],
-    position_trail: [],
-    combat: {
-      total_engagements: 0,
-      total_kills: 0,
-      total_shots: 0,
-      total_hits: 0,
-      enemies_engaged: [],
-      weapon_performance: {},
-    },
-    tool_stats: {},
-    hypotheses: [],
-    defects: [],
-    checkpoints: [],
-    budget: {
-      total_ticks: 0,
-      ticks_used: 0,
-      ticks_remaining: 0,
-      decisions_made: 0,
-      avg_ticks_per_decision: 0,
-      estimated_decisions_remaining: 0,
-    },
-    current_objective: { current: "", history: [] },
-    cross_run_memory: "",
-    hypotheses_briefing: "",
-    spatial_briefing: "",
-  };
-}
-
-function visitedCellsFromInput(input?: Record<string, unknown>): Record<string, number> {
-  const lockstepState = input?.lockstep_state;
-  if (!isRecord(lockstepState) || !isRecord(lockstepState.visited_cells)) {
-    return {};
-  }
-  return Object.fromEntries(
-    Object.entries(lockstepState.visited_cells)
-      .map(([key, value]) => [key, typeof value === "number" && Number.isFinite(value) ? value : Number(value)] as const)
-      .filter(([, value]) => Number.isFinite(value)),
-  );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function mergeDecision(current: LiveDecision[], next: LiveDecision): LiveDecision[] {
@@ -492,14 +435,9 @@ function decisionFromSnapshot(decision: Decision): LiveDecision {
     llmInputTokens: decision.llm_input_tokens ?? 0,
     llmOutputTokens: decision.llm_output_tokens ?? 0,
     llmCostEstimateUsd: decision.llm_cost_estimate_usd ?? 0,
+    decisionSource: decision.decision_source,
+    validationRejection: decision.validation_rejection ?? undefined,
   };
-}
-
-function normalizeGuardStatus(value?: string): "kept" | "modified" | "blocked" {
-  if (value === "modified" || value === "blocked") {
-    return value;
-  }
-  return "kept";
 }
 
 function errorMessage(error: unknown): string {

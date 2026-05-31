@@ -60,6 +60,7 @@ class RunOut(BaseModel):
     recording_metadata: dict[str, Any] | None = None
     progress_metrics: dict[str, Any] | None = None
     agent_quality_flags: dict[str, Any] | None = None
+    environment_metadata: dict[str, Any] | None = None
     report_pdf_path: str | None = None
     recording_mp4_url: str | None = None
     report_pdf_url: str | None = None

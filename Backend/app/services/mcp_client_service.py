@@ -103,31 +103,10 @@ class McpDoomClient:
         result = await self.call_tool("get_state", {"include_sectors": False, "include_depth": True})
         return normalize_mcp_state(result)
 
-    async def get_situation_report(self) -> tuple[dict[str, Any], bytes | None]:
-        result = await self.call_tool("get_situation_report", {})
-        return normalize_mcp_state(result)
-
-    async def set_objective(
-        self,
-        objective_type: str,
-        params: dict[str, Any] | None = None,
-        priority: int = 0,
-        timeout_tics: int = 0,
-        replace: bool = False,
-    ) -> Any:
-        return await self.call_tool(
-            "set_objective",
-            {
-                "objective_type": objective_type,
-                "params": params or {},
-                "priority": priority,
-                "timeout_tics": timeout_tics,
-                "replace": replace,
-            },
-        )
-
-    async def set_strategy(self, **kwargs: Any) -> Any:
-        return await self.call_tool("set_strategy", {key: value for key, value in kwargs.items() if value is not None})
+    async def get_runtime_metadata(self) -> dict[str, Any]:
+        result = await self.call_tool("get_runtime_metadata", {})
+        metadata, _ = normalize_mcp_state(result)
+        return metadata
 
     async def stop_game(self) -> None:
         with contextlib.suppress(Exception):

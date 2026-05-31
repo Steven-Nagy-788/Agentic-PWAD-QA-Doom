@@ -59,6 +59,16 @@ def make_event(
     return event
 
 
+@pytest.mark.asyncio
+async def test_visual_defects_skip_cleanly_without_gemini_key(mock_db):
+    gemini = MagicMock()
+    gemini.settings.gemini_api_key = ""
+
+    await DefectService(mock_db, gemini_service=gemini)._vision_defects(uuid4())
+
+    mock_db.execute.assert_not_awaited()
+
+
 # ── _streak_episodes ──────────────────────────────────────
 
 
@@ -290,7 +300,7 @@ async def test_softlock_timeout_little_movement(service, mock_db):
 
 
 @pytest.mark.asyncio
-async def test_softlock_reclassifies_guard_injected_take_action_stuck_as_inconclusive(service, mock_db):
+async def test_softlock_records_guard_injected_take_action_stuck_as_inconclusive_without_mutating_outcome(service, mock_db):
     run = MagicMock(spec=TestRun)
     run.outcome = "timeout"
     run.id = uuid4()
@@ -312,7 +322,7 @@ async def test_softlock_reclassifies_guard_injected_take_action_stuck_as_inconcl
     service.repo.create.assert_awaited_once()
     args = service.repo.create.call_args[0][0]
     assert args.defect_type == "inconclusive_agent_stall"
-    assert run.outcome == "inconclusive_agent_stall"
+    assert run.outcome == "timeout"
 
 
 @pytest.mark.asyncio

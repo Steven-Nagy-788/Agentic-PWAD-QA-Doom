@@ -10,7 +10,6 @@ from app.models.test_run import TestRun
 from app.models.wad_file import WadFile
 from app.models.wad_spatial_memory import WadSpatialMemory
 from app.models.wad_hypothesis import WadHypothesis
-from app.models.wad_knowledge_base import WadKnowledgeBase
 
 __all__ = [
     "AgentPositionTrail",
@@ -25,5 +24,4 @@ __all__ = [
     "WadFile",
     "WadSpatialMemory",
     "WadHypothesis",
-    "WadKnowledgeBase",
 ]

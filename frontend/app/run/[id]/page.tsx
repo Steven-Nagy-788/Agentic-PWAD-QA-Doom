@@ -8,7 +8,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { Activity, X } from "lucide-react";
 import { Run, Defect, Decision, PositionSample, TraceEntry, UsageStats, BenchmarkStats, WadMap, ReportStatus, apiGet, apiSend, API_BASE } from "@/lib/api";
-import { useRunStream, type LiveDecision, type RunHistory } from "@/hooks/useRunStream";
+import { useRunStream, type LiveDecision, type SameRunMemory } from "@/hooks/useRunStream";
 import { Metric, OutcomeBadge, SkeletonRows, formatTime } from "@/lib/components/shared";
 import { DefectBadge } from "@/components/DefectBadge";
 import { DecisionTimeline } from "@/components/DecisionTimeline";
@@ -45,10 +45,10 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
     },
   });
   const tt = stream.tokenTotals;
-  const run = stream.snapshot?.run ?? initialRun;
+  const run = { ...(stream.snapshot?.run ?? initialRun), ...initialRun };
   const reportStatus = stream.snapshot?.report_status;
   const usage = stream.snapshot?.usage;
-  const trail = liveTrail(stream.runHistory, stream.snapshot?.position_trail ?? []);
+  const trail = liveTrail(stream.sameRunMemory, stream.snapshot?.position_trail ?? []);
   const events = stream.snapshot?.events ?? [];
   const visibleDefects = stream.defects.filter((defect) => !isCosmeticTextureDefect(defect));
   const latestDecision = stream.decisions.at(-1);
@@ -60,7 +60,7 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
   });
   const map = maps.data?.find((item) => item.map_name === run.map_name);
 
-  const [tab, setTab] = useState<"reasoning" | "mcp" | "memory" | "cross_run" | "defects">("reasoning");
+  const [tab, setTab] = useState<"reasoning" | "mcp" | "memory" | "defects">("reasoning");
 
   return (
     <div className="grid h-screen grid-rows-[auto_1fr_auto] bg-neutral-100">
@@ -120,6 +120,7 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
                   events={events}
                   livePosition={stream.state?.position ?? null}
                   visitedCells={stream.visitedCells ?? {}}
+                  visitedCellSize={stream.visitedCellSize}
                   className="h-full max-h-full"
                 />
               </div>
@@ -131,10 +132,10 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
             </div>
           </div>
           <div className="grid gap-2 border-t border-neutral-200 p-3 md:grid-cols-4">
-            <Metric label="LLM Calls" value={usage?.total_llm_calls ?? tt.decisionCount} />
-            <Metric label="Prompt Tokens" value={(usage?.total_prompt_tokens ?? tt.totalPrompt).toLocaleString()} />
-            <Metric label="Completion" value={(usage?.total_completion_tokens ?? tt.totalCompletion).toLocaleString()} />
-            <Metric label="Est. Cost" value={`$${(usage?.estimated_cost_usd ?? tt.totalCost).toFixed(6)}`} />
+            <Metric label="LLM Calls" value={Math.max(usage?.total_llm_calls ?? 0, tt.decisionCount)} />
+            <Metric label="Prompt Tokens" value={Math.max(usage?.total_prompt_tokens ?? 0, tt.totalPrompt).toLocaleString()} />
+            <Metric label="Completion" value={Math.max(usage?.total_completion_tokens ?? 0, tt.totalCompletion).toLocaleString()} />
+            <Metric label="Est. Cost" value={`$${Math.max(usage?.estimated_cost_usd ?? 0, tt.totalCost).toFixed(6)}`} />
           </div>
         </section>
 
@@ -158,7 +159,6 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
               <TabButton active={tab === "reasoning"} onClick={() => setTab("reasoning")}>Reasoning</TabButton>
               <TabButton active={tab === "mcp"} onClick={() => setTab("mcp")}>MCP</TabButton>
               <TabButton active={tab === "memory"} onClick={() => setTab("memory")}>Memory</TabButton>
-              <TabButton active={tab === "cross_run"} onClick={() => setTab("cross_run")}>Cross-Run</TabButton>
               <TabButton active={tab === "defects"} onClick={() => setTab("defects")}>Defects</TabButton>
             </div>
             <div className="min-h-0">
@@ -168,44 +168,14 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
               <McpInspector decisions={stream.decisions} />
             ) : tab === "defects" ? (
               <DefectPanel defects={visibleDefects} />
-            ) : tab === "cross_run" ? (
-              <CrossRunMemoryPanel history={stream.runHistory} />
             ) : (
-              <RunHistoryPanel history={stream.runHistory} />
+              <RunHistoryPanel memory={stream.sameRunMemory} />
             )}
             </div>
           </div>
         </aside>
       </main>
       <StatBar state={{ ...stream.state, secrets: stream.state?.secrets }} />
-    </div>
-  );
-}
-
-function CrossRunMemoryPanel({ history }: { history: RunHistory | null }) {
-  if (!history?.cross_run_memory) {
-    return <div className="grid h-32 place-items-center text-xs text-neutral-400">No prior runs for this WAD/map</div>;
-  }
-  return (
-    <div className="h-full space-y-3 overflow-y-auto bg-white p-3">
-      {history.cross_run_memory ? (
-        <section>
-          <h3 className="mb-1 text-xs font-semibold uppercase text-neutral-500">Prior Runs Summary</h3>
-          <pre className="whitespace-pre-wrap text-xs leading-5 text-neutral-700">{history.cross_run_memory}</pre>
-        </section>
-      ) : null}
-      {history.hypotheses_briefing ? (
-        <section>
-          <h3 className="mb-1 text-xs font-semibold uppercase text-neutral-500">Persistent Hypotheses</h3>
-          <pre className="whitespace-pre-wrap text-xs leading-5 text-neutral-700">{history.hypotheses_briefing}</pre>
-        </section>
-      ) : null}
-      {history.spatial_briefing ? (
-        <section>
-          <h3 className="mb-1 text-xs font-semibold uppercase text-neutral-500">Spatial Memory</h3>
-          <pre className="whitespace-pre-wrap text-xs leading-5 text-neutral-700">{history.spatial_briefing}</pre>
-        </section>
-      ) : null}
     </div>
   );
 }
@@ -313,18 +283,39 @@ function isCosmeticTextureDefect(defect: Defect) {
   return issue && surface;
 }
 
-function liveTrail(history: RunHistory | null, snapshotTrail: PositionSample[]): PositionSample[] {
-  if (history?.position_trail?.length) {
-    return history.position_trail.map((sample, index) => ({
+function liveTrail(memory: SameRunMemory | null, snapshotTrail: PositionSample[]): PositionSample[] {
+  const positions = memory?.recent_actions
+    .map((action) => ({ ...action.final_position, tick: action.tick_after }))
+    .filter((sample) => sample.x !== undefined && sample.y !== undefined) ?? [];
+  if (positions.length) {
+    return positions.map((sample, index) => ({
       id: index,
       run_id: "",
       tick_number: sample.tick,
-      x: sample.x,
-      y: sample.y,
+      x: sample.x ?? 0,
+      y: sample.y ?? 0,
+      angle: sample.angle ?? 0,
       health: 0,
     }));
   }
   return snapshotTrail;
+}
+
+function RuntimeWarnings({ flags }: { flags?: Record<string, unknown> | null }) {
+  const warnings = Array.isArray(flags?.warnings) ? flags.warnings.map(String) : [];
+  if (warnings.length === 0) return null;
+  return (
+    <>
+      <h2 className="mb-3 text-sm font-semibold">Runtime Warnings</h2>
+      <div className="space-y-2">
+        {warnings.map((warning) => (
+          <div key={warning} className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            {warning}
+          </div>
+        ))}
+      </div>
+    </>
+  );
 }
 
 function RunDetailContent({ runId }: { runId: string }) {
@@ -444,6 +435,10 @@ function RunDetailContent({ runId }: { runId: string }) {
           )}
         </section>
       ) : null}
+
+      <section>
+        <RuntimeWarnings flags={run.data.agent_quality_flags} />
+      </section>
 
       <section>
         <h2 className="mb-3 text-sm font-semibold">Defects</h2>

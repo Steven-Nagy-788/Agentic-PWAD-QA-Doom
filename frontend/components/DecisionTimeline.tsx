@@ -15,6 +15,8 @@ export function DecisionTimeline({ decisions }: { decisions: Decision[] }) {
               </span>
             </div>
             <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-neutral-400">
+              <span>{decision.decision_source}</span>
+              {decision.validation_rejection ? <span className="text-red-600">rejected: {decision.validation_rejection}</span> : null}
               {decision.llm_duration_ms != null ? <span>LLM {decision.llm_duration_ms.toFixed(0)}ms</span> : null}
               {decision.mcp_duration_ms != null ? <span>MCP {decision.mcp_duration_ms.toFixed(0)}ms</span> : null}
               {decision.llm_input_tokens != null ? <span>{decision.llm_input_tokens}→{decision.llm_output_tokens ?? "?"}tok</span> : null}

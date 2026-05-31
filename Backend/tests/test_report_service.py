@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from uuid import uuid4
+
+import pytest
 
 from app.services.report_service import ReportService
 
@@ -137,6 +140,107 @@ def test_report_voice_sanitizer_avoids_agent_blame() -> None:
     assert "agent was unable" not in sanitized["summary"].lower()
     assert "automated playthrough did not engage enemies" in sanitized["summary"]
     assert sanitized["items"][1] == "agentic QA remains valid"
+
+
+def test_report_merge_keeps_factual_environment_fields() -> None:
+    defaults = {
+        "test_environment_summary": "Measured summary",
+        "hardware_spec": {"cpu": "measured"},
+        "software_spec": {"vizdoom": "1.3.0"},
+        "pass_fail_summary": {"overall_verdict": "PASS"},
+    }
+    generated = {
+        "test_environment_summary": "Invented summary",
+        "hardware_spec": {"cpu": "invented"},
+        "software_spec": {"vizdoom": "0.0.0"},
+        "pass_fail_summary": {"overall_verdict": "FAIL"},
+        "report_purpose": "Useful narrative",
+    }
+
+    merged = ReportService._merge_report_defaults(defaults, generated)
+
+    assert merged["test_environment_summary"] == "Measured summary"
+    assert merged["hardware_spec"] == {"cpu": "measured"}
+    assert merged["software_spec"] == {"vizdoom": "1.3.0"}
+    assert merged["pass_fail_summary"] == {"overall_verdict": "PASS"}
+    assert merged["report_purpose"] == "Useful narrative"
+
+
+def _crash_report_payload() -> dict:
+    run = SimpleNamespace(
+        id=uuid4(),
+        wad_file_id=uuid4(),
+        map_name="MAP01",
+        difficulty_level=3,
+        iwad_used="freedoom2",
+        llm_model="gemini-test",
+        max_ticks=3000,
+        status="failed",
+        started_at=None,
+        completed_at=None,
+        duration_seconds=0,
+        outcome="pwad_crash",
+        error_message="Initialization failed",
+        failure_category="pwad_crash",
+        failure_stage="startup",
+        failure_summary="Initialization failed",
+        failure_diagnostics={},
+        final_hp=None,
+        final_armor=None,
+        total_kills=0,
+        secrets_found=0,
+        total_items_collected=0,
+        total_actions_taken=0,
+        total_llm_calls=0,
+        recording_metadata={},
+        recording_mp4_path=None,
+        progress_metrics={},
+        agent_quality_flags={},
+        environment_metadata={},
+    )
+    return {
+        "run": run,
+        "analysis": None,
+        "defects": [],
+        "notable_events": [],
+        "first_ticks": [],
+        "last_ticks": [],
+        "metrics": {"event_count": 0, "position_sample_count": 0},
+        "decisions": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_report_gemini_timeout_uses_deterministic_fallback(monkeypatch) -> None:
+    service = object.__new__(ReportService)
+    service.settings = SimpleNamespace(
+        gemini_api_key="configured",
+        llm_model="gemini-test",
+        report_gemini_timeout_seconds=0.01,
+    )
+
+    async def slow_to_thread(*_args, **_kwargs):
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr("app.services.report_service.asyncio.to_thread", slow_to_thread)
+
+    report = await service._call_gemini_or_fallback(_crash_report_payload())
+
+    assert "valid QA outcome" in report["report_purpose"]
+
+
+@pytest.mark.asyncio
+async def test_pdf_timeout_raises_generation_failure(monkeypatch) -> None:
+    service = object.__new__(ReportService)
+    service.settings = SimpleNamespace(report_pdf_timeout_seconds=0.01)
+
+    async def slow_to_thread(*_args, **_kwargs):
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr("app.services.report_service.asyncio.to_thread", slow_to_thread)
+
+    with pytest.raises(RuntimeError, match="PDF rendering timed out"):
+        await service._render_pdf_with_timeout(uuid4(), {}, {})
 
 
 def test_pwad_crash_report_is_first_class_qa_output() -> None:
