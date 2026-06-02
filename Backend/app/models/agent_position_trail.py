@@ -15,7 +15,10 @@ if TYPE_CHECKING:
 
 class AgentPositionTrail(Base):
     __tablename__ = "agent_position_trail"
-    __table_args__ = (Index("idx_position_trail_run_id", "run_id"),)
+    __table_args__ = (
+        Index("idx_position_trail_run_id", "run_id"),
+        Index("idx_position_trail_run_id_tick", "run_id", "tick_number"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     run_id: Mapped[uuid.UUID] = mapped_column(

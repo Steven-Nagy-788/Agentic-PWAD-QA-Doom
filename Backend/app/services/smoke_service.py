@@ -10,8 +10,10 @@ from app.services.collector_service import normalize_variables
 
 
 class SmokeService:
-    def __init__(self) -> None:
+    def __init__(self, *, llm_model: str | None = None, model_source: str = "environment") -> None:
         self.settings = get_settings()
+        self.llm_model = llm_model or self.settings.llm_model
+        self.model_source = model_source
 
     async def run_smoke(self) -> dict[str, Any]:
         stages: list[dict[str, Any]] = []
@@ -64,7 +66,7 @@ class SmokeService:
         start = time.monotonic()
         if not self.settings.gemini_api_key:
             return _fail(label, start, "GEMINI_API_KEY is not set")
-        return _pass(label, start, {"model": self.settings.llm_model})
+        return _pass(label, start, {"model": self.llm_model, "model_source": self.model_source})
 
     async def _stage_start_game(self) -> dict[str, Any]:
         label = "Start game (Freedoom MAP01 via MCP)"
@@ -107,7 +109,7 @@ class SmokeService:
         label = "Gemini API minimal prompt"
         start = time.monotonic()
         try:
-            service = GeminiService()
+            service = GeminiService(llm_model=self.llm_model)
             result = await service.probe_model()
             return _pass(label, start, {"model": result.get("model"), "response_preview": result.get("response", "")[:100]})
         except Exception as exc:

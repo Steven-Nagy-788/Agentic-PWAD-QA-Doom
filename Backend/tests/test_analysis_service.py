@@ -63,7 +63,7 @@ def test_extract_map_features_extracts_expected_fields() -> None:
         6: 1,
         5: 1,
         39: 1,
-        97: 1,
+        14: 2,
     })
 
     result = AnalysisService._extract_map_features(editor, thing_counts)

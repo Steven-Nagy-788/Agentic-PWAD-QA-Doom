@@ -281,6 +281,7 @@ class GameManager:
         self._async: bool = False
         self._recording_path: str | None = None
         self._runtime_wad_path: str | None = None
+        self._start_normalization: dict | None = None
         self._nav_memory = NavigationMemory()
         self._game_lock = threading.Lock()
         self._executor: AutonomousExecutor | None = None
@@ -375,6 +376,11 @@ class GameManager:
         player_one_starts = start_info["player_one"]
         deathmatch_starts = start_info["deathmatch"]
         if len(player_one_starts) == 1 and len(player_starts) == 1:
+            self._start_normalization = {
+                "mode": "native_player_one",
+                "player_one_starts": len(player_one_starts),
+                "deathmatch_starts": len(deathmatch_starts),
+            }
             return wad_path
         if not player_starts and not deathmatch_starts:
             raise ToolError(
@@ -409,6 +415,11 @@ class GameManager:
                 runtime_wad.write(struct.pack("<h", 1))
 
         self._runtime_wad_path = runtime_path
+        self._start_normalization = {
+            "mode": "deathmatch_to_player_one" if chosen_start in deathmatch_starts else "multiple_player_starts_to_player_one",
+            "player_one_starts": len(player_one_starts),
+            "deathmatch_starts": len(deathmatch_starts),
+        }
         return runtime_path
 
     def _get_player_pos(self, game: vzd.DoomGame) -> tuple[float, float, float]:
@@ -752,6 +763,8 @@ class GameManager:
         if wad is not None:
             result["wad"] = wad
             result["map"] = map_name or "default"
+            if self._start_normalization is not None:
+                result["start_normalization"] = dict(self._start_normalization)
         else:
             result["scenario"] = scenario
         return result
@@ -771,6 +784,7 @@ class GameManager:
             self._current_map = None
             self._async = False
             self._recording_path = None
+            self._start_normalization = None
         if self._runtime_wad_path is not None:
             with contextlib.suppress(OSError):
                 os.unlink(self._runtime_wad_path)
@@ -1703,7 +1717,8 @@ class GameManager:
                             turn_bias *= 0.5
                             if abs(turn_bias) < 1.0:
                                 turn_bias = 0.0
-                            actions["TURN_LEFT_RIGHT_DELTA"] = turn_bias
+                            frontier_turn = self._nav_memory.suggested_turn_delta(px, py, pa)
+                            actions["TURN_LEFT_RIGHT_DELTA"] = turn_bias + frontier_turn
                             actions["MOVE_FORWARD_BACKWARD_DELTA"] = 25
                     else:
                         actions["MOVE_FORWARD_BACKWARD_DELTA"] = 25

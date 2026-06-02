@@ -110,6 +110,7 @@ async def agent_run_task(run_id: UUID) -> None:
         wad_file_id = run_orm.wad_file_id
         map_name_val = run_orm.map_name
         max_ticks = run_orm.max_ticks
+        seed = run_orm.seed
         iwad_used = run_orm.iwad_used
         difficulty_level = run_orm.difficulty_level
         llm_model = run_orm.llm_model
@@ -173,6 +174,7 @@ async def agent_run_task(run_id: UUID) -> None:
                 difficulty=difficulty_level,
                 episode_timeout=max_ticks,
                 async_player=False,
+                seed=seed,
             )
             try:
                 mcp_metadata = await mcp.get_runtime_metadata()
@@ -184,6 +186,7 @@ async def agent_run_task(run_id: UUID) -> None:
                 iwad=iwad_used,
                 difficulty=difficulty_level,
                 max_ticks=max_ticks,
+                seed=seed,
             )
             # Set status to running in its own short session
             async with SessionLocal() as db:
@@ -320,6 +323,7 @@ async def agent_run_task(run_id: UUID) -> None:
                         decision_row,
                         status="llm_complete",
                         llm_decision=_json_safe(decision),
+                        raw_llm_decision=_json_safe(raw_decision),
                         reasoning_summary=decision.get("reasoning_summary"),
                         llm_duration_ms=llm_duration_ms,
                         llm_input_tokens=token_usage.get("prompt_tokens"),
@@ -395,6 +399,9 @@ async def agent_run_task(run_id: UUID) -> None:
                             f"Recording telemetry stride is {recording_telemetry_stride}; "
                             "video evidence may be sparse."
                         )
+                    effective_decision_source = str(decision.pop("_decision_source", decision_source))
+                    guard_modified = effective_decision_source.startswith("guard_")
+                    guard_reason = effective_decision_source if guard_modified else None
                     mcp_started = time.monotonic()
                     response, mcp_call = await _execute_tool(mcp, decision, state)
                     mcp_duration_ms = (time.monotonic() - mcp_started) * 1000
@@ -452,14 +459,14 @@ async def agent_run_task(run_id: UUID) -> None:
                         stop_reason=stop_reason,
                         params=decision.get("mcp_params") or {},
                         reasoning=decision.get("reasoning_summary"),
-                        guard_modified=False,
+                        guard_modified=guard_modified,
                         llm_duration_ms=llm_duration_ms,
                         mcp_duration_ms=mcp_duration_ms,
                         total_budget=max_ticks,
                         action_summary=_mcp_action_summary(mcp_call),
                         state_before=state,
                         state_after=result_state,
-                        decision_source=decision_source,
+                        decision_source=effective_decision_source,
                         observed_issue=decision.get("observed_issue"),
                     )
                     if sequence_number % 3 == 0:
@@ -514,14 +521,17 @@ async def agent_run_task(run_id: UUID) -> None:
                     await decision_repo.update(
                         decision_row,
                         status="complete",
+                        llm_decision=_json_safe(decision),
+                        raw_llm_decision=_json_safe(raw_decision),
                         tick_after=result_tick,
                         game_event_id=latest_event.id,
                         mcp_tool=mcp_call.get("tool") or decision.get("mcp_tool"),
                         mcp_input=_json_safe(mcp_call.get("input") or {}),
                         mcp_output=_json_safe(mcp_call.get("output") or {}),
                         mcp_stop_reason=str(summary.get("stop_reason")) if summary.get("stop_reason") is not None else None,
-                        guard_modified=False,
-                        decision_source=decision_source,
+                        guard_modified=guard_modified,
+                        guard_reason=guard_reason,
+                        decision_source=effective_decision_source,
                         mcp_duration_ms=mcp_duration_ms,
                     )
                     await websocket_service.broadcast(
@@ -535,7 +545,9 @@ async def agent_run_task(run_id: UUID) -> None:
                             "mcp_input": _json_safe(mcp_call.get("input") or {}),
                             "mcp_output": _json_safe(mcp_call.get("output") or {}),
                             "mcp_duration_ms": round(mcp_duration_ms, 1),
-                            "decision_source": decision_source,
+                            "decision_source": effective_decision_source,
+                            "guard_modified": guard_modified,
+                            "guard_reason": guard_reason,
                             "validation_rejection": summary.get("validation_error"),
                         },
                     )
@@ -551,7 +563,10 @@ async def agent_run_task(run_id: UUID) -> None:
                         },
                     )
                     event_screenshot_b64 = None
-                    if latest_event.event_type in {"kill", "death", "damage_taken", "stuck"} and record_frame is not None:
+                    if (
+                        latest_event.event_type in {"kill", "death", "damage_taken", "stuck"}
+                        or decision.get("observed_issue")
+                    ) and record_frame is not None:
                         screenshot_path = recorder.save_screenshot(record_frame, latest_event.id)
                         await collector.attach_screenshot(run_id_val, latest_event, str(screenshot_path))
                         event_screenshot_b64 = jpeg_b64(record_frame)

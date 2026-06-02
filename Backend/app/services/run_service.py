@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -57,6 +58,13 @@ class RunService:
                 f"Map {map_name} has no Player 1 or deathmatch start. "
                 "QA runs need a start position that can be normalized for single-player.",
             )
+        uses_deathmatch_normalization = start_counts["player_one"] == 0 and start_counts["deathmatch"] > 0
+        if uses_deathmatch_normalization and not data.allow_deathmatch_start_normalization:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Map {map_name} has no Player 1 start. It can only run by converting one deathmatch start "
+                "into a temporary Player 1 start. Set allow_deathmatch_start_normalization=true to opt in.",
+            )
 
         async with SessionLocal() as analysis_db:
             analysis = await AnalysisRepository(analysis_db).get_by_wad_and_map(wad.id, map_name)
@@ -100,6 +108,7 @@ class RunService:
             behavior_profile = "fast"
             logger.info("Map %s has 0 enemies; using 'fast' behavior profile instead of 'thorough'", map_name)
         queue_mode = runtime_value("run_worker_mode", self.settings.run_worker_mode)
+        seed = data.seed if data.seed is not None else random.SystemRandom().randint(0, 2_147_483_647)
         run = await self.repo.create(
             TestRun(
                 wad_file_id=wad.id,
@@ -109,6 +118,19 @@ class RunService:
                 iwad_used=wad.iwad_required,
                 llm_model=str(runtime_value("llm_model", self.settings.llm_model)),
                 max_ticks=max_ticks,
+                seed=seed,
+                start_normalization={
+                    "mode": (
+                        "deathmatch_to_player_one"
+                        if uses_deathmatch_normalization
+                        else "multiple_player_starts_to_player_one"
+                        if start_counts["player_starts"] > 1
+                        else "native_player_one"
+                    ),
+                    "player_one_starts": start_counts["player_one"],
+                    "player_starts": start_counts["player_starts"],
+                    "deathmatch_starts": start_counts["deathmatch"],
+                },
                 behavior_profile=behavior_profile,
                 status="queued" if queue_mode else "pending",
             )
@@ -251,5 +273,3 @@ async def finalize_stopped_run(db: AsyncSession, run_id: UUID, outcome: str) -> 
             await db.commit()
     await db.refresh(run)
     return run
-
-

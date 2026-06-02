@@ -47,11 +47,15 @@ class GameEventRepository:
         result = await self.db.execute(query.order_by(GameEvent.tick_number, GameEvent.id))
         return list(result.scalars().all())
 
-    async def list_position_trail(self, run_id: UUID) -> list[AgentPositionTrail]:
-        result = await self.db.execute(
+    async def list_position_trail(self, run_id: UUID, limit: int | None = None) -> list[AgentPositionTrail]:
+        query = (
             select(AgentPositionTrail)
             .where(AgentPositionTrail.run_id == run_id)
             .where(AgentPositionTrail.is_sentinel.is_(False))
-            .order_by(AgentPositionTrail.tick_number, AgentPositionTrail.id)
         )
+        if limit is not None:
+            query = query.order_by(AgentPositionTrail.tick_number.desc(), AgentPositionTrail.id.desc()).limit(limit)
+            result = await self.db.execute(query)
+            return list(reversed(result.scalars().all()))
+        result = await self.db.execute(query.order_by(AgentPositionTrail.tick_number, AgentPositionTrail.id))
         return list(result.scalars().all())

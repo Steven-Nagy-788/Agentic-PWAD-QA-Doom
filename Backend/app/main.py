@@ -18,12 +18,23 @@ from app.services.mcp_client_service import probe_mcp_sse_url
 from app.services.smoke_service import SmokeService
 from app.services.run_service import fail_orphaned_active_runs
 from app.services.run_constants import RUN_TASKS
+from app.repositories.config_repository import ConfigRepository
 from app.models.test_run import TestRun
 from sqlalchemy import select, func, text
 
 
 settings = get_settings()
 _gemini_probe_cache: dict[str, Any] | None = None
+
+
+async def _effective_llm_model() -> tuple[str, str]:
+    async with SessionLocal() as db:
+        override = await ConfigRepository(db).get("llm_model")
+    return (
+        (str(override), "database_override")
+        if override
+        else (get_settings().llm_model, "environment")
+    )
 
 
 @asynccontextmanager
@@ -95,12 +106,15 @@ def health_check() -> dict[str, str]:
 
 @app.get("/health/gemini", tags=["Health"])
 async def gemini_health_check() -> dict[str, Any]:
+    model, source = await _effective_llm_model()
     if not settings.gemini_api_key:
-        return {"status": "error", "configured": False, "model": settings.llm_model}
+        return {"status": "error", "configured": False, "model": model, "model_source": source}
     return {
         "status": _gemini_probe_cache.get("status", "configured") if _gemini_probe_cache else "configured",
         "configured": True,
-        "model": settings.llm_model,
+        "model": model,
+        "model_source": source,
+        "environment_default": get_settings().llm_model,
         "last_probe": _gemini_probe_cache,
     }
 
@@ -108,18 +122,21 @@ async def gemini_health_check() -> dict[str, Any]:
 @app.post("/health/gemini/probe", tags=["Health"])
 async def probe_gemini_health() -> dict[str, Any]:
     global _gemini_probe_cache
+    model, source = await _effective_llm_model()
     try:
-        result = await GeminiService().probe_model()
+        result = await GeminiService(llm_model=model).probe_model()
         _gemini_probe_cache = {
             "status": "ok",
             "model": result["model"],
+            "model_source": source,
             "response": result["response"][:200],
             "checked_at": datetime.now(UTC).isoformat(),
         }
     except Exception as exc:
         _gemini_probe_cache = {
             "status": "error",
-            "model": settings.llm_model,
+            "model": model,
+            "model_source": source,
             "error": str(exc),
             "checked_at": datetime.now(UTC).isoformat(),
         }
@@ -139,7 +156,8 @@ async def smoke_health_check():
             content={"overall": "skip", "stages": [], "reason": "Active run in progress — smoke check would conflict."},
             status_code=503,
         )
-    result = await SmokeService().run_smoke()
+    model, source = await _effective_llm_model()
+    result = await SmokeService(llm_model=model, model_source=source).run_smoke()
     status_code = 200 if result["overall"] == "pass" else 503
     return JSONResponse(content=result, status_code=status_code)
 

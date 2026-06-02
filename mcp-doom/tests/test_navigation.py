@@ -106,6 +106,14 @@ def test_nav_memory_suggested_direction():
     assert summary["suggested_direction"] == "east"
 
 
+def test_nav_memory_turns_toward_unexplored_direction():
+    nav = NavigationMemory()
+    nav.update(0, 0, 90)
+    assert nav.suggested_turn_delta(0, 0, 90) == 0
+    nav.update(0, _CELL_SIZE, 90)
+    assert nav.suggested_turn_delta(0, _CELL_SIZE, 90) == 0
+
+
 def test_nav_memory_door_detection():
     nav = NavigationMemory()
     # Simulate a door sector: small sector with low ceiling gap

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings as _get_settings
@@ -30,10 +30,22 @@ class SettingsUpdatePayload(BaseModel):
     no_progress_decision_abort_threshold: Optional[int] = None
     default_agent_behavior: Optional[str] = None
     iwad_used: Optional[str] = None
+    clear_overrides: list[str] = Field(default_factory=list)
+
+    @field_validator("clear_overrides")
+    @classmethod
+    def validate_clear_overrides(cls, values: list[str]) -> list[str]:
+        unknown = sorted(set(values) - OVERRIDABLE_KEYS)
+        if unknown:
+            raise ValueError(f"Unknown setting override(s): {', '.join(unknown)}")
+        return values
+
+
+OVERRIDABLE_KEYS = set(SettingsUpdatePayload.model_fields) - {"clear_overrides"}
 
 
 def _merge_settings(env: Any, overrides: dict[str, Any]) -> dict[str, Any]:
-    return {
+    merged = {
         "app_name": env.app_name,
         "app_env": env.app_env,
         "llm_model": overrides.get("llm_model", env.llm_model),
@@ -61,6 +73,13 @@ def _merge_settings(env: Any, overrides: dict[str, Any]) -> dict[str, Any]:
         "default_agent_behavior": overrides.get("default_agent_behavior", env.default_agent_behavior),
         "iwad_used": overrides.get("iwad_used", env.iwad_used),
     }
+    env_defaults = {key: getattr(env, key) for key in OVERRIDABLE_KEYS}
+    merged["sources"] = {
+        key: "database_override" if key in overrides else "environment"
+        for key in OVERRIDABLE_KEYS
+    }
+    merged["env_defaults"] = env_defaults
+    return merged
 
 
 @router.get("/settings")
@@ -75,9 +94,16 @@ async def update_settings(
     payload: SettingsUpdatePayload,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    overrides = {k: v for k, v in payload.model_dump(exclude_none=True).items()}
+    clear_overrides = payload.clear_overrides
+    overrides = {
+        k: v
+        for k, v in payload.model_dump(exclude_none=True, exclude={"clear_overrides"}).items()
+    }
+    for key in clear_overrides:
+        await ConfigRepository(db).delete(key)
     if overrides:
         await ConfigRepository(db).set_many(overrides)
+    if overrides or clear_overrides:
         await db.commit()
     env = _get_settings()
     all_overrides = await ConfigRepository(db).get_all()

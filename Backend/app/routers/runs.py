@@ -96,7 +96,7 @@ async def get_live_snapshot(run_id: UUID, db: AsyncSession = Depends(get_db)) ->
     decisions = await decision_repo.list_by_run(run_id, 1, 500)
     trace = await event_repo.list_trace(run_id, 1, 500)
     events = await event_repo.list_events(run_id, ["kill", "death", "item_pickup", "secret_found", "stuck", "damage_taken", "map_exit"])
-    trail = await event_repo.list_position_trail(run_id)
+    trail = await event_repo.list_position_trail(run_id, limit=1000)
     defects = await defect_repo.list_by_run(run_id)
     report_status = await _report_status_payload(run_id, run, db)
     usage = _usage_payload(run, decisions)
@@ -146,6 +146,8 @@ async def _report_status_payload(run_id: UUID, run: Any, db: AsyncSession) -> di
     )
     status_value = report.generation_status
     if status_value == "complete" and not pdf_available:
+        status_value = "missing"
+    if status_value == "generating" and not pdf_available and run.status in {"completed", "cancelled", "failed"}:
         status_value = "missing"
     return {
         "status": status_value,
@@ -345,8 +347,12 @@ async def get_defects(run_id: UUID, db: AsyncSession = Depends(get_db)) -> list[
 
 
 @router.get("/{run_id}/position-trail", response_model=list[PositionTrailOut], tags=["Trace"])
-async def get_position_trail(run_id: UUID, db: AsyncSession = Depends(get_db)) -> list[PositionTrailOut]:
-    return await GameEventRepository(db).list_position_trail(run_id)
+async def get_position_trail(
+    run_id: UUID,
+    limit: int | None = Query(default=None, ge=1, le=5000),
+    db: AsyncSession = Depends(get_db),
+) -> list[PositionTrailOut]:
+    return await GameEventRepository(db).list_position_trail(run_id, limit=limit)
 
 
 @router.get(

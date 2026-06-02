@@ -145,7 +145,8 @@ async def test_static_resource_balance_detects_low_ammo(service, mock_db):
     await service._static_resource_balance(run, analysis)
     assert service.repo.create.await_count == 1
     args = service.repo.create.call_args[0][0]
-    assert args.defect_type == "static_ammo_insufficiency"
+    assert args.defect_type == "static_ammo_risk"
+    assert args.resolution_status == "candidate"
 
 
 @pytest.mark.asyncio
@@ -160,7 +161,8 @@ async def test_static_resource_balance_detects_low_health(service, mock_db):
     await service._static_resource_balance(run, analysis)
     assert service.repo.create.await_count == 1
     args = service.repo.create.call_args[0][0]
-    assert args.defect_type == "static_health_insufficiency"
+    assert args.defect_type == "static_health_risk"
+    assert args.resolution_status == "candidate"
 
 
 @pytest.mark.asyncio
@@ -176,8 +178,8 @@ async def test_static_resource_balance_detects_both_low(service, mock_db):
     assert service.repo.create.await_count == 2
     args1 = service.repo.create.call_args_list[0][0][0]
     args2 = service.repo.create.call_args_list[1][0][0]
-    assert args1.defect_type == "static_ammo_insufficiency"
-    assert args2.defect_type == "static_health_insufficiency"
+    assert args1.defect_type == "static_ammo_risk"
+    assert args2.defect_type == "static_health_risk"
 
 
 @pytest.mark.asyncio

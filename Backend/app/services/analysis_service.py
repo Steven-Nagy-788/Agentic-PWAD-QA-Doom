@@ -136,10 +136,11 @@ def player_start_counts(wad_path: str, map_name: str) -> dict[str, int]:
     wad = WAD(wad_path)
     map_name = map_name.upper()
     if map_name not in wad.maps:
-        return {"player_one": 0, "deathmatch": 0}
+        return {"player_one": 0, "player_starts": 0, "deathmatch": 0}
     editor = MapEditor(wad.maps[map_name])
     return {
         "player_one": sum(1 for thing in editor.things if int(thing.type) == 1),
+        "player_starts": sum(1 for thing in editor.things if int(thing.type) in {1, 2, 3, 4}),
         "deathmatch": sum(1 for thing in editor.things if int(thing.type) == 11),
     }
 
@@ -354,7 +355,8 @@ class AnalysisService:
         door_specials = {1, 26, 31, 32, 33, 34, 46, 61, 62, 90, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118}
         key_lock_specials = {32, 33, 34, 103, 106, 109}
         lift_specials = {10, 14, 62, 66, 67, 68, 69, 70, 87, 88, 95, 100, 121, 122, 123, 124, 125, 126, 127, 128}
-        teleporter_things = {39, 97}
+        # Thing 14 is a teleport destination. Thing 39 is a yellow key card.
+        teleporter_things = {14}
 
         door_count = 0
         locked_door_count = 0

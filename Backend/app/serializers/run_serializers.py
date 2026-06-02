@@ -15,6 +15,7 @@ class RunCreate(BaseModel):
                 "map_name": "MAP01",
                 "difficulty_level": 3,
                 "max_ticks": 3000,
+                "seed": 42,
             }
         }
     )
@@ -24,6 +25,8 @@ class RunCreate(BaseModel):
     difficulty_level: int = Field(default=3, ge=1, le=5)
     max_ticks: int | None = Field(default=None, ge=1)
     behavior_profile: str | None = None
+    seed: int | None = Field(default=None, ge=0, le=2_147_483_647)
+    allow_deathmatch_start_normalization: bool = False
 
 
 class RunOut(BaseModel):
@@ -37,6 +40,8 @@ class RunOut(BaseModel):
     iwad_used: str
     llm_model: str
     max_ticks: int
+    seed: int | None = None
+    start_normalization: dict[str, Any] | None = None
     behavior_profile: str | None = None
     status: str
     started_at: datetime | None = None

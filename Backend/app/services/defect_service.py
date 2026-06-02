@@ -127,16 +127,18 @@ class DefectService:
             await self.repo.create(
                 Defect(
                     run_id=run.id,
-                    severity=1,
-                    priority=1,
-                    defect_type="static_ammo_insufficiency",
-                    fingerprint="static_ammo_insufficiency",
-                    title="Static ammo ratio critically low",
+                    severity=3,
+                    priority=2,
+                    resolution_status="candidate",
+                    defect_type="static_ammo_risk",
+                    fingerprint="static_ammo_risk",
+                    title="Static ammo ratio risk signal",
                     description=(
                         f"Static analysis ammo_ratio is {analysis.ammo_ratio:.4f} (threshold < 0.5). "
                         f"There are {analysis.total_monster_hp or 0} total monster HP but only enough "
                         "ammo-scoring pickups to deal a fraction of the required damage. "
-                        "The map may be unwinnable through direct combat at this difficulty."
+                        "This heuristic does not account for carried ammo, infighting, secrets, or melee. "
+                        "Confirm the risk through gameplay before treating it as a defect."
                     ),
                     detected_at_tick=0,
                     recommendation=(
@@ -152,11 +154,12 @@ class DefectService:
             await self.repo.create(
                 Defect(
                     run_id=run.id,
-                    severity=2,
+                    severity=3,
                     priority=2,
-                    defect_type="static_health_insufficiency",
-                    fingerprint="static_health_insufficiency",
-                    title="Static health ratio critically low",
+                    resolution_status="candidate",
+                    defect_type="static_health_risk",
+                    fingerprint="static_health_risk",
+                    title="Static health ratio risk signal",
                     description=(
                         f"Static analysis health_ratio is {analysis.health_ratio:.4f} (threshold < 0.2). "
                         f"There are {analysis.total_monster_hp or 0} total monster HP but only "
@@ -167,7 +170,7 @@ class DefectService:
                             if armor_points > 0
                             else "Sustained combat will leave the player with no recovery options. "
                         )
-                        + "Players may be unable to survive the full encounter without health pickups."
+                        + "This is a heuristic risk signal. Confirm it through gameplay before treating it as a defect."
                     ),
                     detected_at_tick=0,
                     recommendation=(
@@ -212,6 +215,7 @@ class DefectService:
                     run_id=run_id,
                     severity=int(vd.get("severity", 2)),
                     priority=2,
+                    resolution_status="candidate",
                     defect_type=str(vd.get("defect_type", "visual_unknown")),
                     fingerprint=f"{vd.get('defect_type', 'visual_unknown')}:{scr_path}",
                     title=str(vd.get("title", "Visual defect detected")),

@@ -60,6 +60,7 @@ class TestReport(Base):
     activity_variances: Mapped[str | None] = mapped_column(Text)
     elapsed_time_seconds: Mapped[int | None] = mapped_column(Integer)
     total_actions_taken: Mapped[int | None] = mapped_column(Integer)
+    report_model: Mapped[str | None] = mapped_column(String(128))
     pdf_path: Mapped[str | None] = mapped_column(Text)
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     generation_status: Mapped[str] = mapped_column(

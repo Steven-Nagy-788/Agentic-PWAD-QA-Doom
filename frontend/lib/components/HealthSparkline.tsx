@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiGet, PositionSample } from "@/lib/api";
 
 export function HealthSparkline({ runId, fallback }: { runId: string; fallback: number }) {
-  const trail = useQuery({ queryKey: ["spark", runId], queryFn: () => apiGet<PositionSample[]>(`/runs/${runId}/position-trail`) });
+  const trail = useQuery({ queryKey: ["spark", runId], queryFn: () => apiGet<PositionSample[]>(`/runs/${runId}/position-trail?limit=80`) });
   const values = (trail.data?.length ? trail.data : [{ tick_number: 0, health: fallback }]).slice(-80).map((item) => item.health ?? fallback);
   return (
     <div className="h-9 w-32">

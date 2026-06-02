@@ -1,10 +1,10 @@
 "use client";
 
-import { use, useState } from "react";
+import { use, useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { Play } from "lucide-react";
-import { WadFile, WadMap, Run, BehaviorProfile, MapMemory, apiGet, apiSend } from "@/lib/api";
+import { AppSettings, WadFile, WadMap, Run, BehaviorProfile, MapMemory, apiGet, apiSend } from "@/lib/api";
 import { Metric, SkeletonRows, InlineError, errorMessage } from "@/lib/components/shared";
 import { MapCanvas } from "@/components/MapCanvas";
 import { SkillHeatmap } from "@/components/SkillHeatmap";
@@ -17,6 +17,8 @@ export default function WadDetailPage({ params }: { params: Promise<{ id: string
   const [difficulty, setDifficulty] = useState(3);
   const [maxTicks, setMaxTicks] = useState(3000);
   const [behaviorProfile, setBehaviorProfile] = useState("thorough");
+  const [seed, setSeed] = useState(42);
+  const [allowDeathmatchStartNormalization, setAllowDeathmatchStartNormalization] = useState(false);
 
   const wad = useQuery({ queryKey: ["wad", id], queryFn: () => apiGet<WadFile>(`/wads/${id}`) });
   const maps = useQuery({ queryKey: ["wad-maps", id], queryFn: () => apiGet<WadMap[]>(`/wads/${id}/maps`) });
@@ -24,6 +26,12 @@ export default function WadDetailPage({ params }: { params: Promise<{ id: string
     queryKey: ["behavior-profiles"],
     queryFn: () => apiGet<Record<string, BehaviorProfile>>("/settings/behavior-profiles"),
   });
+  const settings = useQuery({ queryKey: ["settings"], queryFn: () => apiGet<AppSettings>("/settings") });
+  useEffect(() => {
+    if (!settings.data) return;
+    setMaxTicks((current) => current === 3000 ? settings.data.default_run_ticks : Math.min(current, settings.data.max_run_ticks));
+    setBehaviorProfile((current) => current === "thorough" ? settings.data.default_agent_behavior : current);
+  }, [settings.data]);
   const mapMemory = useQuery({
     queryKey: ["map-memory", id, selectedMap?.map_name],
     queryFn: () => apiGet<MapMemory>(`/wads/${id}/memory/${selectedMap!.map_name}`),
@@ -31,7 +39,7 @@ export default function WadDetailPage({ params }: { params: Promise<{ id: string
   });
 
   const startRun = useMutation({
-    mutationFn: (input: { wad_file_id: string; map_name: string; difficulty_level: number; max_ticks: number; behavior_profile?: string }) =>
+    mutationFn: (input: { wad_file_id: string; map_name: string; difficulty_level: number; max_ticks: number; behavior_profile?: string; seed: number; allow_deathmatch_start_normalization: boolean }) =>
       apiSend<Run>("/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -108,6 +116,7 @@ export default function WadDetailPage({ params }: { params: Promise<{ id: string
                   <span className="font-semibold text-neutral-600">[{hypothesis.tag}]</span>{" "}
                   <span className="text-neutral-700">{hypothesis.content}</span>
                   <span className="ml-2 text-neutral-400">{Math.round(hypothesis.confidence * 100)}%</span>
+                  <span className="ml-2 text-neutral-400">{hypothesis.evidence_status ?? "candidate"}</span>
                 </div>
               ))}
             </div>
@@ -117,6 +126,7 @@ export default function WadDetailPage({ params }: { params: Promise<{ id: string
       <aside className="border-l border-neutral-200 bg-white p-4 lg:sticky lg:top-0 lg:h-screen">
         <div className="space-y-4">
           <h2 className="text-sm font-semibold">Start Run</h2>
+          {settings.data ? <p className="text-xs text-neutral-500">Model: {settings.data.llm_model} ({settings.data.sources.llm_model.replace("_", " ")})</p> : null}
           <MapCanvas map={selectedMap} />
           <div>
             <label className="mb-2 block text-xs font-semibold text-neutral-600">Difficulty</label>
@@ -134,7 +144,15 @@ export default function WadDetailPage({ params }: { params: Promise<{ id: string
           </div>
           <label className="block">
             <span className="mb-2 block text-xs font-semibold text-neutral-600">Max ticks · {maxTicks}</span>
-            <input className="w-full accent-cyan-700" type="range" min="500" max="35000" step="500" value={maxTicks} onChange={(event) => setMaxTicks(Number(event.target.value))} />
+            <input className="w-full accent-cyan-700" type="range" min="500" max={settings.data?.max_run_ticks ?? 35000} step="500" value={maxTicks} onChange={(event) => setMaxTicks(Number(event.target.value))} />
+          </label>
+          <label className="block">
+            <span className="mb-2 block text-xs font-semibold text-neutral-600">Seed</span>
+            <input className="h-10 w-full rounded border border-neutral-200 px-3 text-sm" type="number" min="0" max="2147483647" value={seed} onChange={(event) => setSeed(Number(event.target.value))} />
+          </label>
+          <label className="flex items-start gap-2 text-xs text-neutral-600">
+            <input type="checkbox" checked={allowDeathmatchStartNormalization} onChange={(event) => setAllowDeathmatchStartNormalization(event.target.checked)} />
+            Allow a temporary deathmatch-to-Player-1 start conversion when the map has no native single-player start.
           </label>
           <label className="block">
             <span className="mb-2 block text-xs font-semibold text-neutral-600">Agent Behavior</span>
@@ -160,7 +178,7 @@ export default function WadDetailPage({ params }: { params: Promise<{ id: string
           <span id="launch-description" className="sr-only">Start a new automated run on the selected map at the chosen difficulty</span>
           <button
             disabled={!selectedMap || startRun.isPending}
-            onClick={() => startRun.mutate({ wad_file_id: id, map_name: selectedMap!.map_name, difficulty_level: difficulty, max_ticks: maxTicks, behavior_profile: behaviorProfile })}
+            onClick={() => startRun.mutate({ wad_file_id: id, map_name: selectedMap!.map_name, difficulty_level: difficulty, max_ticks: maxTicks, behavior_profile: behaviorProfile, seed, allow_deathmatch_start_normalization: allowDeathmatchStartNormalization })}
             className="inline-flex h-11 w-full items-center justify-center gap-2 rounded bg-neutral-950 px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-neutral-300"
             aria-describedby="launch-description"
           >

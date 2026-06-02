@@ -59,7 +59,12 @@ async def get_wad_map_memory(
         .limit(20)
     )
     hypotheses_list = [
-        {"tag": hyp.tag, "content": hyp.content, "confidence": round(float(hyp.confidence), 2)}
+        {
+            "tag": hyp.tag,
+            "content": hyp.content,
+            "confidence": round(float(hyp.confidence), 2),
+            "evidence_status": "confirmed" if hyp.confirmed_at else "candidate",
+        }
         for hyp in hyp_result.scalars().all()
     ]
 
@@ -86,7 +91,11 @@ async def get_wad_map_memory(
                 func.count(Defect.id).label("occurrence_count"),
                 distinct_run_count.label("run_count"),
             )
-            .where(Defect.run_id.in_(run_ids), Defect.fingerprint.isnot(None))
+            .where(
+                Defect.run_id.in_(run_ids),
+                Defect.fingerprint.isnot(None),
+                Defect.resolution_status != "candidate",
+            )
             .group_by(Defect.fingerprint, Defect.defect_type, Defect.title)
             .having(distinct_run_count >= 2)
             .order_by(distinct_run_count.desc())

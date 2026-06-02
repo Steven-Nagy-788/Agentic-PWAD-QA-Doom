@@ -122,6 +122,7 @@ class CollectorService:
                             run_id=run_id,
                             severity=2,
                             priority=2,
+                            resolution_status="candidate",
                             defect_type=defect_type,
                             title=title,
                             description=issue_description,
@@ -273,7 +274,7 @@ def normalize_observed_issue(issue: Any) -> tuple[str, str]:
     slug = re.sub(r"[^a-z0-9]+", "_", raw).strip("_") or "issue"
     normalized_category = slug if slug in _KNOWN_DEFECT_CATEGORIES else slug
     defect_type = f"agent_observed_{normalized_category}"[:64]
-    title = f"Automated playthrough observed {normalized_category.replace('_', ' ')} issue"
+    title = f"Candidate automated observation: {normalized_category.replace('_', ' ')} issue"
     return defect_type, title[:255]
 
 

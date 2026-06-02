@@ -40,6 +40,7 @@ async def collect_environment_metadata(
     iwad: str,
     difficulty: int,
     max_ticks: int,
+    seed: int | None,
 ) -> dict[str, Any]:
     mcp = mcp_metadata or {}
     return {
@@ -64,5 +65,6 @@ async def collect_environment_metadata(
             "iwad": iwad,
             "difficulty": difficulty,
             "max_ticks": max_ticks,
+            "seed": seed,
         },
     }

@@ -44,6 +44,7 @@ class ReportOut(BaseModel):
     activity_variances: Optional[str] = None
     elapsed_time_seconds: Optional[int] = None
     total_actions_taken: Optional[int] = None
+    report_model: Optional[str] = None
 
     @model_validator(mode="after")
     def _compute_url(self) -> "ReportOut":

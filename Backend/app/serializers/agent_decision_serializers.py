@@ -20,12 +20,14 @@ class AgentDecisionOut(BaseModel):
     error_message: str | None = None
     llm_input_summary: dict[str, Any] | None = None
     llm_decision: dict[str, Any] | None = None
+    raw_llm_decision: dict[str, Any] | None = None
     reasoning_summary: str | None = None
     mcp_tool: str | None = None
     mcp_input: dict[str, Any] | None = None
     mcp_output: dict[str, Any] | None = None
     mcp_stop_reason: str | None = None
     guard_modified: bool = False
+    guard_reason: str | None = None
     decision_source: str = "gemini"
     validation_rejection: str | None = None
     llm_duration_ms: float | None = None

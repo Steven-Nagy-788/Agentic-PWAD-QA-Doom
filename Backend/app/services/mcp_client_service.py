@@ -74,6 +74,7 @@ class McpDoomClient:
         episode_timeout: int,
         async_player: bool = False,
         ticrate: int | None = None,
+        seed: int | None = None,
     ) -> Any:
         params: dict[str, Any] = {
             "wad": wad,
@@ -88,6 +89,8 @@ class McpDoomClient:
         }
         if ticrate is not None:
             params["ticrate"] = ticrate
+        if seed is not None:
+            params["seed"] = seed
         last_error: Exception | None = None
         for attempt in range(len(MCP_STARTUP_RETRY_DELAYS) + 1):
             try:

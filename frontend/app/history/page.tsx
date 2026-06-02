@@ -3,7 +3,6 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { Search } from "lucide-react";
 import { Run, RunList, WadFile, apiGet } from "@/lib/api";
 import { InlineError, OutcomeBadge, SkeletonRows, errorMessage } from "@/lib/components/shared";
 import { HealthSparkline } from "@/lib/components/HealthSparkline";
@@ -23,6 +22,7 @@ export default function RunHistoryPage() {
   const wads = useQuery({ queryKey: ["wads"], queryFn: () => apiGet<WadFile[]>("/wads") });
   const runListPath = useMemo(() => {
     const params = new URLSearchParams({ limit: String(RUN_PAGE_SIZE), offset: String(runOffset) });
+    if (filters.wad) params.set("wad_file_id", filters.wad);
     if (filters.map) params.set("map_name", filters.map);
     if (filters.outcome) params.set("outcome", filters.outcome);
     if (filters.difficulty) params.set("difficulty_level", filters.difficulty);
@@ -42,13 +42,7 @@ export default function RunHistoryPage() {
     setFilters(next);
   };
 
-  const visibleRuns = useMemo(() => {
-    const source = runs.data?.items ?? [];
-    const wadFilter = filters.wad.toLowerCase();
-    if (!wadFilter) return source;
-    const wadIds = new Set((wads.data ?? []).filter((wad) => wad.original_filename.toLowerCase().includes(wadFilter)).map((wad) => wad.id));
-    return source.filter((run) => wadIds.has(run.wad_file_id));
-  }, [filters.wad, runs.data?.items, wads.data]);
+  const visibleRuns = runs.data?.items ?? [];
 
   const total = runs.data?.total ?? 0;
   const rangeStart = total === 0 ? 0 : runOffset + 1;
@@ -84,7 +78,12 @@ export default function RunHistoryPage() {
       </div>
 
       <div className="grid gap-2 rounded border border-neutral-200 bg-white p-3 md:grid-cols-6">
-        <FilterInput icon={<Search />} placeholder="WAD" value={filters.wad} onChange={(wad) => updateFilters((current) => ({ ...current, wad }))} />
+        <label className="flex h-10 items-center rounded border border-neutral-200 bg-white px-3">
+          <select className="min-w-0 flex-1 bg-transparent text-sm outline-none" value={filters.wad} onChange={(event) => updateFilters((current) => ({ ...current, wad: event.target.value }))}>
+            <option value="">All WADs</option>
+            {(wads.data ?? []).map((wad) => <option key={wad.id} value={wad.id}>{wad.original_filename}</option>)}
+          </select>
+        </label>
         <FilterInput placeholder="Map" value={filters.map} onChange={(map) => updateFilters((current) => ({ ...current, map }))} />
         <FilterInput placeholder="Outcome" value={filters.outcome} onChange={(outcome) => updateFilters((current) => ({ ...current, outcome }))} />
         <FilterInput placeholder="Difficulty" value={filters.difficulty} onChange={(difficulty) => updateFilters((current) => ({ ...current, difficulty }))} />

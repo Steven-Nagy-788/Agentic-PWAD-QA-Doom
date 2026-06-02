@@ -18,7 +18,9 @@ export default function SettingsPage() {
     mutationFn: (dirty: Partial<AppSettings>) => {
       const clean: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(dirty)) {
+        if (!settings.data?.sources[key]) continue;
         if (value === "" || value === undefined || value === null) continue;
+        if (value === settings.data[key as keyof AppSettings]) continue;
         clean[key] = value;
       }
       return apiSend<AppSettings>("/settings", {
@@ -31,6 +33,14 @@ export default function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ["settings"] });
       setEditMode(false);
     },
+  });
+  const resetModelMutation = useMutation({
+    mutationFn: () => apiSend<AppSettings>("/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clear_overrides: ["llm_model"] }),
+    }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings"] }),
   });
   const startEdit = () => {
     if (settings.data) {
@@ -74,6 +84,14 @@ export default function SettingsPage() {
         <div className="grid gap-4 md:grid-cols-2">
           <SettingsCard title="LLM Config">
             <SettingsRow label="Model" value={settings.data.llm_model} edit={editMode} inputValue={draft.llm_model} onChange={(v) => setDraft((d) => ({ ...d, llm_model: v }))} />
+            <p className="text-xs text-neutral-500">
+              Source: {settings.data.sources.llm_model.replace("_", " ")}. Environment default: {String(settings.data.env_defaults.llm_model)}.
+            </p>
+            {settings.data.sources.llm_model === "database_override" ? (
+              <button onClick={() => resetModelMutation.mutate()} className="text-xs font-semibold text-cyan-700 hover:underline">
+                Reset model override to .env
+              </button>
+            ) : null}
             <SettingsRow label="Throttle (s)" value={`${settings.data.llm_throttle_seconds}s`} edit={editMode} inputValue={String(draft.llm_throttle_seconds ?? "")} onChange={(v) => setDraft((d) => ({ ...d, llm_throttle_seconds: Number(v) }))} />
             <SettingsRow label="Rate limit / min" value={String(settings.data.gemini_rate_limit_calls_per_minute)} edit={editMode} inputValue={String(draft.gemini_rate_limit_calls_per_minute ?? "")} onChange={(v) => setDraft((d) => ({ ...d, gemini_rate_limit_calls_per_minute: Number(v) }))} />
             <SettingsRow label="Input $/1M" value={`$${settings.data.llm_input_cost_per_million}`} edit={editMode} inputValue={String(draft.llm_input_cost_per_million ?? "")} onChange={(v) => setDraft((d) => ({ ...d, llm_input_cost_per_million: Number(v) }))} />

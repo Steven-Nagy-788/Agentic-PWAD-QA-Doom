@@ -25,7 +25,6 @@ from app.repositories.report_repository import ReportRepository
 from app.repositories.run_repository import RunRepository
 from app.services.analysis_service import map_bounds_for_wad, selected_skill_spawn_summary
 from app.services.analysis_constants import CELL_SIZE
-from app.services.prompt_service import report_prompt_path
 
 
 logger = logging.getLogger(__name__)
@@ -47,9 +46,9 @@ class ReportService:
             )
             if not acquired:
                 existing = await self.repo.get_by_run(run_id)
-                if existing is not None:
+                if existing is not None and existing.pdf_path:
                     return existing
-                raise RuntimeError("Report generation is already in progress")
+                raise RuntimeError("Report generation is already in progress by another request")
             try:
                 return await self._generate_locked(run_id)
             except Exception as exc:
@@ -230,6 +229,7 @@ class ReportService:
             "activity_variances": text_value("activity_variances"),
             "elapsed_time_seconds": report_json.get("elapsed_time_seconds") or run.duration_seconds,
             "total_actions_taken": report_json.get("total_actions_taken") or run.total_actions_taken,
+            "report_model": ReportService._coerce_text(report_json.get("_report_model")),
             "pdf_path": pdf_path_str,
         }
 
@@ -478,65 +478,31 @@ class ReportService:
 
     async def _call_gemini_or_fallback(self, payload: dict[str, Any]) -> dict[str, Any]:
         fallback = self._fallback_report(payload)
-        prompt = report_prompt_path().read_text()
-        compact = {
-            "run": self._run_snapshot(payload["run"]),
-            "analysis": self._analysis_snapshot(payload["analysis"]),
-            "metrics": payload["metrics"],
-            "defects": [self._defect_snapshot(defect) for defect in payload["defects"][:50]],
-            "notable_events": [self._event_snapshot(event) for event in payload["notable_events"][:20]],
-            "first_ticks": [self._event_snapshot(event) for event in payload["first_ticks"]],
-            "last_ticks": [self._event_snapshot(event) for event in payload["last_ticks"]],
-            "decision_trace": [self._decision_snapshot(decision) for decision in payload.get("decisions", [])[:30]],
-        }
-        if not self.settings.gemini_api_key:
-            return fallback
-        try:
-            from google import genai
-
-            def generate() -> str:
-                client = genai.Client(api_key=self.settings.gemini_api_key)
-                response = client.models.generate_content(
-                    model=self.settings.llm_model,
-                    contents=f"{prompt}\n\nDATA:\n{json.dumps(compact, default=str)}",
-                )
-                return response.text or "{}"
-
-            text = await asyncio.wait_for(
-                asyncio.to_thread(generate),
-                timeout=max(0.1, self.settings.report_gemini_timeout_seconds),
-            )
-            start, end = text.find("{"), text.rfind("}")
-            if start < 0 or end < start:
-                raise ValueError("Report model did not return JSON")
-            generated = json.loads(text[start : end + 1])
-            return self._merge_report_defaults(fallback, generated)
-        except Exception as exc:
-            logger.warning("Report Gemini generation failed; using deterministic fallback: %s", exc)
-            return fallback
+        fallback["_report_model"] = "deterministic-grounded-template"
+        return fallback
 
     @staticmethod
     def _merge_report_defaults(defaults: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:
-        merged = dict(defaults)
-        for key, value in generated.items():
-            if key in {"pass_fail_summary", "hardware_spec", "software_spec", "test_environment_summary"}:
-                continue
-            if value not in (None, "", [], {}):
-                merged[key] = value
-        return merged
+        # Model prose is not evidence. Keep deterministic fields authoritative
+        # until a claim-level grounding validator exists.
+        return dict(defaults)
 
     @staticmethod
     def _fallback_report(payload: dict[str, Any]) -> dict[str, Any]:
         run: TestRun = payload["run"]
         analysis: StaticAnalysisResult | None = payload["analysis"]
-        defects: list[Defect] = payload["defects"]
+        all_defects: list[Defect] = payload["defects"]
+        defects = [defect for defect in all_defects if defect.resolution_status != "candidate"]
+        candidate_count = len(all_defects) - len(defects)
         metrics: dict[str, Any] = payload["metrics"]
         if ReportService._is_pwad_crash(run):
             return ReportService._pwad_crash_report(payload)
         outcome = ReportService._display_outcome(run, defects)
         passed = run.status == "completed" and run.outcome == "map_completed"
         outcome_sentence = "The map was completed." if passed else f"The run ended with outcome '{outcome}'."
-        defect_phrase = "No defects were detected." if not defects else f"{len(defects)} defect(s) were detected."
+        defect_phrase = "No confirmed defects were detected." if not defects else f"{len(defects)} confirmed defect(s) were detected."
+        if candidate_count:
+            defect_phrase += f" {candidate_count} candidate signal(s) require review."
         coverage_phrase = (
             f"The automated playthrough recorded {metrics['event_count']} gameplay event(s), "
             f"{metrics.get('decision_count', 0)} lockstep LLM/MCP decision(s), "

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,7 +39,4 @@ class ConfigRepository:
             await self.set(key, value)
 
     async def delete(self, key: str) -> None:
-        await self.db.execute(select(ConfigEntry).where(ConfigEntry.key == key).limit(1))
-        entry = await self.db.get(ConfigEntry, key)
-        if entry:
-            await self.db.delete(entry)
+        await self.db.execute(delete(ConfigEntry).where(ConfigEntry.key == key))

@@ -287,18 +287,21 @@ function liveTrail(memory: SameRunMemory | null, snapshotTrail: PositionSample[]
   const positions = memory?.recent_actions
     .map((action) => ({ ...action.final_position, tick: action.tick_after }))
     .filter((sample) => sample.x !== undefined && sample.y !== undefined) ?? [];
-  if (positions.length) {
-    return positions.map((sample, index) => ({
-      id: index,
+  const latestHealth = snapshotTrail.at(-1)?.health ?? 0;
+  const merged = new Map(snapshotTrail.map((sample) => [`${sample.tick_number}:${sample.x}:${sample.y}`, sample]));
+  positions.forEach((sample, index) => {
+    const entry = {
+      id: -(index + 1),
       run_id: "",
       tick_number: sample.tick,
       x: sample.x ?? 0,
       y: sample.y ?? 0,
       angle: sample.angle ?? 0,
-      health: 0,
-    }));
-  }
-  return snapshotTrail;
+      health: latestHealth,
+    };
+    merged.set(`${entry.tick_number}:${entry.x}:${entry.y}`, entry);
+  });
+  return Array.from(merged.values()).sort((a, b) => a.tick_number - b.tick_number);
 }
 
 function RuntimeWarnings({ flags }: { flags?: Record<string, unknown> | null }) {
@@ -323,7 +326,7 @@ function RunDetailContent({ runId }: { runId: string }) {
   const run = useQuery({ queryKey: ["run", runId], queryFn: () => apiGet<Run>(`/runs/${runId}`), refetchInterval: 5_000 });
   const defects = useQuery({ queryKey: ["run-defects", runId], queryFn: () => apiGet<Defect[]>(`/runs/${runId}/defects`) });
   const decisions = useQuery({ queryKey: ["run-decisions", runId], queryFn: () => apiGet<Decision[]>(`/runs/${runId}/decisions?page_size=500`) });
-  const trail = useQuery({ queryKey: ["run-trail", runId], queryFn: () => apiGet<PositionSample[]>(`/runs/${runId}/position-trail`) });
+  const trail = useQuery({ queryKey: ["run-trail", runId], queryFn: () => apiGet<PositionSample[]>(`/runs/${runId}/position-trail?limit=5000`) });
   const events = useQuery({ queryKey: ["run-events", runId], queryFn: () => apiGet<TraceEntry[]>(`/runs/${runId}/events?type=kill,death,item_pickup,secret_found,stuck`) });
   const usage = useQuery({ queryKey: ["run-usage", runId], queryFn: () => apiGet<UsageStats>(`/runs/${runId}/usage`) });
   const benchmark = useQuery({ queryKey: ["run-benchmark", runId], queryFn: () => apiGet<BenchmarkStats>(`/runs/${runId}/benchmark`) });

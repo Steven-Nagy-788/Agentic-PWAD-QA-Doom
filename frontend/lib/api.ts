@@ -54,6 +54,8 @@ export type Run = {
   iwad_used: string;
   llm_model: string;
   max_ticks: number;
+  seed?: number | null;
+  start_normalization?: Record<string, unknown> | null;
   status: string;
   started_at?: string | null;
   completed_at?: string | null;
@@ -121,6 +123,8 @@ export type Decision = {
   mcp_output?: Record<string, unknown> | null;
   mcp_stop_reason?: string | null;
   decision_source: string;
+  guard_modified?: boolean;
+  guard_reason?: string | null;
   validation_rejection?: string | null;
   llm_duration_ms?: number | null;
   mcp_duration_ms?: number | null;
@@ -137,6 +141,7 @@ export type Defect = {
   detected_at_tick?: number | null;
   fingerprint?: string | null;
   description?: string | null;
+  resolution_status?: string;
 };
 
 export type PositionSample = {
@@ -164,6 +169,8 @@ export type AppSettings = {
   recording_telemetry_stride: number;
   default_agent_behavior: string;
   iwad_used: string;
+  sources: Record<string, "environment" | "database_override">;
+  env_defaults: Record<string, unknown>;
 };
 
 export type UsageStats = {
@@ -219,7 +226,7 @@ export type MapMemory = {
   wad_id: string;
   map_name: string;
   recurring_defects: RecurringDefect[];
-  hypotheses: { tag: string; content: string; confidence: number }[];
+  hypotheses: { tag: string; content: string; confidence: number; evidence_status?: string }[];
   summary_counts: { prior_run_count: number; outcome_counts: Record<string, number> };
 };
 

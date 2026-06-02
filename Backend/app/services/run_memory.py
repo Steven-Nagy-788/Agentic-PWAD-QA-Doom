@@ -117,7 +117,6 @@ class RunMemoryService:
                 tag=_infer_tag(hypothesis),
                 content=hypothesis[:500],
                 confidence=0.3,
-                confirmed_at=datetime.now(UTC),
                 last_seen_run_id=run_id,
             )
             self.db.add(new_hypothesis)

@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS test_runs (
     llm_model               VARCHAR(128)    NOT NULL DEFAULT 'gemini-2.5-flash-lite',
     behavior_profile        VARCHAR(32)     DEFAULT 'thorough',
     max_ticks               INTEGER         NOT NULL DEFAULT 3000,
+    seed                    INTEGER,
+    start_normalization     JSONB,
     status                  VARCHAR(16)     NOT NULL DEFAULT 'pending',
     started_at              TIMESTAMPTZ,
     completed_at            TIMESTAMPTZ,
@@ -138,12 +140,14 @@ CREATE TABLE IF NOT EXISTS agent_decisions (
     error_message       TEXT,
     llm_input_summary   JSONB,
     llm_decision        JSONB,
+    raw_llm_decision    JSONB,
     reasoning_summary   TEXT,
     mcp_tool            VARCHAR(64),
     mcp_input           JSONB,
     mcp_output          JSONB,
     mcp_stop_reason     VARCHAR(64),
     guard_modified      BOOLEAN     NOT NULL DEFAULT FALSE,
+    guard_reason        TEXT,
     decision_source     VARCHAR(32) NOT NULL DEFAULT 'gemini',
     llm_duration_ms     REAL,
     mcp_duration_ms     REAL,
@@ -180,6 +184,7 @@ CREATE TABLE IF NOT EXISTS agent_position_trail (
 );
 
 CREATE INDEX IF NOT EXISTS idx_position_trail_run_id ON agent_position_trail(run_id);
+CREATE INDEX IF NOT EXISTS idx_position_trail_run_id_tick ON agent_position_trail(run_id, tick_number);
 
 CREATE TABLE IF NOT EXISTS test_reports (
     id                          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -211,6 +216,7 @@ CREATE TABLE IF NOT EXISTS test_reports (
     activity_variances          TEXT,
     elapsed_time_seconds        INTEGER,
     total_actions_taken         INTEGER,
+    report_model                VARCHAR(128),
     pdf_path                    TEXT,
     generated_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     generation_status           VARCHAR(16) NOT NULL DEFAULT 'generating',

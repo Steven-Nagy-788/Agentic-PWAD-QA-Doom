@@ -200,6 +200,20 @@ class NavigationMemory:
             "explored_sectors": sorted(self._visited_sector_ids),
         }
 
+    def suggested_turn_delta(self, px: float, py: float, pa: float, max_delta: float = 8.0) -> float:
+        """Return a small signed turn toward a nearby unexplored grid cell."""
+        suggested = self.get_exploration_summary(px, py, pa).get("suggested_direction")
+        target_angles = {
+            "east": 0.0,
+            "north": 90.0,
+            "west": 180.0,
+            "south": 270.0,
+        }
+        if suggested not in target_angles:
+            return 0.0
+        delta = (target_angles[suggested] - pa + 180.0) % 360.0 - 180.0
+        return max(-max_delta, min(max_delta, delta))
+
 
 def _sector_at_position(px: float, py: float, sectors: list[dict]) -> int | None:
     for index, sector in enumerate(sectors):
