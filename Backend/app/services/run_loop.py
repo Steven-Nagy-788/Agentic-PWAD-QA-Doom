@@ -73,6 +73,60 @@ from app.services.run_utils import (
 from app.services.websocket_service import websocket_service
 
 
+async def _build_cross_run_memory_context(
+    db: AsyncSession,
+    wad_file_id: UUID,
+    map_name: str,
+) -> str:
+    """Build cross-run memory context from hypotheses and spatial memory."""
+    from app.models import WadHypothesis, WadSpatialMemory
+    from sqlalchemy import select
+
+    parts: list[str] = []
+
+    # High-confidence hypotheses from previous runs
+    hyp_result = await db.execute(
+        select(WadHypothesis).where(
+            WadHypothesis.wad_file_id == wad_file_id,
+            WadHypothesis.map_name == map_name.upper(),
+            WadHypothesis.confidence >= 0.5,
+            WadHypothesis.refuted_at.is_(None),
+        ).order_by(WadHypothesis.confidence.desc()).limit(10)
+    )
+    hypotheses = list(hyp_result.scalars().all())
+    if hypotheses:
+        hyp_lines = []
+        for h in hypotheses:
+            hyp_lines.append(f"- [{h.tag}] {h.content} (confidence: {h.confidence:.1f})")
+        parts.append("CROSS-RUN HYPOTHESES:\n" + "\n".join(hyp_lines))
+
+    # Spatial memory: high-death or high-stuck cells
+    spatial_result = await db.execute(
+        select(WadSpatialMemory).where(
+            WadSpatialMemory.wad_file_id == wad_file_id,
+            WadSpatialMemory.map_name == map_name.upper(),
+            WadSpatialMemory.event_type.in_(["death", "stuck"]),
+            WadSpatialMemory.occurrence_count >= 3,
+        ).order_by(WadSpatialMemory.occurrence_count.desc()).limit(10)
+    )
+    spatial = list(spatial_result.scalars().all())
+    if spatial:
+        spatial_lines = []
+        for s in spatial:
+            spatial_lines.append(
+                f"- Cell ({s.cell_x},{s.cell_y}): {s.event_type} x{s.occurrence_count}"
+            )
+        parts.append("KNOWN DANGER ZONES:\n" + "\n".join(spatial_lines))
+
+    if not parts:
+        return ""
+    return (
+        "## CROSS-RUN MEMORY (from previous runs on this map)\n"
+        + "\n\n".join(parts)
+        + "\n\nUse this as context only. Do not blindly follow old hypotheses—verify through gameplay."
+    )
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -104,6 +158,15 @@ async def agent_run_task(run_id: UUID) -> None:
         profile = get_behavior_profile(run_orm)
         total_map_cells_estimate = _estimate_total_map_cells(analysis)
         prompt = render_agent_prompt(wad, analysis, run_orm) + "\n\n" + profile.system_prompt_addendum
+
+        # Conditionally inject cross-run memory
+        cross_run_enabled = runtime_value("cross_run_memory_enabled", settings.cross_run_memory_enabled)
+        if cross_run_enabled:
+            cross_run_context = await _build_cross_run_memory_context(
+                db, run_orm.wad_file_id, run_orm.map_name
+            )
+            if cross_run_context:
+                prompt += f"\n\n{cross_run_context}"
 
         # Extract primitive values before session closes
         run_id_val = run_orm.id

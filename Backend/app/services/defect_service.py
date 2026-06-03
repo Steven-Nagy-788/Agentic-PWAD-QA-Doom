@@ -10,7 +10,7 @@ import cv2
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Defect, GameEvent, NotableEventScreenshot, StaticAnalysisResult, TestRun
+from app.models import Defect, GameEvent, NotableEventScreenshot, StaticAnalysisResult, TestRun, WadHypothesis
 from app.repositories.defect_repository import DefectRepository
 from app.services.gemini_service import is_low_value_texture_defect
 from app.services.analysis_service import selected_skill_spawn_summary
@@ -55,6 +55,7 @@ class DefectService:
         await self._health_deficit(run.id, events)
         await self._softlock(run, events)
         await self._unreachable_secrets(run, events, analysis)
+        await self._promote_hypotheses(run)
         await self._link_screenshots_to_defects(run.id)
 
     async def _pwad_crash(self, run: TestRun) -> None:
@@ -252,7 +253,7 @@ class DefectService:
         episodes = _streak_episodes(
             events,
             lambda event: _event_usable_attack_ammo(event) == 0,
-            minimum_length=61,
+            minimum_length=30,
         )
         for episode in episodes:
             first = episode[0]
@@ -266,7 +267,7 @@ class DefectService:
                     title="Ammo starvation",
                     description=(
                         "The automated playthrough had no usable attack ammo or usable ranged weapon for more "
-                        "than 60 consecutive ticks."
+                        "than 30 consecutive ticks."
                     ),
                     detected_at_tick=first.tick_number,
                     position_x=first.player_x,
@@ -278,7 +279,7 @@ class DefectService:
             )
 
     async def _health_deficit(self, run_id: UUID, events: list[GameEvent]) -> None:
-        episodes = _streak_episodes(events, lambda event: event.health < 10, minimum_length=31)
+        episodes = _streak_episodes(events, lambda event: event.health < 10, minimum_length=15)
         for episode in episodes:
             first = episode[0]
             await self.repo.create(
@@ -289,7 +290,7 @@ class DefectService:
                     defect_type="health_deficit",
                     fingerprint=f"health_deficit:{first.tick_number}",
                     title="Sustained health deficit",
-                    description="The automated playthrough remained below 10 HP for more than 30 ticks.",
+                    description="The automated playthrough remained below 10 HP for more than 15 ticks.",
                     detected_at_tick=first.tick_number,
                     position_x=first.player_x,
                     position_y=first.player_y,
@@ -301,7 +302,7 @@ class DefectService:
 
     async def _softlock(self, run: TestRun, events: list[GameEvent]) -> None:
         stuck_events = [event for event in events if event.event_type == "stuck"]
-        if run.outcome in {"stuck", "timeout"} and len(stuck_events) >= 3:
+        if run.outcome in {"stuck", "timeout", "inconclusive_agent_stall"} and len(stuck_events) >= 3:
             confirmed_stuck = [event for event in stuck_events if _is_confirmed_map_stuck_event(event)]
             if len(confirmed_stuck) >= 3:
                 first = confirmed_stuck[0]
@@ -392,7 +393,7 @@ class DefectService:
             analysis
             and analysis.secret_sector_count > 0
             and max(event.secret_count for event in events) == 0
-            and coverage_percent >= 60.0
+            and coverage_percent >= 40.0
         ):
             await self.repo.create(
                 Defect(
@@ -403,11 +404,49 @@ class DefectService:
                     title="Secrets not reached",
                     description=(
                         "Static analysis found secret sectors, but the automated playthrough did not enter one "
-                        f"after reaching {coverage_percent:.1f}% coarse cell coverage."
+                        f"after reaching {coverage_percent:.1f}% coarse cell coverage (threshold: 40%)."
                     ),
                     detected_at_tick=events[-1].tick_number,
                 )
             )
+
+    async def _promote_hypotheses(self, run: TestRun) -> None:
+        """Promote high-confidence cross-run hypotheses to defects for this run."""
+        if not run.wad_file_id:
+            return
+        result = await self.db.execute(
+            select(WadHypothesis).where(
+                WadHypothesis.wad_file_id == run.wad_file_id,
+                WadHypothesis.map_name == run.map_name,
+                WadHypothesis.confidence >= 0.6,
+                WadHypothesis.confirmed_at.is_(None),
+            ).order_by(WadHypothesis.confidence.desc()).limit(5)
+        )
+        hypotheses = list(result.scalars().all())
+        for hyp in hypotheses:
+            severity = 2 if hyp.confidence >= 0.75 else 3
+            tag_lower = hyp.tag.lower() if hyp.tag else "unknown"
+            await self.repo.create(
+                Defect(
+                    run_id=run.id,
+                    severity=severity,
+                    priority=2,
+                    resolution_status="candidate",
+                    defect_type=f"recurring_{tag_lower}",
+                    fingerprint=f"recurring_{tag_lower}:{hyp.id}",
+                    title=f"Recurring observation: {hyp.tag}",
+                    description=(
+                        f"Cross-run hypothesis (confidence {hyp.confidence:.0%}): {hyp.content}"
+                    ),
+                    detected_at_tick=None,
+                    recommendation=(
+                        "Review this recurring observation across multiple runs. "
+                        "If confirmed, address the underlying map issue."
+                    ),
+                )
+            )
+            from datetime import UTC, datetime as _dt
+            hyp.confirmed_at = _dt.now(UTC)
 
     async def _link_screenshots_to_defects(self, run_id: UUID) -> None:
         screenshot_result = await self.db.execute(

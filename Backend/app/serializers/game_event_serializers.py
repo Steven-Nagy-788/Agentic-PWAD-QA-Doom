@@ -86,3 +86,4 @@ class PositionTrailOut(BaseModel):
     y: float
     angle: float
     health: int
+    is_sentinel: bool = False

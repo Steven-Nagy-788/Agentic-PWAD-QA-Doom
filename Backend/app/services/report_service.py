@@ -671,6 +671,21 @@ class ReportService:
             ),
             "elapsed_time_seconds": run.duration_seconds,
             "total_actions_taken": run.total_actions_taken,
+            # ---- 14-section professional QA report fields ----
+            "executive_summary": ReportService._build_executive_summary(run, defects, metrics, analysis, outcome, overall_verdict),
+            "critical_issues": ReportService._build_critical_issues(defects, run),
+            "geometry_technical_analysis": ReportService._build_geometry_analysis(analysis, run),
+            "gameplay_flow_analysis": ReportService._build_gameplay_flow(run, metrics, analysis),
+            "combat_design_review": ReportService._build_combat_review(run, metrics, analysis, defects),
+            "itemization_audit": ReportService._build_itemization_audit(run, metrics, analysis, defects),
+            "ai_enemy_behavior": ReportService._build_ai_behavior(run, metrics, defects),
+            "navigation_readability": ReportService._build_navigation_readability(run, metrics, analysis),
+            "secrets_optional_content": ReportService._build_secrets_analysis(run, metrics, analysis),
+            "multiplayer_analysis": "Not applicable. This QA run tested single-player mode only.",
+            "performance_engine_compliance": ReportService._build_performance_analysis(analysis, run),
+            "speedrunning_advanced_play": ReportService._build_speedrunning_analysis(run, metrics, analysis),
+            "recommendations": ReportService._build_recommendations(run, defects, metrics, analysis),
+            "final_verdict": ReportService._build_final_verdict(run, defects, metrics, analysis, overall_verdict),
         }
 
     @staticmethod
@@ -974,6 +989,297 @@ class ReportService:
         if analysis is not None:
             areas.append({"area": "Static context", "evidence": "The report includes parsed map structure and thing counts."})
         return areas or [{"area": "Initial launch", "evidence": "The map was accepted into the QA pipeline."}]
+
+    # ---- 14-section professional QA report builders ----
+
+    @staticmethod
+    def _build_executive_summary(
+        run: TestRun, defects: list[Defect], metrics: dict[str, Any],
+        analysis: StaticAnalysisResult | None, outcome: str, overall_verdict: str,
+    ) -> str:
+        spawned = int(metrics.get("spawned_enemy_count") or 0)
+        kills = run.total_kills or 0
+        coverage = float(metrics.get("coverage_percent") or 0)
+        defect_count = len(defects)
+        severity_1 = sum(1 for d in defects if d.severity == 1)
+        parts = [
+            f"Automated QA analysis of map {run.map_name} (IWAD: {run.iwad_used}, difficulty {run.difficulty_level}).",
+            f"Outcome: {outcome}. Overall verdict: {overall_verdict}.",
+            f"The automated playthrough executed {run.total_actions_taken or 0} lockstep decisions over "
+            f"{run.duration_seconds or 0} wall-clock seconds, achieving {coverage:.1f}% coarse cell coverage.",
+        ]
+        if spawned > 0:
+            parts.append(f"Combat: {kills}/{spawned} enemies eliminated ({kills/spawned*100:.0f}% kill rate).")
+        if defect_count:
+            parts.append(f"Defects detected: {defect_count} ({severity_1} critical/major).")
+        else:
+            parts.append("No confirmed defects were detected during this run.")
+        if analysis:
+            parts.append(
+                f"Map geometry: {analysis.linedef_count} linedefs, {analysis.sector_count} sectors, "
+                f"{analysis.secret_sector_count} secret sector(s)."
+            )
+        return " ".join(parts)
+
+    @staticmethod
+    def _build_critical_issues(defects: list[Defect], run: TestRun) -> str:
+        if not defects:
+            return "No critical issues were identified during this automated QA pass."
+        lines = []
+        for defect in sorted(defects, key=lambda d: (d.severity, d.priority)):
+            sev_label = {1: "Critical", 2: "Major", 3: "Moderate", 4: "Minor", 5: "Cosmetic"}.get(
+                defect.severity, f"Severity-{defect.severity}"
+            )
+            lines.append(
+                f"[{sev_label}] {defect.title} — {defect.description[:200]}"
+                + (f" (tick {defect.detected_at_tick})" if defect.detected_at_tick else "")
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_geometry_analysis(analysis: StaticAnalysisResult | None, run: TestRun) -> str:
+        if not analysis:
+            return "Static analysis was unavailable. Geometry assessment requires parsed WAD data."
+        parts = [
+            f"Map dimensions: {analysis.map_width_units or '?'} x {analysis.map_height_units or '?'} Doom units.",
+            f"Linedefs: {analysis.linedef_count}. Sectors: {analysis.sector_count}. Vertices: {analysis.vertex_count or '?'}.",
+            f"Thing count: {analysis.thing_count_total} total ({analysis.thing_count_enemies} enemies, "
+            f"{analysis.thing_count_items} items, {analysis.thing_count_keys} keys).",
+        ]
+        # Vanilla Doom limits check
+        if analysis.linedef_count and analysis.linedef_count > 32768:
+            parts.append("WARNING: Linedef count exceeds vanilla Doom limit (32768). Requires limit-removing port.")
+        if analysis.sector_count and analysis.sector_count > 32768:
+            parts.append("WARNING: Sector count exceeds vanilla Doom limit (32768). Requires limit-removing port.")
+        if analysis.vertex_count and analysis.vertex_count > 65536:
+            parts.append("WARNING: Vertex count exceeds vanilla Doom limit (65536).")
+        # Visplane estimate
+        if analysis.sector_count and analysis.sector_count > 128:
+            parts.append(f"Sector count ({analysis.sector_count}) is elevated. Monitor for visplane overflow risk.")
+        return " ".join(parts)
+
+    @staticmethod
+    def _build_gameplay_flow(run: TestRun, metrics: dict[str, Any], analysis: StaticAnalysisResult | None) -> str:
+        coverage = float(metrics.get("coverage_percent") or 0)
+        clusters = metrics.get("position_cluster_count", 0)
+        movement = metrics.get("movement_distance_units", 0)
+        parts = [
+            f"Player movement: {movement:.0f} map units across {clusters} coarse position cluster(s).",
+            f"Map coverage: {coverage:.1f}% of estimated cells explored.",
+        ]
+        if run.outcome == "map_completed":
+            parts.append("The map exit was reached — full progression path validated.")
+        elif run.outcome == "timeout":
+            parts.append("Run timed out before reaching the map exit. Progression may be blocked or insufficient budget.")
+        elif run.outcome == "player_died":
+            parts.append("The automated player died. Combat pressure or resource deficit may be factors.")
+        elif run.outcome in ("stuck", "inconclusive_agent_stall"):
+            parts.append("The agent stalled. Possible geometry trap, navigation ambiguity, or agent limitation.")
+        if analysis:
+            door_count = getattr(analysis, "door_count", None)
+            lift_count = getattr(analysis, "lift_count", None)
+            teleporter_count = getattr(analysis, "teleporter_count", None)
+            if door_count:
+                parts.append(f"Map contains {door_count} doors, {lift_count or 0} lifts, {teleporter_count or 0} teleporters.")
+        return " ".join(parts)
+
+    @staticmethod
+    def _build_combat_review(
+        run: TestRun, metrics: dict[str, Any],
+        analysis: StaticAnalysisResult | None, defects: list[Defect],
+    ) -> str:
+        spawned = int(metrics.get("spawned_enemy_count") or 0)
+        kills = run.total_kills or 0
+        hitscanner_pct = float((analysis or StaticAnalysisResult()).hitscanner_percent or 0)
+        parts = []
+        if spawned == 0:
+            parts.append("No enemies spawn at the selected difficulty. Combat review not applicable.")
+        else:
+            kill_rate = kills / spawned * 100
+            parts.append(f"Kill rate: {kills}/{spawned} ({kill_rate:.0f}%).")
+            if kill_rate < 25:
+                parts.append("Kill rate is very low. The agent may be avoiding combat or lacking ammo/weapons.")
+            elif kill_rate < 50:
+                parts.append("Kill rate is moderate. Some encounters may have been bypassed.")
+            if hitscanner_pct > 40:
+                parts.append(f"Hitscanner ratio is high ({hitscanner_pct:.0f}%). Expect ranged pressure on the player.")
+            combat_defects = [d for d in defects if "combat" in d.defect_type or d.defect_type == "ammo_starvation"]
+            if combat_defects:
+                parts.append(f"{len(combat_defects)} combat-related defect(s) detected.")
+        health_ratio = float(analysis.health_ratio or 1.0) if analysis else 1.0
+        ammo_ratio = float(analysis.ammo_ratio or 1.0) if analysis else 1.0
+        if health_ratio < 0.2:
+            parts.append("Health economy is critically low relative to monster HP.")
+        if ammo_ratio < 0.5:
+            parts.append("Ammo economy is deficient relative to monster HP.")
+        return " ".join(parts) if parts else "Combat data is insufficient for detailed review."
+
+    @staticmethod
+    def _build_itemization_audit(
+        run: TestRun, metrics: dict[str, Any],
+        analysis: StaticAnalysisResult | None, defects: list[Defect],
+    ) -> str:
+        if not analysis:
+            return "Static analysis unavailable. Itemization audit requires parsed WAD data."
+        parts = [
+            f"Health pickups: {analysis.total_health_pickup_pts or 0} HP worth.",
+            f"Armor pickups: {analysis.total_armor_pickup_pts or 0} points.",
+            f"Health ratio: {analysis.health_ratio:.4f}. Ammo ratio: {analysis.ammo_ratio:.4f}.",
+        ]
+        if analysis.health_ratio < 0.2:
+            parts.append("SEVERITY: Health economy is critically low. Players will face ammo starvation.")
+        elif analysis.health_ratio < 0.4:
+            parts.append("Health economy is tight. Resource management will be challenging.")
+        if analysis.ammo_ratio < 0.5:
+            parts.append("SEVERITY: Ammo economy is critically low. Melee combat or infighting may be required.")
+        elif analysis.ammo_ratio < 0.8:
+            parts.append("Ammo economy is tight. Conservation will be necessary.")
+        items = [d for d in defects if d.defect_type in ("static_ammo_risk", "static_health_risk", "ammo_starvation")]
+        if items:
+            parts.append(f"{len(items)} itemization-related defect(s) flagged.")
+        return " ".join(parts)
+
+    @staticmethod
+    def _build_ai_behavior(run: TestRun, metrics: dict[str, Any], defects: list[Defect]) -> str:
+        parts = []
+        flags = metrics.get("agent_quality_flags") or {}
+        warnings = flags.get("warnings", [])
+        if warnings:
+            parts.append(f"Agent quality warnings: {len(warnings)}.")
+            for w in warnings[:3]:
+                parts.append(f"  - {w}")
+        stuck_defects = [d for d in defects if d.defect_type in ("softlock_navigation", "inconclusive_agent_stall")]
+        if stuck_defects:
+            parts.append(f"Navigation stall detected: {len(stuck_defects)} occurrence(s). Agent may have encountered geometry traps.")
+        progress = metrics.get("progress_metrics") or {}
+        progress_score = progress.get("progress_score", 0)
+        if progress_score < 5:
+            parts.append("Agent progress score is low. Navigation effectiveness may be limited.")
+        if not parts:
+            parts.append("Agent behavior was within normal parameters for this run.")
+        return " ".join(parts)
+
+    @staticmethod
+    def _build_navigation_readability(run: TestRun, metrics: dict[str, Any], analysis: StaticAnalysisResult | None) -> str:
+        coverage = float(metrics.get("coverage_percent") or 0)
+        clusters = metrics.get("position_cluster_count", 0)
+        parts = [
+            f"Coarse cell coverage: {coverage:.1f}%.",
+            f"Position clusters visited: {clusters}.",
+        ]
+        if coverage < 20:
+            parts.append("Coverage is critically low. The agent explored very little of the map.")
+        elif coverage < 50:
+            parts.append("Coverage is moderate. Significant portions of the map remain unexplored.")
+        if analysis and analysis.secret_sector_count > 0:
+            secrets_found = run.secrets_found or 0
+            parts.append(f"Secrets: {secrets_found}/{analysis.secret_sector_count} found.")
+        return " ".join(parts)
+
+    @staticmethod
+    def _build_secrets_analysis(run: TestRun, metrics: dict[str, Any], analysis: StaticAnalysisResult | None) -> str:
+        if not analysis or analysis.secret_sector_count == 0:
+            return "No secret sectors detected in static analysis."
+        secrets_found = run.secrets_found or 0
+        coverage = float(metrics.get("coverage_percent") or 0)
+        parts = [
+            f"Secret sectors: {analysis.secret_sector_count}.",
+            f"Secrets found: {secrets_found}.",
+            f"Map coverage: {coverage:.1f}%.",
+        ]
+        if secrets_found == 0 and coverage >= 40:
+            parts.append("No secrets found at sufficient coverage. Possible unreachable secret or poor placement.")
+        elif secrets_found == 0:
+            parts.append("No secrets found, but coverage may be insufficient to draw conclusions.")
+        return " ".join(parts)
+
+    @staticmethod
+    def _build_performance_analysis(analysis: StaticAnalysisResult | None, run: TestRun) -> str:
+        if not analysis:
+            return "Static analysis unavailable. Performance assessment requires geometry data."
+        parts = []
+        # Vanilla Doom limits
+        vanilla_limits = {
+            "linedefs": 32768, "sidedefs": 65536, "sectors": 32768,
+            "vertices": 65536, "segments": 65536, "subsectors": 32768,
+            "nodes": 32768, "things": 4096,
+        }
+        if analysis.linedef_count:
+            ratio = analysis.linedef_count / vanilla_limits["linedefs"] * 100
+            parts.append(f"Linedefs: {analysis.linedef_count}/{vanilla_limits['linedefs']} ({ratio:.0f}% of vanilla limit).")
+            if ratio > 80:
+                parts.append("WARNING: Approaching vanilla linedef limit.")
+        if analysis.sector_count:
+            ratio = analysis.sector_count / vanilla_limits["sectors"] * 100
+            parts.append(f"Sectors: {analysis.sector_count}/{vanilla_limits['sectors']} ({ratio:.0f}% of vanilla limit).")
+        if analysis.thing_count_total:
+            ratio = analysis.thing_count_total / vanilla_limits["things"] * 100
+            parts.append(f"Things: {analysis.thing_count_total}/{vanilla_limits['things']} ({ratio:.0f}% of vanilla limit).")
+        parts.append("Compatible with limit-removing source ports (Boom, MBF, PrBoom+).")
+        return " ".join(parts)
+
+    @staticmethod
+    def _build_speedrunning_analysis(run: TestRun, metrics: dict[str, Any], analysis: StaticAnalysisResult | None) -> str:
+        parts = []
+        if run.outcome == "map_completed":
+            parts.append("Map completion achieved. Speedrun route analysis is possible from the position trail data.")
+        else:
+            parts.append("Map was not completed. Full speedrun route analysis requires a completed run.")
+        if analysis:
+            parts.append(
+                f"Map dimensions: {analysis.map_width_units or '?'} x {analysis.map_height_units or '?'} units. "
+                "Larger maps may have more sequence break opportunities."
+            )
+        parts.append("Potential speedrun elements: linedef skips, glide spots, arch-vile jumps, and exit shortcuts.")
+        return " ".join(parts)
+
+    @staticmethod
+    def _build_recommendations(
+        run: TestRun, defects: list[Defect], metrics: dict[str, Any],
+        analysis: StaticAnalysisResult | None,
+    ) -> str:
+        recs = []
+        if defects:
+            sev1 = [d for d in defects if d.severity == 1]
+            sev2 = [d for d in defects if d.severity == 2]
+            if sev1:
+                recs.append(f"PRIORITY 1: Address {len(sev1)} critical/major defect(s) before release.")
+            if sev2:
+                recs.append(f"PRIORITY 2: Review {len(sev2)} moderate defect(s) for gameplay impact.")
+        coverage = float(metrics.get("coverage_percent") or 0)
+        if coverage < 50:
+            recs.append("Increase run budget or test additional maps to improve coverage confidence.")
+        if run.outcome != "map_completed":
+            recs.append("Investigate the run outcome to determine if the issue is map-side or agent-side.")
+        if analysis and analysis.health_ratio < 0.2:
+            recs.append("Add health pickups to improve survivability at the tested difficulty.")
+        if analysis and analysis.ammo_ratio < 0.5:
+            recs.append("Add ammo pickups or reduce monster count to prevent resource starvation.")
+        if not recs:
+            recs.append("No immediate action required. Map passed automated QA checks.")
+        return " ".join(recs)
+
+    @staticmethod
+    def _build_final_verdict(
+        run: TestRun, defects: list[Defect], metrics: dict[str, Any],
+        analysis: StaticAnalysisResult | None, overall_verdict: str,
+    ) -> str:
+        coverage = float(metrics.get("coverage_percent") or 0)
+        spawned = int(metrics.get("spawned_enemy_count") or 0)
+        kills = run.total_kills or 0
+        parts = [
+            f"Overall Quality Rating: {'3/5' if overall_verdict == 'PASS' else '2/5' if overall_verdict == 'PARTIAL' else '1/5'}.",
+            f"Technical Stability: {'PASS' if run.status == 'completed' else 'FAIL'}.",
+            f"Gameplay Rating: {overall_verdict}.",
+        ]
+        if spawned > 0:
+            parts.append(f"Combat Effectiveness: {kills}/{spawned} kills ({kills/spawned*100:.0f}%).")
+        parts.append(f"Coverage: {coverage:.1f}%.")
+        if overall_verdict == "PASS":
+            parts.append("Release Readiness: CONDITIONAL PASS — verify with additional runs.")
+        else:
+            parts.append("Release Readiness: NOT READY — address defects and re-test.")
+        return " ".join(parts)
 
     @staticmethod
     def _run_snapshot(run: TestRun) -> dict[str, Any]:

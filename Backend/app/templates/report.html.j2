@@ -3,43 +3,54 @@
   <style>
     @page { size: A4; margin: 18mm 16mm; }
     @page appendix { size: A4 landscape; margin: 12mm; }
-    body { font-family: sans-serif; color: #111827; font-size: 11px; line-height: 1.45; background: white; }
-    h1 { font-size: 25px; margin: 0 0 4px; page-break-after: avoid; letter-spacing: 0; }
-    h2 { font-size: 15px; margin: 18px 0 8px; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; page-break-after: avoid; color: #0f172a; }
-    h3 { font-size: 12px; margin: 10px 0 4px; page-break-after: avoid; }
-    p { margin: 0 0 7px; }
-    table { border-collapse: collapse; width: 100%; margin: 8px 0 12px; font-size: 10px; table-layout: fixed; }
+    body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; color: #1e293b; font-size: 10.5px; line-height: 1.5; background: white; }
+    h1 { font-size: 22px; margin: 0 0 4px; page-break-after: avoid; letter-spacing: -0.3px; color: #0f172a; }
+    h2 { font-size: 14px; margin: 16px 0 6px; border-bottom: 2px solid #3b82f6; padding-bottom: 4px; page-break-after: avoid; color: #1e40af; text-transform: uppercase; letter-spacing: 0.5px; }
+    h3 { font-size: 11.5px; margin: 10px 0 4px; page-break-after: avoid; color: #334155; }
+    p { margin: 0 0 6px; }
+    table { border-collapse: collapse; width: 100%; margin: 6px 0 10px; font-size: 10px; table-layout: fixed; }
     thead { display: table-header-group; }
     tr { page-break-inside: avoid; break-inside: avoid; }
-    th, td { border: 1px solid #d7dee8; padding: 5px; vertical-align: top; overflow-wrap: anywhere; }
-    th { background: #eef2f7; text-align: left; }
-    .muted { color: #52606d; font-size: 10px; }
-    .badge { display: inline-block; padding: 2px 6px; border: 1px solid #9fb3c8; border-radius: 3px; font-size: 10px; margin: 0 3px 4px 0; background: #f8fafc; }
-    .verdict-PASS { border-color: #15803d; color: #166534; background: #f0fdf4; }
-    .verdict-FAIL { border-color: #b91c1c; color: #991b1b; background: #fef2f2; }
-    .verdict-PARTIAL, .verdict-LIMITED { border-color: #b45309; color: #92400e; background: #fffbeb; }
-    ul { margin-top: 4px; padding-left: 16px; }
-    li { margin-bottom: 4px; }
+    th, td { border: 1px solid #e2e8f0; padding: 5px 6px; vertical-align: top; overflow-wrap: anywhere; }
+    th { background: #f1f5f9; text-align: left; font-weight: 600; color: #334155; }
+    .muted { color: #64748b; font-size: 9.5px; }
+    .badge { display: inline-block; padding: 2px 8px; border: 1px solid #94a3b8; border-radius: 4px; font-size: 9.5px; font-weight: 600; margin: 0 3px 4px 0; background: #f8fafc; }
+    .verdict-PASS { border-color: #16a34a; color: #166534; background: #dcfce7; }
+    .verdict-FAIL { border-color: #dc2626; color: #991b1b; background: #fee2e2; }
+    .verdict-PARTIAL, .verdict-LIMITED { border-color: #d97706; color: #92400e; background: #fef3c7; }
+    .section-num { color: #3b82f6; font-weight: 700; margin-right: 4px; }
+    ul { margin-top: 4px; padding-left: 18px; }
+    li { margin-bottom: 3px; }
     .section { page-break-inside: avoid; }
-    .score-grid { display: grid; grid-template-columns: 220px 1fr; gap: 14px; margin-bottom: 12px; align-items: stretch; }
-    .map-thumb { width: 200px; height: 200px; object-fit: contain; background: #111827; border: 1px solid #cbd5e1; }
-    .score-card { border: 1px solid #cbd5e1; padding: 12px; background: #f8fafc; }
-    .report-kicker { color: #475569; font-size: 9px; font-weight: 700; text-transform: uppercase; margin-bottom: 2px; }
-    .outcome { display: inline-block; font-size: 16px; font-weight: 700; margin: 4px 0 8px; padding: 3px 8px; border: 1px solid #94a3b8; background: white; }
+    .score-grid { display: grid; grid-template-columns: 200px 1fr; gap: 16px; margin-bottom: 14px; align-items: stretch; }
+    .map-thumb { width: 190px; height: 190px; object-fit: contain; background: #0f172a; border: 2px solid #334155; border-radius: 4px; }
+    .score-card { border: 2px solid #3b82f6; padding: 14px; background: linear-gradient(135deg, #eff6ff 0%, #f8fafc 100%); border-radius: 6px; }
+    .report-kicker { color: #3b82f6; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 2px; }
+    .outcome { display: inline-block; font-size: 15px; font-weight: 700; margin: 4px 0 8px; padding: 4px 12px; border: 2px solid #334155; background: white; border-radius: 4px; }
     .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
-    .metric-card { border: 1px solid #d7dee8; background: white; padding: 6px; min-height: 38px; }
-    .metric-label { color: #52606d; font-size: 8px; text-transform: uppercase; }
-    .metric-value { font-size: 13px; font-weight: 700; }
-    .tested-row { background: #ecfeff; }
-    .trail-overlay { width: 360px; max-height: 260px; object-fit: contain; border: 1px solid #cbd5e1; background: #111827; }
+    .metric-card { border: 1px solid #e2e8f0; background: white; padding: 6px 8px; min-height: 36px; border-radius: 3px; }
+    .metric-label { color: #64748b; font-size: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .metric-value { font-size: 13px; font-weight: 700; color: #0f172a; }
+    .tested-row { background: #eff6ff; }
+    .trail-overlay { width: 360px; max-height: 260px; object-fit: contain; border: 1px solid #cbd5e1; background: #0f172a; border-radius: 4px; }
     .appendix { page: appendix; page-break-before: always; }
     .appendix table { table-layout: fixed; font-size: 8.5px; page-break-inside: auto; }
     .appendix td, .appendix th { padding: 4px; word-break: break-word; overflow-wrap: anywhere; }
-    .decision-card { border: 1px solid #d7dee8; padding: 7px; margin: 0 0 7px; background: white; }
-    .decision-meta { color: #52606d; font-size: 8.5px; margin-bottom: 2px; }
-    .mono { font-family: monospace; font-size: 8.5px; white-space: pre-wrap; }
-    .json-block { margin-top: 4px; padding: 5px; border: 1px solid #e2e8f0; background: #f8fafc; color: #334155; }
+    .decision-card { border: 1px solid #e2e8f0; padding: 8px; margin: 0 0 8px; background: #f8fafc; border-radius: 4px; }
+    .decision-meta { color: #64748b; font-size: 8.5px; margin-bottom: 3px; }
+    .mono { font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 8.5px; white-space: pre-wrap; }
+    .json-block { margin-top: 4px; padding: 6px; border: 1px solid #e2e8f0; background: #f8fafc; color: #334155; border-radius: 3px; }
     .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .severity-critical { color: #dc2626; font-weight: 700; }
+    .severity-major { color: #ea580c; font-weight: 700; }
+    .severity-moderate { color: #d97706; font-weight: 600; }
+    .severity-minor { color: #2563eb; }
+    .severity-cosmetic { color: #6b7280; }
+    .fma-score { display: inline-block; padding: 2px 8px; border-radius: 4px; font-weight: 700; font-size: 10px; margin: 0 2px; }
+    .fma-cfr { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+    .fma-sri { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+    .fma-ion { background: #e0f2fe; color: #075985; border: 1px solid #7dd3fc; }
+    pre { margin: 4px 0; }
   </style>
 </head>
 <body>
@@ -196,7 +207,7 @@
   {% endif %}
 
   {% if report.executive_summary %}
-  <h2>1. Executive Summary</h2>
+  <h2><span class="section-num">1.</span> Executive Summary</h2>
   <p>{{ report.executive_summary }}</p>
   {% elif report.major_activities_summary or report.activity_variances %}
   <h2>Activity Log Summary</h2>
@@ -205,67 +216,67 @@
   {% endif %}
 
   {% if report.critical_issues %}
-  <h2>2. Critical Issues</h2>
-  <p>{{ report.critical_issues }}</p>
+  <h2><span class="section-num">2.</span> Critical Issues</h2>
+  <pre style="white-space: pre-wrap; font-family: inherit;">{{ report.critical_issues }}</pre>
   {% endif %}
 
   {% if report.geometry_technical_analysis %}
-  <h2>3. Geometry &amp; Technical Analysis</h2>
+  <h2><span class="section-num">3.</span> Geometry &amp; Technical Analysis</h2>
   <p>{{ report.geometry_technical_analysis }}</p>
   {% endif %}
 
   {% if report.gameplay_flow_analysis %}
-  <h2>4. Gameplay Flow Analysis</h2>
+  <h2><span class="section-num">4.</span> Gameplay Flow Analysis</h2>
   <p>{{ report.gameplay_flow_analysis }}</p>
   {% endif %}
 
   {% if report.combat_design_review %}
-  <h2>5. Combat Design Review</h2>
+  <h2><span class="section-num">5.</span> Combat Design Review</h2>
   <p>{{ report.combat_design_review }}</p>
   {% endif %}
 
   {% if report.itemization_audit %}
-  <h2>6. Itemization Audit</h2>
+  <h2><span class="section-num">6.</span> Itemization Audit</h2>
   <p>{{ report.itemization_audit }}</p>
   {% endif %}
 
   {% if report.ai_enemy_behavior %}
-  <h2>7. AI &amp; Enemy Behavior</h2>
+  <h2><span class="section-num">7.</span> AI &amp; Enemy Behavior</h2>
   <p>{{ report.ai_enemy_behavior }}</p>
   {% endif %}
 
   {% if report.navigation_readability %}
-  <h2>8. Navigation &amp; Readability</h2>
+  <h2><span class="section-num">8.</span> Navigation &amp; Readability</h2>
   <p>{{ report.navigation_readability }}</p>
   {% endif %}
 
   {% if report.secrets_optional_content %}
-  <h2>9. Secrets &amp; Optional Content</h2>
+  <h2><span class="section-num">9.</span> Secrets &amp; Optional Content</h2>
   <p>{{ report.secrets_optional_content }}</p>
   {% endif %}
 
   {% if report.multiplayer_analysis %}
-  <h2>10. Multiplayer Analysis</h2>
+  <h2><span class="section-num">10.</span> Multiplayer Analysis</h2>
   <p>{{ report.multiplayer_analysis }}</p>
   {% endif %}
 
   {% if report.performance_engine_compliance %}
-  <h2>11. Performance &amp; Engine Compliance</h2>
+  <h2><span class="section-num">11.</span> Performance &amp; Engine Compliance</h2>
   <p>{{ report.performance_engine_compliance }}</p>
   {% endif %}
 
   {% if report.speedrunning_advanced_play %}
-  <h2>12. Speedrunning &amp; Advanced Play</h2>
+  <h2><span class="section-num">12.</span> Speedrunning &amp; Advanced Play</h2>
   <p>{{ report.speedrunning_advanced_play }}</p>
   {% endif %}
 
   {% if report.recommendations %}
-  <h2>13. Recommendations</h2>
+  <h2><span class="section-num">13.</span> Recommendations</h2>
   <p>{{ report.recommendations }}</p>
   {% endif %}
 
   {% if report.final_verdict %}
-  <h2>14. Final Verdict</h2>
+  <h2><span class="section-num">14.</span> Final Verdict</h2>
   <p>{{ report.final_verdict }}</p>
   {% endif %}
 

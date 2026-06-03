@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     same_run_ledger_recent_actions: int = 16
     no_progress_decision_abort_threshold: int = 8
     default_agent_behavior: str = "thorough"
+    cross_run_memory_enabled: bool = False
     run_worker_mode: bool = False
     cors_origins: list[str] | str = "http://localhost:3000"
 

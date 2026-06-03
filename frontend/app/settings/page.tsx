@@ -101,6 +101,31 @@ export default function SettingsPage() {
             <SettingsRow label="Default ticks" value={String(settings.data.default_run_ticks)} edit={editMode} inputValue={String(draft.default_run_ticks ?? "")} onChange={(v) => setDraft((d) => ({ ...d, default_run_ticks: Number(v) }))} />
             <SettingsRow label="Max ticks" value={String(settings.data.max_run_ticks)} edit={editMode} inputValue={String(draft.max_run_ticks ?? "")} onChange={(v) => setDraft((d) => ({ ...d, max_run_ticks: Number(v) }))} />
             <SettingsRow label="Default behavior" value={settings.data.default_agent_behavior} edit={editMode} inputValue={draft.default_agent_behavior} onChange={(v) => setDraft((d) => ({ ...d, default_agent_behavior: v }))} />
+            <div className="flex justify-between text-sm items-center gap-2">
+              <span className="text-neutral-500 shrink-0">Cross-run memory</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={settings.data.cross_run_memory_enabled}
+                onClick={() => {
+                  if (editMode) {
+                    setDraft((d) => ({ ...d, cross_run_memory_enabled: !settings.data.cross_run_memory_enabled }));
+                  }
+                }}
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                  settings.data.cross_run_memory_enabled ? "bg-emerald-600" : "bg-neutral-300"
+                } ${editMode ? "cursor-pointer" : "cursor-not-allowed opacity-60"}`}
+              >
+                <span
+                  className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                    settings.data.cross_run_memory_enabled ? "translate-x-4.5" : "translate-x-0.5"
+                  }`}
+                />
+              </button>
+            </div>
+            <p className="text-xs text-neutral-400 mt-1">
+              Injects hypotheses and danger zones from previous runs. May improve navigation but can cause stale guidance.
+            </p>
           </SettingsCard>
           <SettingsCard title="Recording Config">
             <SettingsRow label="Live FPS" value={String(settings.data.live_frame_fps)} edit={editMode} inputValue={String(draft.live_frame_fps ?? "")} onChange={(v) => setDraft((d) => ({ ...d, live_frame_fps: Number(v) }))} />

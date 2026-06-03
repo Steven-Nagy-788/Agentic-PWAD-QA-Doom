@@ -152,6 +152,7 @@ export type PositionSample = {
   y: number;
   angle?: number;
   health: number;
+  is_sentinel?: boolean;
 };
 
 export type AppSettings = {
@@ -169,6 +170,7 @@ export type AppSettings = {
   recording_telemetry_stride: number;
   default_agent_behavior: string;
   iwad_used: string;
+  cross_run_memory_enabled: boolean;
   sources: Record<string, "environment" | "database_override">;
   env_defaults: Record<string, unknown>;
 };

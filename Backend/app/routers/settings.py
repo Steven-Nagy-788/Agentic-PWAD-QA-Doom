@@ -30,6 +30,7 @@ class SettingsUpdatePayload(BaseModel):
     no_progress_decision_abort_threshold: Optional[int] = None
     default_agent_behavior: Optional[str] = None
     iwad_used: Optional[str] = None
+    cross_run_memory_enabled: Optional[bool] = None
     clear_overrides: list[str] = Field(default_factory=list)
 
     @field_validator("clear_overrides")
@@ -72,6 +73,7 @@ def _merge_settings(env: Any, overrides: dict[str, Any]) -> dict[str, Any]:
         ),
         "default_agent_behavior": overrides.get("default_agent_behavior", env.default_agent_behavior),
         "iwad_used": overrides.get("iwad_used", env.iwad_used),
+        "cross_run_memory_enabled": overrides.get("cross_run_memory_enabled", env.cross_run_memory_enabled),
     }
     env_defaults = {key: getattr(env, key) for key in OVERRIDABLE_KEYS}
     merged["sources"] = {

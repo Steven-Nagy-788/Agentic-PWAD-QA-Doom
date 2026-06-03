@@ -259,6 +259,12 @@ def _build_llm_input(
                 "unvisited_quadrants": _compute_unvisited_quadrants(lockstep_state),
                 "warning": coverage_warning,
             },
+            "navigation_hints": {
+                "suggested_turn_degrees": navigation_info.get("suggested_turn_delta", 0),
+                "facing_unexplored": navigation_info.get("suggested_direction") is not None,
+                "recent_stuck_events": int(lockstep_state.get("position_stuck_counter") or 0),
+                "consecutive_same_tool": int(lockstep_state.get("consecutive_get_state") or 0),
+            },
             "same_run_memory": _build_same_run_memory(lockstep_state),
         }
     )
