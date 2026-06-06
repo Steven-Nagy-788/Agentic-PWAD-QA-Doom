@@ -45,7 +45,7 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
     },
   });
   const tt = stream.tokenTotals;
-  const run = { ...(stream.snapshot?.run ?? initialRun), ...initialRun };
+  const run = { ...initialRun, ...(stream.snapshot?.run ?? {}) };
   const reportStatus = stream.snapshot?.report_status;
   const usage = stream.snapshot?.usage;
   const trail = liveTrail(stream.sameRunMemory, stream.snapshot?.position_trail ?? []);
@@ -63,11 +63,12 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
   const [tab, setTab] = useState<"reasoning" | "mcp" | "memory" | "defects">("reasoning");
 
   return (
-    <div className="grid h-screen grid-rows-[auto_1fr_auto] bg-neutral-100">
+    <div className="fixed inset-0 z-50 grid grid-rows-[auto_1fr_auto] overflow-hidden bg-neutral-100">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 bg-white px-4 py-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="truncate text-base font-semibold text-neutral-950">{run.map_name}</h1>
+            <h1 className="truncate text-base font-semibold text-neutral-950">{map?.map_display_name || run.map_name}</h1>
+            {map?.map_display_name ? <span className="text-xs text-neutral-500">{run.map_name}</span> : null}
             <OutcomeBadge outcome={run.outcome ?? run.status} />
             <ConnectionBadge connected={stream.connected} phase={stream.phase} />
           </div>
@@ -99,8 +100,8 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
 
       <main className="grid min-h-0 grid-cols-1 gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_420px]">
         <section className="grid min-h-0 grid-rows-[minmax(0,1fr)_auto] overflow-hidden rounded border border-neutral-200 bg-white">
-          <div className="grid min-h-0 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px]">
-            <div className="grid min-h-0 place-items-center bg-white">
+          <div className="grid min-h-0 grid-cols-1 overflow-hidden xl:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="grid min-h-0 place-items-center bg-white overflow-hidden p-2">
               {stream.frame ? (
                 <img src={stream.frame} alt="Live game frame" role="img" aria-label="Live game frame" className="h-full w-full object-contain" />
               ) : (
@@ -109,11 +110,11 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
                 </div>
               )}
             </div>
-            <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] border-t border-neutral-200 bg-neutral-50 xl:border-l xl:border-t-0">
+            <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden border-t border-neutral-200 bg-neutral-50 xl:border-l xl:border-t-0">
               <div className="border-b border-neutral-200 bg-white px-3 py-2">
                 <h2 className="text-xs font-semibold uppercase text-neutral-500">Map And Trail</h2>
               </div>
-              <div className="min-h-0 p-3">
+              <div className="min-h-0 overflow-hidden p-3">
                 <MapCanvas
                   map={map}
                   trail={trail}
@@ -155,13 +156,13 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
             </div>
           ) : null}
           <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)]">
-            <div className="flex border-b border-neutral-200 bg-white">
-              <TabButton active={tab === "reasoning"} onClick={() => setTab("reasoning")}>Reasoning</TabButton>
-              <TabButton active={tab === "mcp"} onClick={() => setTab("mcp")}>MCP</TabButton>
-              <TabButton active={tab === "memory"} onClick={() => setTab("memory")}>Memory</TabButton>
-              <TabButton active={tab === "defects"} onClick={() => setTab("defects")}>Defects</TabButton>
+            <div className="flex border-b border-neutral-200 bg-white" role="tablist">
+              <TabButton active={tab === "reasoning"} onClick={() => setTab("reasoning")} id="tab-reasoning" aria-controls="panel-reasoning">Reasoning</TabButton>
+              <TabButton active={tab === "mcp"} onClick={() => setTab("mcp")} id="tab-mcp" aria-controls="panel-mcp">MCP</TabButton>
+              <TabButton active={tab === "memory"} onClick={() => setTab("memory")} id="tab-memory" aria-controls="panel-memory">Memory</TabButton>
+              <TabButton active={tab === "defects"} onClick={() => setTab("defects")} id="tab-defects" aria-controls="panel-defects">Defects</TabButton>
             </div>
-            <div className="min-h-0">
+            <div className="min-h-0 overflow-hidden" role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
             {tab === "reasoning" ? (
               <ReasoningLog decisions={stream.decisions} live />
             ) : tab === "mcp" ? (
@@ -175,6 +176,7 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
           </div>
         </aside>
       </main>
+      {stream.sameRunMemory?.aggregates?.runtime_warnings?.length ? <div className="px-3"><RuntimeWarnings flags={{ warnings: stream.sameRunMemory.aggregates.runtime_warnings }} /></div> : null}
       <StatBar state={{ ...stream.state, secrets: stream.state?.secrets }} />
     </div>
   );
@@ -188,13 +190,16 @@ function ConnectionBadge({ connected, phase }: { connected: boolean; phase: stri
   );
 }
 
-function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+function TabButton({ active, onClick, children, ...props }: { active: boolean; onClick: () => void; children: React.ReactNode } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
       onClick={onClick}
+      role="tab"
+      aria-selected={active}
       className={`min-h-10 flex-1 border-b-2 px-2 text-center text-xs font-semibold ${
         active ? "border-neutral-950 text-neutral-950" : "border-transparent text-neutral-500 hover:text-neutral-700"
       }`}
+      {...props}
     >
       {children}
     </button>

@@ -696,7 +696,7 @@ class GameManager:
                 game.set_ticrate(ticrate)
         else:
             game.set_mode(vzd.Mode.PLAYER)
-        game.set_doom_skill(difficulty)
+        game.set_doom_skill(max(1, min(5, int(difficulty))))
         game.set_render_hud(render_hud)
 
         if seed is not None:
@@ -1275,6 +1275,7 @@ class GameManager:
         """
         game = self._require_episode()
         self._begin_telemetry(capture_telemetry, telemetry_stride)
+        max_tics = min(int(max_tics), 500)
 
         summary = {
             "shots_fired": 0,
@@ -1397,6 +1398,7 @@ class GameManager:
         """
         game = self._require_episode()
         self._begin_telemetry(capture_telemetry, telemetry_stride)
+        max_tics = min(int(max_tics), 500)
 
         summary = {
             "distance_moved": 0.0,
@@ -1562,6 +1564,7 @@ class GameManager:
         stop_on_enemy: bool = True,
         stop_on_item: bool = False,
         ignore_object_ids: list[int] | None = None,
+        turn_before: float = 0.0,
         capture_telemetry: bool = False,
         telemetry_stride: int = 4,
     ) -> dict:
@@ -1573,6 +1576,8 @@ class GameManager:
             stop_on_item: Stop when a new item/ammo is spotted. Default false.
             ignore_object_ids: Skip stop_on_enemy for these monster IDs. Use for
                 enemies already evaluated as non-blocking (e.g. invulnerable).
+            turn_before: Degrees to turn before starting exploration. Use when
+                guard forces explore to break fixation.
 
         Returns:
             Game state + action_summary with: distance_moved, direction_changes,
@@ -1580,6 +1585,7 @@ class GameManager:
         """
         game = self._require_episode()
         self._begin_telemetry(capture_telemetry, telemetry_stride)
+        max_tics = min(int(max_tics), 500)
 
         summary = {
             "distance_moved": 0.0,
@@ -1598,6 +1604,23 @@ class GameManager:
                 stuck_recoveries = 0
                 tics_used = 0
                 turn_bias = 0.0
+
+                if turn_before != 0.0:
+                    abs_turn = abs(turn_before)
+                    sign = 1.0 if turn_before > 0 else -1.0
+                    step = 15.0
+                    while abs_turn > 0 and tics_used < max_tics:
+                        delta = min(step, abs_turn)
+                        turn_amount = delta * sign
+                        turn_tics = max(1, int(abs(turn_amount) / 15.0))
+                        turn_action = self._build_action_list({"TURN_LEFT_RIGHT_DELTA": turn_amount})
+                        for _ in range(turn_tics):
+                            if game.is_episode_finished() or self._is_dead(game):
+                                break
+                            reward_val = self._make_action(game, turn_action, 1)
+                            tics_used += 1
+                        abs_turn -= delta
+                    self._clear_action(game)
 
                 while tics_used < max_tics:
                     if game.is_episode_finished() or self._is_dead(game):
@@ -1750,6 +1773,7 @@ class GameManager:
         """
         game = self._require_episode()
         self._begin_telemetry(capture_telemetry, telemetry_stride)
+        tics = min(int(tics), 200)
 
         mode = "backpedal" if backpedal else "turn_and_run"
         summary = {"distance_moved": 0.0, "mode": mode}
@@ -1828,6 +1852,7 @@ class GameManager:
         """
         game = self._require_episode()
         self._begin_telemetry(capture_telemetry, telemetry_stride)
+        max_tics = min(int(max_tics), 500)
 
         summary = {
             "shots_fired": 0,

@@ -5,6 +5,7 @@ from uuid import UUID
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models import TestRun
 
@@ -27,7 +28,12 @@ class RunRepository:
         return run
 
     async def get_by_id(self, run_id: UUID) -> TestRun | None:
-        return await self.db.get(TestRun, run_id)
+        result = await self.db.execute(
+            select(TestRun)
+            .where(TestRun.id == run_id)
+            .options(selectinload(TestRun.static_analysis))
+        )
+        return result.scalar_one_or_none()
 
     async def list(
         self,
@@ -49,7 +55,7 @@ class RunRepository:
             difficulty_level=difficulty_level,
             created_after=created_after,
             created_before=created_before,
-        )
+        ).options(selectinload(TestRun.static_analysis))
         result = await self.db.execute(query.order_by(TestRun.created_at.desc()).offset(offset).limit(limit))
         return list(result.scalars().all())
 

@@ -1046,6 +1046,14 @@ class ReportService:
             f"Thing count: {analysis.thing_count_total} total ({analysis.thing_count_enemies} enemies, "
             f"{analysis.thing_count_items} items, {analysis.thing_count_keys} keys).",
         ]
+        # Map complexity assessment
+        complexity = ReportService._assess_map_complexity(analysis)
+        parts.append(f"Map complexity: {complexity}.")
+        if complexity == "TRIVIAL":
+            parts.append(
+                "This map has minimal geometry and content. It does not represent a meaningful "
+                "Doom gameplay experience. Consider this a test stub, not a playable level."
+            )
         # Vanilla Doom limits check
         if analysis.linedef_count and analysis.linedef_count > 32768:
             parts.append("WARNING: Linedef count exceeds vanilla Doom limit (32768). Requires limit-removing port.")
@@ -1234,11 +1242,42 @@ class ReportService:
         return " ".join(parts)
 
     @staticmethod
+    def _assess_map_complexity(analysis: StaticAnalysisResult) -> str:
+        """Classify map complexity based on geometry and content metrics."""
+        linedefs = analysis.linedef_count or 0
+        sectors = analysis.sector_count or 0
+        things = analysis.thing_count_total or 0
+        enemies = analysis.thing_count_enemies or 0
+        items = analysis.thing_count_items or 0
+        # Trivial: minimal geometry, essentially a test room or corridor
+        if linedefs <= 8 and sectors <= 2 and things <= 6:
+            return "TRIVIAL"
+        # Simple: basic room-and-corridor layout
+        if linedefs <= 32 and sectors <= 8 and things <= 20:
+            return "SIMPLE"
+        # Moderate: multi-room layout with varied encounters
+        if linedefs <= 128 and sectors <= 32 and things <= 60:
+            return "MODERATE"
+        # Complex: large interconnected map with many encounters
+        if linedefs <= 512 and sectors <= 128 and things <= 150:
+            return "COMPLEX"
+        return "ADVANCED"
+
+    @staticmethod
     def _build_recommendations(
         run: TestRun, defects: list[Defect], metrics: dict[str, Any],
         analysis: StaticAnalysisResult | None,
     ) -> str:
         recs = []
+        # Map complexity check — trivial maps need fundamental redesign, not tweaks
+        if analysis:
+            complexity = ReportService._assess_map_complexity(analysis)
+            if complexity == "TRIVIAL":
+                recs.append(
+                    "MAP TOO SIMPLE: This map has minimal geometry and content. "
+                    "It needs fundamental redesign with proper rooms, corridors, encounters, "
+                    "and secrets before it can be considered a Doom level."
+                )
         if defects:
             sev1 = [d for d in defects if d.severity == 1]
             sev2 = [d for d in defects if d.severity == 2]
@@ -1267,15 +1306,22 @@ class ReportService:
         coverage = float(metrics.get("coverage_percent") or 0)
         spawned = int(metrics.get("spawned_enemy_count") or 0)
         kills = run.total_kills or 0
+        complexity = ReportService._assess_map_complexity(analysis) if analysis else "UNKNOWN"
         parts = [
             f"Overall Quality Rating: {'3/5' if overall_verdict == 'PASS' else '2/5' if overall_verdict == 'PARTIAL' else '1/5'}.",
             f"Technical Stability: {'PASS' if run.status == 'completed' else 'FAIL'}.",
             f"Gameplay Rating: {overall_verdict}.",
+            f"Map Complexity: {complexity}.",
         ]
         if spawned > 0:
             parts.append(f"Combat Effectiveness: {kills}/{spawned} kills ({kills/spawned*100:.0f}%).")
         parts.append(f"Coverage: {coverage:.1f}%.")
-        if overall_verdict == "PASS":
+        if complexity == "TRIVIAL":
+            parts.append(
+                "Release Readiness: NOT READY — map is too simple to be a meaningful Doom level. "
+                "Add geometry, encounters, and secrets before re-testing."
+            )
+        elif overall_verdict == "PASS":
             parts.append("Release Readiness: CONDITIONAL PASS — verify with additional runs.")
         else:
             parts.append("Release Readiness: NOT READY — address defects and re-test.")

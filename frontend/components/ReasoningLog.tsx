@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LiveDecision } from "@/hooks/useRunStream";
 
 function SourceBadge({ source }: { source?: string }) {
@@ -119,9 +119,18 @@ function DecisionCard({ decision, defaultExpanded = false }: { decision: LiveDec
 
 export function ReasoningLog({ decisions, live = false }: { decisions: LiveDecision[]; live?: boolean }) {
   const visibleDecisions = live ? decisions.slice(-30) : decisions;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const prevCount = useRef(visibleDecisions.length);
+
+  useEffect(() => {
+    if (live && visibleDecisions.length > prevCount.current && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+    prevCount.current = visibleDecisions.length;
+  }, [live, visibleDecisions.length]);
 
   return (
-    <div className="h-full overflow-y-auto border-l border-neutral-200 bg-white">
+    <div ref={scrollRef} className="h-full overflow-y-auto border-l border-neutral-200 bg-white">
       <div className="sticky top-0 z-10 flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-3">
         <h2 className="text-sm font-semibold text-neutral-950">Reasoning</h2>
         <span className="text-xs text-neutral-500">

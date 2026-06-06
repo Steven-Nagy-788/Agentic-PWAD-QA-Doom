@@ -50,6 +50,7 @@ export type Run = {
   wad_file_id: string;
   static_analysis_id?: string | null;
   map_name: string;
+  map_display_name?: string | null;
   difficulty_level: number;
   iwad_used: string;
   llm_model: string;
@@ -171,6 +172,7 @@ export type AppSettings = {
   default_agent_behavior: string;
   iwad_used: string;
   cross_run_memory_enabled: boolean;
+  guard_enabled: boolean;
   sources: Record<string, "environment" | "database_override">;
   env_defaults: Record<string, unknown>;
 };

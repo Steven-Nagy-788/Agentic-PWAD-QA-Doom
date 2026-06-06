@@ -287,7 +287,7 @@ def aim_and_shoot(
 @mcp.tool
 def select_weapon(
     weapon_slot: int,
-    max_tics: int = 20,
+    max_tics: int = 40,
     capture_telemetry: bool = False,
     telemetry_stride: int = 1,
 ):
@@ -355,6 +355,7 @@ def explore(
     stop_on_enemy: bool = True,
     stop_on_item: bool = False,
     ignore_object_ids: list[int] | None = None,
+    turn_before: float = 0.0,
     capture_telemetry: bool = False,
     telemetry_stride: int = 4,
 ):
@@ -371,6 +372,8 @@ def explore(
         stop_on_item: Stop when a new item/ammo is spotted. Default false.
         ignore_object_ids: Skip stop_on_enemy for these monster IDs. Use for
             enemies already evaluated as non-blocking.
+        turn_before: Degrees to turn before exploring. Use when guard forces
+            explore to break fixation — agent faces a new direction first.
 
     Returns screenshot + state with action_summary containing:
         distance_moved, direction_changes, enemies_seen[], items_seen[], stop_reason.
@@ -382,6 +385,7 @@ def explore(
         stop_on_enemy=stop_on_enemy,
         stop_on_item=stop_on_item,
         ignore_object_ids=ignore_object_ids,
+        turn_before=turn_before,
         capture_telemetry=capture_telemetry,
         telemetry_stride=telemetry_stride,
     )
@@ -389,6 +393,34 @@ def explore(
     if screenshot_png is not None:
         return [Image(data=screenshot_png, format="png"), result]
     return [result]
+
+
+@mcp.tool
+def finish(
+    summary: str,
+    outcome: str = "completed",
+):
+    """End the run voluntarily. Use when testing is complete.
+
+    Call this when you have gathered enough evidence and want to generate
+    the final report. The run will stop and a report will be generated.
+
+    Args:
+        summary: Brief summary of findings (e.g. "Map is a dead-end corridor
+            with no exits. 2 Demons killed. Softlock confirmed.").
+        outcome: One of: "completed" (full exploration done), "timeout"
+            (budget exhausted but findings recorded), "softlock" (agent
+            unable to progress), "agent_died" (player died).
+
+    Returns a confirmation that the run is ending.
+    """
+    game = manager._require_running()
+    return {
+        "status": "finishing",
+        "summary": summary,
+        "outcome": outcome,
+        "hint": "Run ending. Report will be generated.",
+    }
 
 
 @mcp.tool

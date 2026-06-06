@@ -20,7 +20,11 @@ export default function SettingsPage() {
       for (const [key, value] of Object.entries(dirty)) {
         if (!settings.data?.sources[key]) continue;
         if (value === "" || value === undefined || value === null) continue;
-        if (value === settings.data[key as keyof AppSettings]) continue;
+        if (typeof value === "boolean") {
+          if (value === settings.data[key as keyof AppSettings]) continue;
+        } else {
+          if (value === settings.data[key as keyof AppSettings]) continue;
+        }
         clean[key] = value;
       }
       return apiSend<AppSettings>("/settings", {
@@ -33,6 +37,24 @@ export default function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ["settings"] });
       setEditMode(false);
     },
+  });
+  const toggleCrossRunMemory = useMutation({
+    mutationFn: (enabled: boolean) =>
+      apiSend<AppSettings>("/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cross_run_memory_enabled: enabled }),
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings"] }),
+  });
+  const toggleGuard = useMutation({
+    mutationFn: (enabled: boolean) =>
+      apiSend<AppSettings>("/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guard_enabled: enabled }),
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings"] }),
   });
   const resetModelMutation = useMutation({
     mutationFn: () => apiSend<AppSettings>("/settings", {
@@ -107,14 +129,11 @@ export default function SettingsPage() {
                 type="button"
                 role="switch"
                 aria-checked={settings.data.cross_run_memory_enabled}
-                onClick={() => {
-                  if (editMode) {
-                    setDraft((d) => ({ ...d, cross_run_memory_enabled: !settings.data.cross_run_memory_enabled }));
-                  }
-                }}
+                disabled={toggleCrossRunMemory.isPending}
+                onClick={() => toggleCrossRunMemory.mutate(!settings.data.cross_run_memory_enabled)}
                 className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
                   settings.data.cross_run_memory_enabled ? "bg-emerald-600" : "bg-neutral-300"
-                } ${editMode ? "cursor-pointer" : "cursor-not-allowed opacity-60"}`}
+                } ${toggleCrossRunMemory.isPending ? "opacity-50" : ""}`}
               >
                 <span
                   className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
@@ -125,6 +144,28 @@ export default function SettingsPage() {
             </div>
             <p className="text-xs text-neutral-400 mt-1">
               Injects hypotheses and danger zones from previous runs. May improve navigation but can cause stale guidance.
+            </p>
+            <div className="flex justify-between text-sm items-center gap-2 mt-2">
+              <span className="text-neutral-500 shrink-0">Run guard</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={settings.data.guard_enabled}
+                disabled={toggleGuard.isPending}
+                onClick={() => toggleGuard.mutate(!settings.data.guard_enabled)}
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                  settings.data.guard_enabled ? "bg-emerald-600" : "bg-neutral-300"
+                } ${toggleGuard.isPending ? "opacity-50" : ""}`}
+              >
+                <span
+                  className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                    settings.data.guard_enabled ? "translate-x-4.5" : "translate-x-0.5"
+                  }`}
+                />
+              </button>
+            </div>
+            <p className="text-xs text-neutral-400 mt-1">
+              Guard overrides stuck/looping decisions with forced explore. Disable to let the agent run freely.
             </p>
           </SettingsCard>
           <SettingsCard title="Recording Config">

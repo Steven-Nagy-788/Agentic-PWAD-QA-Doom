@@ -36,6 +36,7 @@ class RunOut(BaseModel):
     wad_file_id: UUID
     static_analysis_id: UUID | None = None
     map_name: str
+    map_display_name: str | None = None
     difficulty_level: int
     iwad_used: str
     llm_model: str

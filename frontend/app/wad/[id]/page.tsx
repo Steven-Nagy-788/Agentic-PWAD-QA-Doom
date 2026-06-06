@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { Play } from "lucide-react";
@@ -15,8 +15,10 @@ export default function WadDetailPage({ params }: { params: Promise<{ id: string
   const queryClient = useQueryClient();
   const [selectedMap, setSelectedMap] = useState<WadMap | null>(null);
   const [difficulty, setDifficulty] = useState(3);
-  const [maxTicks, setMaxTicks] = useState(3000);
-  const [behaviorProfile, setBehaviorProfile] = useState("thorough");
+  const [maxTicksRaw, setMaxTicks] = useState(3000);
+  const [behaviorProfileRaw, setBehaviorProfile] = useState("thorough");
+  const [maxTicksOverridden, setMaxTicksOverridden] = useState(false);
+  const [behaviorOverridden, setBehaviorOverridden] = useState(false);
   const [seed, setSeed] = useState(42);
   const [allowDeathmatchStartNormalization, setAllowDeathmatchStartNormalization] = useState(false);
 
@@ -27,11 +29,12 @@ export default function WadDetailPage({ params }: { params: Promise<{ id: string
     queryFn: () => apiGet<Record<string, BehaviorProfile>>("/settings/behavior-profiles"),
   });
   const settings = useQuery({ queryKey: ["settings"], queryFn: () => apiGet<AppSettings>("/settings") });
-  useEffect(() => {
-    if (!settings.data) return;
-    setMaxTicks((current) => current === 3000 ? settings.data.default_run_ticks : Math.min(current, settings.data.max_run_ticks));
-    setBehaviorProfile((current) => current === "thorough" ? settings.data.default_agent_behavior : current);
-  }, [settings.data]);
+  const maxTicks = maxTicksOverridden
+    ? Math.min(maxTicksRaw, settings.data?.max_run_ticks ?? 99999)
+    : (settings.data?.default_run_ticks ?? maxTicksRaw);
+  const behaviorProfile = behaviorOverridden
+    ? behaviorProfileRaw
+    : (settings.data?.default_agent_behavior ?? behaviorProfileRaw);
   const mapMemory = useQuery({
     queryKey: ["map-memory", id, selectedMap?.map_name],
     queryFn: () => apiGet<MapMemory>(`/wads/${id}/memory/${selectedMap!.map_name}`),
@@ -144,7 +147,7 @@ export default function WadDetailPage({ params }: { params: Promise<{ id: string
           </div>
           <label className="block">
             <span className="mb-2 block text-xs font-semibold text-neutral-600">Max ticks · {maxTicks}</span>
-            <input className="w-full accent-cyan-700" type="range" min="500" max={settings.data?.max_run_ticks ?? 35000} step="500" value={maxTicks} onChange={(event) => setMaxTicks(Number(event.target.value))} />
+            <input className="w-full accent-cyan-700" type="range" min="500" max={settings.data?.max_run_ticks ?? 35000} step="500" value={maxTicks} onChange={(event) => { setMaxTicksOverridden(true); setMaxTicks(Number(event.target.value)); }} />
           </label>
           <label className="block">
             <span className="mb-2 block text-xs font-semibold text-neutral-600">Seed</span>
@@ -158,7 +161,7 @@ export default function WadDetailPage({ params }: { params: Promise<{ id: string
             <span className="mb-2 block text-xs font-semibold text-neutral-600">Agent Behavior</span>
             <select
               value={behaviorProfile}
-              onChange={(event) => setBehaviorProfile(event.target.value)}
+              onChange={(event) => { setBehaviorOverridden(true); setBehaviorProfile(event.target.value); }}
               className="w-full h-10 rounded border border-neutral-200 bg-white px-3 text-sm"
             >
               {behaviorProfiles.data

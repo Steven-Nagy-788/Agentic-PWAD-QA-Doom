@@ -160,7 +160,6 @@ const EMPTY_TOTALS: SessionTokenTotals = {
 };
 
 export function useRunStream(runId?: string) {
-  const [messages, setMessages] = useState<RunStreamMessage[]>([]);
   const [frame, setFrame] = useState<string | null>(null);
   const [state, setState] = useState<RunStreamMessage | null>(null);
   const [decisions, setDecisions] = useState<LiveDecision[]>([]);
@@ -245,7 +244,6 @@ export function useRunStream(runId?: string) {
         if (payload.type === "replay_start" || payload.type === "replay_end") {
           return;
         }
-        setMessages((current) => [...current.slice(-250), payload]);
         applyPayload(payload);
       };
       socket.onclose = () => {
@@ -356,7 +354,6 @@ export function useRunStream(runId?: string) {
       retryCount,
       retryDelay,
       lastMessageAt,
-      messages,
       frame,
       state,
       decisions,
@@ -369,7 +366,7 @@ export function useRunStream(runId?: string) {
       phase,
       error,
     }),
-    [connected, retryCount, retryDelay, lastMessageAt, messages, frame, state, decisions, defects, tokenTotals, sameRunMemory, visitedCells, visitedCellSize, snapshot, phase, error],
+    [connected, retryCount, retryDelay, lastMessageAt, frame, state, decisions, defects, tokenTotals, sameRunMemory, visitedCells, visitedCellSize, snapshot, phase, error],
   );
 }
 

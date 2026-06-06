@@ -68,6 +68,12 @@ async def list_runs(
     }
     total = await repo.count(**filters)
     items = await repo.list(limit=limit, offset=offset, **filters)
+    for run in items:
+        run.map_display_name = (
+            run.static_analysis.map_display_name
+            if run.static_analysis is not None
+            else None
+        )
     return RunListOut(total=total, items=items, offset=offset)
 
 
@@ -76,11 +82,36 @@ async def compare_runs(run_a: UUID, run_b: UUID, db: AsyncSession = Depends(get_
     return await RunCompareService(db).compare(run_a, run_b)
 
 
+@router.get("/batch-trails")
+async def batch_trails(
+    ids: str = Query(..., description="Comma-separated run IDs"),
+    limit: int = Query(default=80, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, list[dict[str, Any]]]:
+    run_ids = [UUID(rid.strip()) for rid in ids.split(",") if rid.strip()]
+    if len(run_ids) > 50:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Maximum 50 run IDs per request")
+    event_repo = GameEventRepository(db)
+    result: dict[str, list[dict[str, Any]]] = {}
+    for run_id in run_ids:
+        trail = await event_repo.list_position_trail(run_id, limit=limit)
+        result[str(run_id)] = [
+            {"tick_number": t.tick_number, "health": t.health, "x": t.x, "y": t.y}
+            for t in trail
+        ]
+    return result
+
+
 @router.get("/{run_id}", response_model=RunOut)
 async def get_run(run_id: UUID, db: AsyncSession = Depends(get_db)) -> RunOut:
     run = await RunRepository(db).get_by_id(run_id)
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
+    run.map_display_name = (
+        run.static_analysis.map_display_name
+        if run.static_analysis is not None
+        else None
+    )
     return run
 
 
@@ -93,10 +124,10 @@ async def get_live_snapshot(run_id: UUID, db: AsyncSession = Depends(get_db)) ->
     decision_repo = AgentDecisionRepository(db)
     event_repo = GameEventRepository(db)
     defect_repo = DefectRepository(db)
-    decisions = await decision_repo.list_by_run(run_id, 1, 500)
-    trace = await event_repo.list_trace(run_id, 1, 500)
+    decisions = await decision_repo.list_by_run(run_id, 1, 200)
+    trace = await event_repo.list_trace(run_id, 1, 200)
     events = await event_repo.list_events(run_id, ["kill", "death", "item_pickup", "secret_found", "stuck", "damage_taken", "map_exit"])
-    trail = await event_repo.list_position_trail(run_id, limit=1000)
+    trail = await event_repo.list_position_trail(run_id, limit=500)
     defects = await defect_repo.list_by_run(run_id)
     report_status = await _report_status_payload(run_id, run, db)
     usage = _usage_payload(run, decisions)
@@ -379,6 +410,10 @@ async def get_recording(run_id: UUID, db: AsyncSession = Depends(get_db)) -> Fil
     path = Path(run.recording_mp4_path)
     if not path.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Recording file is missing")
+    resolved = path.resolve()
+    allowed = get_settings().recording_storage_dir.resolve()
+    if not str(resolved).startswith(str(allowed)):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied")
     return FileResponse(path, media_type="video/mp4")
 
 

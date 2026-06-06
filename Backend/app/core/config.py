@@ -59,9 +59,10 @@ class Settings(BaseSettings):
     max_wad_upload_bytes: int = 67_108_864
     same_run_ledger_max_chars: int = 24_000
     same_run_ledger_recent_actions: int = 16
-    no_progress_decision_abort_threshold: int = 8
+    no_progress_decision_abort_threshold: int = 15
     default_agent_behavior: str = "thorough"
     cross_run_memory_enabled: bool = False
+    guard_enabled: bool = True
     run_worker_mode: bool = False
     cors_origins: list[str] | str = "http://localhost:3000"
 

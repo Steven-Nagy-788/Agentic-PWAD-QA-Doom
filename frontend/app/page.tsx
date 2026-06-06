@@ -13,10 +13,22 @@ export default function WadLibraryPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const wads = useQuery({ queryKey: ["wads"], queryFn: () => apiGet<WadFile[]>("/wads") });
+  const allMaps = useQuery({
+    queryKey: ["wad-all-maps"],
+    queryFn: () => apiGet<WadMap[]>("/wads/maps?limit=500"),
+    enabled: Boolean(wads.data?.length),
+  });
+  const mapsByWad = new Map<string, WadMap[]>();
+  (allMaps.data ?? []).forEach((m) => {
+    const list = mapsByWad.get(m.wad_file_id) ?? [];
+    list.push(m);
+    mapsByWad.set(m.wad_file_id, list);
+  });
   const uploadMutation = useMutation({
     mutationFn: uploadWad,
     onSuccess: (wad) => {
       queryClient.invalidateQueries({ queryKey: ["wads"] });
+      queryClient.invalidateQueries({ queryKey: ["wad-all-maps"] });
       router.push(`/wad/${wad.id}`);
     },
   });
@@ -36,7 +48,7 @@ export default function WadLibraryPage() {
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {(wads.data ?? []).map((wad) => (
           <button key={wad.id} onClick={() => router.push(`/wad/${wad.id}`)} className="overflow-hidden rounded border border-neutral-200 bg-white text-left shadow-sm transition hover:border-neutral-400">
-            <WadThumbnail wadId={wad.id} />
+            <WadThumbnail firstMap={mapsByWad.get(wad.id)?.[0]} />
             <div className="space-y-3 p-4">
               <div>
                 <h3 className="truncate text-sm font-semibold">{wad.original_filename}</h3>
@@ -54,12 +66,10 @@ export default function WadLibraryPage() {
   );
 }
 
-function WadThumbnail({ wadId }: { wadId: string }) {
-  const maps = useQuery({ queryKey: ["wad-thumb", wadId], queryFn: () => apiGet<WadMap[]>(`/wads/${wadId}/maps`) });
-  const first = maps.data?.[0];
+function WadThumbnail({ firstMap }: { firstMap?: WadMap }) {
   return (
     <div className="aspect-[16/9] bg-neutral-950">
-      {first?.map_overview_png_url ? <img src={assetUrl(first.map_overview_png_url)} alt={first.map_name} className="h-full w-full object-cover" /> : null}
+      {firstMap?.map_overview_png_url ? <img src={assetUrl(firstMap.map_overview_png_url)} alt={firstMap.map_name} className="h-full w-full object-cover" /> : null}
     </div>
   );
 }

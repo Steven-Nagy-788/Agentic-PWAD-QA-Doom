@@ -8,7 +8,7 @@ export default function Error({
   reset: () => void;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 p-6">
+    <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 p-6" role="alert">
       <h2 className="text-xl font-semibold text-neutral-900">Something went wrong</h2>
       <p className="text-sm text-neutral-500 max-w-md text-center">
         {error.message || "An unexpected error occurred."}

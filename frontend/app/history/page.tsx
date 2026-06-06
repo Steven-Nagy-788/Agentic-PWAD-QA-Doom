@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { Run, RunList, WadFile, apiGet } from "@/lib/api";
+import { Run, RunList, WadFile, PositionSample, apiGet } from "@/lib/api";
 import { InlineError, OutcomeBadge, SkeletonRows, errorMessage } from "@/lib/components/shared";
 import { HealthSparkline } from "@/lib/components/HealthSparkline";
 
@@ -18,18 +18,19 @@ export default function RunHistoryPage() {
   const router = useRouter();
   const [filters, setFilters] = useState<RunFilters>({ wad: "", map: "", outcome: "", difficulty: "", after: "", before: "" });
   const [runOffset, setRunOffset] = useState(0);
+  const deferredFilters = useDeferredValue(filters);
 
   const wads = useQuery({ queryKey: ["wads"], queryFn: () => apiGet<WadFile[]>("/wads") });
   const runListPath = useMemo(() => {
     const params = new URLSearchParams({ limit: String(RUN_PAGE_SIZE), offset: String(runOffset) });
-    if (filters.wad) params.set("wad_file_id", filters.wad);
-    if (filters.map) params.set("map_name", filters.map);
-    if (filters.outcome) params.set("outcome", filters.outcome);
-    if (filters.difficulty) params.set("difficulty_level", filters.difficulty);
-    if (filters.after) params.set("created_after", new Date(filters.after).toISOString());
-    if (filters.before) params.set("created_before", new Date(filters.before).toISOString());
+    if (deferredFilters.wad) params.set("wad_file_id", deferredFilters.wad);
+    if (deferredFilters.map) params.set("map_name", deferredFilters.map);
+    if (deferredFilters.outcome) params.set("outcome", deferredFilters.outcome);
+    if (deferredFilters.difficulty) params.set("difficulty_level", deferredFilters.difficulty);
+    if (deferredFilters.after) params.set("created_after", new Date(deferredFilters.after).toISOString());
+    if (deferredFilters.before) params.set("created_before", new Date(deferredFilters.before).toISOString());
     return `/runs?${params.toString()}`;
-  }, [filters, runOffset]);
+  }, [deferredFilters, runOffset]);
 
   const runs = useQuery({
     queryKey: ["runs", runListPath],
@@ -43,6 +44,12 @@ export default function RunHistoryPage() {
   };
 
   const visibleRuns = runs.data?.items ?? [];
+  const runIds = visibleRuns.map((r) => r.id).join(",");
+  const batchTrails = useQuery({
+    queryKey: ["batch-trails", runIds],
+    queryFn: () => apiGet<Record<string, PositionSample[]>>(`/runs/batch-trails?ids=${runIds}&limit=80`),
+    enabled: visibleRuns.length > 0,
+  });
 
   const total = runs.data?.total ?? 0;
   const rangeStart = total === 0 ? 0 : runOffset + 1;
@@ -116,12 +123,13 @@ export default function RunHistoryPage() {
                 <tr key={run.id} className="border-t border-neutral-200 hover:bg-neutral-50">
                   <td className="px-3 py-3">
                     <button type="button" onClick={() => router.push(`/run/${run.id}`)} className="text-left font-semibold text-neutral-950 hover:underline">
-                      {run.map_name}
+                      {run.map_display_name || run.map_name}
                     </button>
+                    {run.map_display_name ? <div className="text-xs text-neutral-500">{run.map_name}</div> : null}
                   </td>
                   <td className="px-3 py-3"><OutcomeBadge outcome={run.outcome ?? run.status} /></td>
                   <td className="px-3 py-3">{run.difficulty_level}</td>
-                  <td className="px-3 py-3"><HealthSparkline runId={run.id} fallback={run.final_hp ?? 0} /></td>
+                  <td className="px-3 py-3"><HealthSparkline runId={run.id} fallback={run.final_hp ?? 0} batchTrail={batchTrails.data?.[run.id]} /></td>
                   <td className="px-3 py-3 text-neutral-500">{new Date(run.created_at).toLocaleString()}</td>
                 </tr>
               ))}

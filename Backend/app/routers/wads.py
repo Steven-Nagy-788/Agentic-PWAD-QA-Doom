@@ -69,4 +69,10 @@ async def get_map_png(
     db: AsyncSession = Depends(get_db),
 ) -> FileResponse:
     path = await WadService(db).map_png_path(wad_id, map_name)
+    from app.core.config import get_settings
+    resolved = path.resolve()
+    allowed = get_settings().analysis_storage_dir.resolve()
+    if not str(resolved).startswith(str(allowed)):
+        from fastapi import HTTPException as _HE
+        raise _HE(status.HTTP_403_FORBIDDEN, "Access denied")
     return FileResponse(path, media_type="image/png")

@@ -112,4 +112,8 @@ async def get_report_pdf(run_id: UUID, db: AsyncSession = Depends(get_db)) -> Fi
     path = Path(get_settings().report_storage_dir.parent, report.pdf_path)
     if not path.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Report PDF file is missing")
+    resolved = path.resolve()
+    allowed = get_settings().report_storage_dir.resolve()
+    if not str(resolved).startswith(str(allowed)):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied")
     return FileResponse(path, media_type="application/pdf")

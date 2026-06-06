@@ -5,6 +5,7 @@ import math
 
 _CELL_SIZE = 128        # map units per grid cell
 _BREADCRUMB_SPACING = 64.0  # min distance between breadcrumbs
+_BREADCRUMB_MAX = 500       # max breadcrumbs per episode
 _KEY_PICKUP_RANGE = 64.0    # max distance to credit a key pickup
 _DOOR_HEIGHT_THRESHOLD = 8  # ceiling - floor < this = possible door
 _DOOR_MAX_SECTOR_SIZE = 256  # sector bounding box diagonal < this = small sector
@@ -56,6 +57,8 @@ class NavigationMemory:
             lx, ly, _ = self._breadcrumbs[-1]
             if math.hypot(px - lx, py - ly) >= _BREADCRUMB_SPACING:
                 self._breadcrumbs.append((px, py, pa))
+                if len(self._breadcrumbs) > _BREADCRUMB_MAX:
+                    self._breadcrumbs = self._breadcrumbs[-_BREADCRUMB_MAX:]
 
         self._last_x = px
         self._last_y = py

@@ -428,28 +428,43 @@ async def agent_run_task(run_id: UUID) -> None:
                     decision.setdefault("mcp_params", {})
                     from app.services.run_constants import COMPOUND_TELEMETRY_TOOLS
 
+                    # Check if guard is enabled
+                    guard_enabled = runtime_value("guard_enabled", settings.guard_enabled)
+
                     # Get_state spam guard: after 2 consecutive get_state, force explore
                     get_state_count = lockstep_state.get("consecutive_get_state", 0)
-                    if get_state_count >= 2 and decision.get("mcp_tool") == "get_state":
+                    if guard_enabled and get_state_count >= 2 and decision.get("mcp_tool") == "get_state":
                         decision["mcp_tool"] = "explore"
-                        decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": True}
-                        decision["reasoning_summary"] = "OVERRIDE: Consecutive get_state detected. Forced explore to advance gameplay."
+                        decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": True, "turn_before": 180.0}
+                        decision["reasoning_summary"] = "OVERRIDE: Consecutive get_state detected. Forced explore with 180° turn to advance gameplay."
                         decision["_decision_source"] = "guard_get_state"
 
-                    # Position stuck detection: override if agent hasn't moved in 3+ consecutive decisions
+                    # Position stuck detection: override if agent hasn't moved in 2+ consecutive decisions
+                    # Exclude combat tools — agent is actively fighting, not stuck
                     stuck_counter = lockstep_state.get("position_stuck_counter", 0)
-                    if stuck_counter >= 3 and decision.get("mcp_tool") in ("explore", "aim_and_shoot", "strafe_and_shoot", "move_to"):
+                    combat_tools = {"aim_and_shoot", "strafe_and_shoot", "select_weapon"}
+                    if guard_enabled and stuck_counter >= 2 and decision.get("mcp_tool") in ("explore", "move_to", "take_action"):
+                        # Alternate turn direction to avoid repeating the same wall
+                        turn_amount = 180.0 if stuck_counter % 2 == 0 else -180.0
                         decision["mcp_tool"] = "explore"
-                        decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": True}
-                        decision["reasoning_summary"] = f"OVERRIDE: Agent stuck ({stuck_counter} decisions without movement). Forced explore to break fixation loop."
+                        decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": True, "turn_before": turn_amount}
+                        decision["reasoning_summary"] = (
+                            f"OVERRIDE: Agent stuck ({stuck_counter} decisions without meaningful movement). "
+                            f"Your original plan: {decision.get('reasoning_summary', '?')}. "
+                            f"Guard forced explore with {turn_amount}° turn to break fixation."
+                        )
                         decision["_decision_source"] = "guard_stuck"
 
                     # Decision diversity check: if last 3 same-tool decisions had similar reasoning, break loop
                     diversity_counter = lockstep_state.get("decision_diversity_counter", 0)
-                    if diversity_counter >= 3 and decision.get("mcp_tool") in ("explore", "aim_and_shoot", "strafe_and_shoot", "move_to"):
+                    if guard_enabled and diversity_counter >= 3 and decision.get("mcp_tool") in ("explore", "move_to", "take_action"):
                         decision["mcp_tool"] = "explore"
-                        decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": False, "ignore_object_ids": []}
-                        decision["reasoning_summary"] = f"OVERRIDE: Decision loop detected ({diversity_counter} repeated decisions). Forced explore to break cycle."
+                        decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": False, "ignore_object_ids": [], "turn_before": 90.0}
+                        decision["reasoning_summary"] = (
+                            f"OVERRIDE: Decision loop detected ({diversity_counter} repeated decisions). "
+                            f"Your original plan: {decision.get('reasoning_summary', '?')}. "
+                            f"Guard forced diverse exploration with 90° turn to break cycle."
+                        )
                         decision["_decision_source"] = "guard_diversity"
 
                     if (
@@ -496,7 +511,9 @@ async def agent_run_task(run_id: UUID) -> None:
                     dx = abs(result_x - self_x)
                     dy = abs(result_y - self_y)
                     movement = math.sqrt(dx * dx + dy * dy)
-                    if movement < 5 and tool not in ("select_weapon", "get_threat_assessment", "get_navigation_info"):
+                    # Combat tools don't involve movement — don't count them as stuck
+                    no_stuck_tools = {"select_weapon", "get_threat_assessment", "get_navigation_info", "aim_and_shoot", "strafe_and_shoot"}
+                    if movement < 15 and tool not in no_stuck_tools:
                         lockstep_state["position_stuck_counter"] = lockstep_state.get("position_stuck_counter", 0) + 1
                     else:
                         lockstep_state["position_stuck_counter"] = 0
@@ -651,6 +668,9 @@ async def agent_run_task(run_id: UUID) -> None:
                     break
                 if latest_event.health <= 0 or result_state.get("dead"):
                     outcome = "player_died"
+                    break
+                if tool == "finish":
+                    outcome = str(summary_d.get("outcome", "completed"))
                     break
                 if _lockstep_should_stop_as_stuck(lockstep_state):
                     outcome = _lockstep_stop_outcome(lockstep_state)

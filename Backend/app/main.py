@@ -85,10 +85,10 @@ app.add_middleware(
 
 app.include_router(wads.router, prefix="/v1")
 app.include_router(analysis.router, prefix="/v1")
+app.include_router(patterns.router, prefix="/v1")
 app.include_router(runs.router, prefix="/v1")
 app.include_router(reports.router, prefix="/v1")
 app.include_router(ws.router, prefix="/v1")
-app.include_router(patterns.router, prefix="/v1")
 app.include_router(admin_storage.router, prefix="/v1")
 app.include_router(settings_router.router, prefix="/v1")
 app.include_router(memory.router, prefix="/v1")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
@@ -17,7 +18,7 @@ router = APIRouter(prefix="/admin/storage", tags=["Admin Storage"])
 
 
 @router.get("/stats")
-def storage_stats() -> dict[str, object]:
+async def storage_stats() -> dict[str, object]:
     settings = get_settings()
     buckets = {
         "wads": settings.wad_storage_dir,
@@ -26,7 +27,7 @@ def storage_stats() -> dict[str, object]:
         "recordings": settings.recording_storage_dir,
         "screenshots": settings.screenshot_storage_dir,
     }
-    by_type = {name: _path_stats(path) for name, path in buckets.items()}
+    by_type = {name: await asyncio.to_thread(_path_stats, path) for name, path in buckets.items()}
     return {
         "total_bytes": sum(item["total_bytes"] for item in by_type.values()),
         "total_files": sum(item["file_count"] for item in by_type.values()),

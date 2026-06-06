@@ -222,6 +222,42 @@ def _build_llm_input(
         if isinstance(threat, dict) and threat.get("is_visible") is False
     )
     visited_count = len(lockstep_state.get("visited_cells") or {})
+
+    # Distance context for melee/ranged decisions
+    enemy_distances = []
+    item_distances = []
+    weapon_distances = []
+    for obj in objects:
+        dist = obj.get("distance")
+        if dist is None:
+            continue
+        obj_type = obj.get("type", "")
+        if obj_type == "monster":
+            enemy_distances.append({"name": obj.get("name"), "distance": dist, "id": obj.get("id")})
+        elif obj_type in ("ammo", "item", "health", "armor"):
+            item_distances.append({"name": obj.get("name"), "distance": dist, "id": obj.get("id")})
+        elif obj_type == "weapon":
+            weapon_distances.append({"name": obj.get("name"), "distance": dist, "id": obj.get("id")})
+    enemy_distances.sort(key=lambda x: x["distance"])
+    item_distances.sort(key=lambda x: x["distance"])
+    weapon_distances.sort(key=lambda x: x["distance"])
+
+    distance_context = {
+        "nearest_enemy": enemy_distances[0] if enemy_distances else None,
+        "nearest_item": item_distances[0] if item_distances else None,
+        "nearest_weapon": weapon_distances[0] if weapon_distances else None,
+        "enemy_count": len(enemy_distances),
+        "melee_range_threshold": 128,
+        "in_melee_range": (enemy_distances[0]["distance"] <= 128) if enemy_distances else False,
+    }
+
+    # Compass: convert angle to cardinal direction
+    angle = float(variables.get("angle") or 0)
+    # Doom: 0=east, 90=north, 180=west, 270=south
+    compass_dirs = ["E", "NE", "N", "NW", "W", "SW", "S", "SE"]
+    compass_idx = int(((angle + 22.5) % 360) / 45)
+    compass_dir = compass_dirs[compass_idx % 8]
+
     return _json_safe(
         {
             "game_tic": game_tic,
@@ -231,6 +267,7 @@ def _build_llm_input(
                 "armor": variables.get("armor"),
                 "position": {"x": variables.get("x"), "y": variables.get("y")},
                 "angle": variables.get("angle"),
+                "compass": compass_dir,
                 "kills": variables.get("kill_count"),
                 "items": variables.get("item_count"),
                 "secrets": variables.get("secret_count"),
@@ -265,6 +302,7 @@ def _build_llm_input(
                 "recent_stuck_events": int(lockstep_state.get("position_stuck_counter") or 0),
                 "consecutive_same_tool": int(lockstep_state.get("consecutive_get_state") or 0),
             },
+            "distance_context": distance_context,
             "same_run_memory": _build_same_run_memory(lockstep_state),
         }
     )
@@ -503,7 +541,7 @@ def _record_decision_in_history(
         entry["observed_issue"] = _summary(observed_issue)[:180]
     history = list(lockstep_state.get("decision_history") or [])
     history.append(entry)
-    lockstep_state["decision_history"] = history
+    lockstep_state["decision_history"] = history[-200:]
 
 
 def _compact_params(params: dict) -> dict[str, Any]:
@@ -1030,6 +1068,8 @@ def _bound_mcp_tool_params(tool: str, params: dict[str, Any]) -> dict[str, Any]:
             params["stop_on_enemy"] = bool(params["stop_on_enemy"])
         if "stop_on_item" in params:
             params["stop_on_item"] = bool(params["stop_on_item"])
+        if "turn_before" in params:
+            params["turn_before"] = round(max(-360.0, min(360.0, _bounded_float(params.get("turn_before"), 0.0))), 1)
     elif tool in {"aim_and_shoot", "strafe_and_shoot"}:
         params["max_tics"] = _bounded_int(params.get("max_tics"), default=90, lower=10, upper=120)
         if "shots" in params:
