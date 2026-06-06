@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
@@ -301,6 +302,7 @@ def _build_llm_input(
                 "facing_unexplored": navigation_info.get("suggested_direction") is not None,
                 "recent_stuck_events": int(lockstep_state.get("position_stuck_counter") or 0),
                 "consecutive_same_tool": int(lockstep_state.get("consecutive_get_state") or 0),
+                "frontier_cells": _compute_frontier_cells(lockstep_state, variables),
             },
             "distance_context": distance_context,
             "same_run_memory": _build_same_run_memory(lockstep_state),
@@ -962,6 +964,45 @@ def _compute_unvisited_quadrants(lockstep_state: dict[str, Any]) -> int | None:
     sw = any(c[0] <= mid_x and c[1] > mid_y for c in cells)
     se = any(c[0] > mid_x and c[1] > mid_y for c in cells)
     return 4 - sum(int(v) for v in (nw, ne, sw, se))
+
+
+def _compute_frontier_cells(
+    lockstep_state: dict[str, Any],
+    player_vars: dict[str, Any],
+    max_cells: int = 3,
+) -> list[dict[str, float]]:
+    """Find the nearest unvisited grid cell centers relative to the player."""
+    visited = lockstep_state.get("visited_cells") or {}
+    if not visited:
+        return []
+    cells = []
+    for key in visited:
+        parts = key.split(",")
+        if len(parts) == 2:
+            try:
+                cells.append((int(parts[0]), int(parts[1])))
+            except ValueError:
+                continue
+    if not cells:
+        return []
+    xs = [c[0] for c in cells]
+    ys = [c[1] for c in cells]
+    min_cx, max_cx = min(xs), max(xs)
+    min_cy, max_cy = min(ys), max(ys)
+    player_x = float(player_vars.get("x") or 0)
+    player_y = float(player_vars.get("y") or 0)
+    visited_set = set(cells)
+    candidates = []
+    for cx in range(min_cx - 1, max_cx + 2):
+        for cy in range(min_cy - 1, max_cy + 2):
+            if (cx, cy) in visited_set:
+                continue
+            world_x = cx * CELL_SIZE
+            world_y = cy * CELL_SIZE
+            dist = math.hypot(world_x - player_x, world_y - player_y)
+            candidates.append({"x": world_x, "y": world_y, "distance": round(dist, 1)})
+    candidates.sort(key=lambda c: c["distance"])
+    return candidates[:max_cells]
 
 
 def _factual_game_tic(state: dict[str, Any], lockstep_state: dict[str, Any]) -> int:

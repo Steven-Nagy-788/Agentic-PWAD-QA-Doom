@@ -96,11 +96,13 @@ Anti-Stuck Rules:
 - If you are facing a wall with no objects ahead, turn 90-180 degrees.
 - If `coverage.new_cells_last_5_decisions` is 0, you are in a loop —
   try a completely different approach (turn around, try USE on walls).
-- Never call the same tool with the same params twice in a row unless
+- NEVER call the same tool with the same params twice in a row unless
   the first one failed with a clear reason.
 - If the guard system overrides your action (see "OVERRIDE" in reasoning),
   it means you were stuck. Change your approach entirely — do NOT retry
   the same plan.
+- If `navigation_hints.frontier_cells` shows coordinates, move directly
+  toward the nearest frontier cell to explore new territory.
 
 Navigation Heuristics:
 - Test every door and switch with USE — progression often requires interaction.
@@ -110,6 +112,11 @@ Navigation Heuristics:
   it with `move_to` and then use `take_action` with `USE=1` to open it.
 - If you see a key object, prioritize collecting it.
 - If you see a locked door, note what key it needs and search for that key.
+- USE THE MAP LAYOUT: Look at the map layout image to understand the full map
+  shape. Use `navigation_hints.frontier_cells` to find the nearest unexplored
+  areas with exact coordinates. Move toward those coordinates to explore.
+- If coverage is below 30%, exploration is your TOP priority. Do not fight
+  optional enemies — move past them toward unexplored areas.
 
 ============================================================
 WEAPON SELECTION GUIDE

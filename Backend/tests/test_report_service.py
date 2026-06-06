@@ -172,7 +172,7 @@ def test_evidence_model_classifies_low_confidence_as_harness_limited() -> None:
     model = ReportService._build_evidence_model(run, [], metrics, None, "timeout", "FAIL")
 
     assert model["evidence_matrix"]["harness_confidence"]["level"] == "LOW"
-    assert model["evidence_matrix"]["findings"][0]["classification"] == "inconclusive"
+    assert model["evidence_matrix"]["findings"][0]["classification"] == "map"
     assert model["qa_sections"][0]["verdict"] == "LIMITED"
 
 

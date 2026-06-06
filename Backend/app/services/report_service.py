@@ -636,6 +636,10 @@ class ReportService:
             classification = "map"
             title = "Map progression completed"
             summary = "The exit path was reached in the automated playthrough."
+        elif overall_verdict == "FAIL":
+            classification = "map"
+            title = "Map quality issues detected"
+            summary = "The map has fundamental design issues that prevent normal gameplay. This is a map-side defect."
         else:
             classification = "inconclusive"
             title = "Run ended before a map-completion verdict"
@@ -742,6 +746,11 @@ class ReportService:
             if map_navigation_pass
             else "FAIL"
         )
+        # Force FAIL for trivial maps — they are not real Doom levels
+        if analysis:
+            complexity = ReportService._assess_map_complexity(analysis)
+            if complexity == "TRIVIAL":
+                overall_verdict = "FAIL"
         major_risk = ReportService._major_risk(run, defects, metrics)
         spawn_note = (
             f" Raw static analysis found {raw_enemies} enemies, but {hidden_enemies} are disabled at "

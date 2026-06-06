@@ -295,10 +295,15 @@ async def agent_run_task(run_id: UUID) -> None:
                 total_cells = lockstep_state.get("total_map_cells_estimate", 225) or 225
                 coverage_percent = round(visited_count / max(total_cells, 1) * 100, 1)
                 coverage_warning = None
-                if coverage_percent < 20 and ticks_remaining < max_ticks * 0.5:
+                if coverage_percent < 20 and ticks_remaining < max_ticks * 0.7:
                     coverage_warning = (
-                        f"WARNING: Coverage is {coverage_percent}% with {ticks_remaining} ticks remaining. "
-                        "Prioritize exploration over combat immediately."
+                        f"WARNING: Coverage is only {coverage_percent}% with {ticks_remaining} ticks remaining. "
+                        "Stop fighting and EXPLORE immediately. Use the map layout to find unvisited areas."
+                    )
+                elif coverage_percent < 10 and ticks_remaining < max_ticks * 0.5:
+                    coverage_warning = (
+                        f"CRITICAL: Coverage is {coverage_percent}% with {ticks_remaining} ticks remaining. "
+                        "You are barely exploring. Find new areas NOW using the map layout frontier cells."
                     )
                 llm_input = _build_llm_input(
                     state,
@@ -486,8 +491,9 @@ async def agent_run_task(run_id: UUID) -> None:
                         decision["_decision_source"] = "guard_stuck"
 
                     # Decision diversity check: if last 3 same-tool decisions had similar reasoning, break loop
+                    # Skip during combat — don't interrupt active fights
                     diversity_counter = lockstep_state.get("decision_diversity_counter", 0)
-                    if guard_enabled and diversity_counter >= 3 and decision.get("mcp_tool") in ("explore", "move_to", "take_action"):
+                    if guard_enabled and diversity_counter >= 3 and decision.get("mcp_tool") in ("explore", "move_to", "take_action") and decision.get("mcp_tool") not in combat_tools:
                         decision["mcp_tool"] = "explore"
                         decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": False, "ignore_object_ids": [], "turn_before": 90.0}
                         decision["reasoning_summary"] = (
@@ -547,6 +553,20 @@ async def agent_run_task(run_id: UUID) -> None:
                         lockstep_state["position_stuck_counter"] = lockstep_state.get("position_stuck_counter", 0) + 1
                     else:
                         lockstep_state["position_stuck_counter"] = 0
+
+                    # Circling detection: if agent keeps returning to the same area
+                    if tool not in no_stuck_tools:
+                        recent_positions = lockstep_state.setdefault("_recent_positions", [])
+                        recent_positions.append((result_x, result_y))
+                        if len(recent_positions) > 12:
+                            recent_positions[:] = recent_positions[-12:]
+                        if len(recent_positions) >= 6:
+                            xs = [p[0] for p in recent_positions]
+                            ys = [p[1] for p in recent_positions]
+                            x_range = max(xs) - min(xs)
+                            y_range = max(ys) - min(ys)
+                            if x_range < 200 and y_range < 200:
+                                lockstep_state["position_stuck_counter"] = lockstep_state.get("position_stuck_counter", 0) + 2
 
                     if tool == "get_state":
                         lockstep_state["consecutive_get_state"] = lockstep_state.get("consecutive_get_state", 0) + 1
