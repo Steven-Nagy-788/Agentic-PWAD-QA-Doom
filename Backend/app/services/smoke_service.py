@@ -36,7 +36,8 @@ class SmokeService:
                 stages.append(await self._stage_get_state(mcp_client))
             else:
                 stages.append(self._skip_stage("Get game state", "Skipped: game not started"))
-            if gemini_stage["pass"]:
+            gemini_skipped = bool(gemini_stage.get("detail", {}).get("skipped"))
+            if gemini_stage["pass"] and not gemini_skipped:
                 stages.append(await self._stage_test_gemini())
             else:
                 stages.append(self._skip_stage("Test Gemini API", "Skipped: GEMINI_API_KEY is not set"))
@@ -65,7 +66,7 @@ class SmokeService:
         label = "Gemini API key configured"
         start = time.monotonic()
         if not self.settings.gemini_api_key:
-            return _fail(label, start, "GEMINI_API_KEY is not set")
+            return _pass(label, start, {"skipped": "GEMINI_API_KEY is not set; deterministic fallback mode is available."})
         return _pass(label, start, {"model": self.llm_model, "model_source": self.model_source})
 
     async def _stage_start_game(self) -> dict[str, Any]:

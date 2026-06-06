@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.path_security import unlink_if_within
 from app.models import NotableEventScreenshot, TestRun
 from app.repositories.run_repository import RunRepository
 
@@ -78,18 +79,16 @@ def _path_stats(path: Path) -> dict[str, int | str]:
 
 async def _purge_run_files(db: AsyncSession, run: TestRun) -> int:
     deleted = 0
+    settings = get_settings()
     if run.recording_mp4_path:
         recording_path = Path(run.recording_mp4_path)
         for path in (recording_path, recording_path.with_name(f"{recording_path.stem}.source.mp4")):
-            if path.exists():
-                path.unlink()
+            if unlink_if_within(path, settings.recording_storage_dir):
                 deleted += 1
         run.recording_mp4_path = None
     result = await db.execute(select(NotableEventScreenshot).where(NotableEventScreenshot.run_id == run.id))
     for screenshot in result.scalars().all():
-        path = Path(screenshot.screenshot_path)
-        if path.exists():
-            path.unlink()
+        if unlink_if_within(screenshot.screenshot_path, settings.screenshot_storage_dir):
             deleted += 1
         await db.delete(screenshot)
     await db.flush()

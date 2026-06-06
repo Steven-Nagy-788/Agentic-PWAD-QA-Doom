@@ -6,7 +6,7 @@ Three services in one repo:
 |-----------|------|------------|-------|
 | `Backend/` | FastAPI + SQLAlchemy + asyncpg + Alembic + WeasyPrint + Google GenAI | `app/main.py` | `make run` (or `uvicorn ...`) |
 | `mcp-doom/` | FastMCP 3.2 + ViZDoom 1.3 | `src/doom_mcp/server.py` | `.venv/bin/fastmcp run src/doom_mcp/server.py --transport sse --host 127.0.0.1 --port 8001 --path /sse` |
-| `frontend/` | Next.js 16 + React 19 + Tailwind v4 + TanStack Query + Recharts + Vitest | standard App Router | `npm run dev` or `bun dev` |
+| `frontend/` | Next.js 16 + React 19 + Tailwind v4 + TanStack Query + Vitest + Playwright | standard App Router | `npm run dev` or `bun dev` |
 
 ## Commands
 
@@ -26,7 +26,8 @@ pytest -m integration         # integration only (needs ViZDoom runtime + displa
 npm test -- --run             # Vitest (~20 tests)
 npm run lint                  # ESLint
 npm run build                 # Next.js production build
-# Also works with: bun run test, bun run lint, bun run build
+npm run test:e2e              # Playwright browser layout smoke
+# Also works with: bun run test, bun run lint, bun run build, bun run test:e2e
 ```
 
 ## Architecture
@@ -50,11 +51,11 @@ Frontend defaults to REST via `/api/v1` (rewritten by `next.config.ts` to `local
 ## Gotchas
 
 - **frontend/AGENTS.md** contains a Next.js version warning — preserve that file; it flags breaking API differences in Next.js 16 vs earlier versions.
-- MCP integration tests (marked `@pytest.mark.integration`) require ViZDoom runtime (OpenGL, SDL). CI installs `libgl1 libsdl2-2.0-0` but pytest skips them automatically if ViZDoom is absent.
+- MCP integration tests (marked `@pytest.mark.integration`) require ViZDoom runtime (OpenGL, SDL). Fast CI runs `pytest -m "not integration"`; integration/full product checks run under `xvfb`.
 - The `pytest-asyncio` version in Backend is pinned to `1.3.0` (older). In mcp-doom, `asyncio_mode = auto` is set in `pyproject.toml`.
 - `Backend/.env` and `Backend/.venv` are in `.gitignore`. Never commit them.
 - `Backend/storage/` contains runtime artifacts (WADs, screenshots, recordings, PDFs) — not source code.
-- No Docker or compose files exist yet (roadmap item).
+- Docker and Docker Compose files exist for local demonstration and scheduled/manual full-stack e2e.
 - Frontend uses `@/` path alias (maps to `frontend/` root).
 - `agent_run_task` in `run_loop.py` acquires a fresh DB session per iteration instead of holding one for the entire run.
 - `/health/smoke` is guarded during active runs.

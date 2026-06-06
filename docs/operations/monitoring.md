@@ -73,7 +73,7 @@ Checks MCP SSE URL reachability via `probe_mcp_sse_url()`.
 
 ### `GET /health/smoke`
 
-Full integration smoke test via `SmokeService.run_smoke()` — exercises MCP connectivity, Gemini model probe, game start, and state fetch. Returns HTTP 200 if overall is `"pass"`, 503 otherwise.
+Full integration smoke test via `SmokeService.run_smoke()` — exercises MCP connectivity, game start, and state fetch. If `GEMINI_API_KEY` is configured it also probes the Gemini model; otherwise the Gemini stage is marked as skipped because deterministic fallback mode is available. Returns HTTP 200 if overall is `"pass"`, 503 otherwise.
 
 ### `GET /health/detailed`
 

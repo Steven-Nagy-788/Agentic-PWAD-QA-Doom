@@ -2,7 +2,8 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { assetUrl, PositionSample, TraceEntry, WadMap } from "@/lib/api";
 
 type MapCanvasProps = {
@@ -12,6 +13,7 @@ type MapCanvasProps = {
   livePosition?: { x: number; y: number } | null;
   visitedCells?: Record<string, number>;
   visitedCellSize?: number;
+  fit?: "square" | "contain";
   className?: string;
 };
 
@@ -19,12 +21,37 @@ const STEP = 15;
 const VIEW_SIZE = 1024;
 const MAP_MARGIN = 20;
 
-export function MapCanvas({ map, trail = [], events = [], livePosition, visitedCells = {}, visitedCellSize = 256, className = "" }: MapCanvasProps) {
+export function MapCanvas({ map, trail = [], events = [], livePosition, visitedCells = {}, visitedCellSize = 256, fit = "square", className = "" }: MapCanvasProps) {
   const imageUrl = assetUrl(map?.map_overview_png_url);
   const points = livePosition ? [...trail, { id: -1, run_id: "", tick_number: 0, x: livePosition.x, y: livePosition.y, health: 0 }] : trail;
   const bounds = getBounds(points, map);
   const [focusX, setFocusX] = useState(VIEW_SIZE / 2);
   const [focusY, setFocusY] = useState(VIEW_SIZE / 2);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const [containedSize, setContainedSize] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (fit !== "contain") {
+      return;
+    }
+    const viewport = viewportRef.current;
+    if (!viewport) {
+      return;
+    }
+    const measure = () => {
+      const rect = viewport.getBoundingClientRect();
+      const next = Math.floor(Math.min(rect.width, rect.height));
+      setContainedSize(next > 0 ? next : null);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [fit]);
 
   const onKeyDown = useCallback((event: React.KeyboardEvent<SVGSVGElement>) => {
     switch (event.key) {
@@ -47,10 +74,10 @@ export function MapCanvas({ map, trail = [], events = [], livePosition, visitedC
     }
   }, []);
 
-  return (
-    <div className={`relative aspect-square overflow-hidden rounded border border-neutral-200 bg-neutral-950 ${className}`}>
+  const mapLayer = (
+    <>
       {imageUrl ? (
-        <img src={imageUrl} alt={`${map?.map_name ?? "Map"} overview`} className="absolute inset-0 h-full w-full object-cover opacity-80" />
+        <img src={imageUrl} alt={`${map?.map_name ?? "Map"} overview`} className="absolute inset-0 h-full w-full object-contain opacity-80" />
       ) : (
         <div className="absolute inset-0 bg-[linear-gradient(90deg,#262626_1px,transparent_1px),linear-gradient(#262626_1px,transparent_1px)] bg-[size:32px_32px]" />
       )}
@@ -58,6 +85,7 @@ export function MapCanvas({ map, trail = [], events = [], livePosition, visitedC
       <svg
         className="absolute inset-0 h-full w-full"
         viewBox={`0 0 ${VIEW_SIZE} ${VIEW_SIZE}`}
+        preserveAspectRatio="xMidYMid meet"
         tabIndex={0}
         role="application"
         aria-label={`${map?.map_name ?? "Map"} overview with player position trail. Use arrow keys to navigate.`}
@@ -144,6 +172,25 @@ export function MapCanvas({ map, trail = [], events = [], livePosition, visitedC
         <circle cx={focusX} cy={focusY} r="14" fill="none" stroke="white" strokeWidth="3" className="drop-shadow-lg" />
         <circle cx={focusX} cy={focusY} r="14" fill="none" stroke="#0891b2" strokeWidth="1.5" />
       </svg>
+    </>
+  );
+
+  if (fit === "contain") {
+    const frameStyle: CSSProperties | undefined = containedSize
+      ? { width: containedSize, height: containedSize }
+      : { aspectRatio: "1 / 1", maxHeight: "100%", maxWidth: "100%", width: "100%" };
+    return (
+      <div ref={viewportRef} data-testid="map-canvas-viewport" className={`grid min-h-0 w-full place-items-center overflow-hidden ${className}`}>
+        <div data-testid="map-canvas-frame" className="relative overflow-hidden rounded border border-neutral-200 bg-neutral-950" style={frameStyle}>
+          {mapLayer}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="map-canvas-frame" className={`relative aspect-square overflow-hidden rounded border border-neutral-200 bg-neutral-950 ${className}`}>
+      {mapLayer}
     </div>
   );
 }

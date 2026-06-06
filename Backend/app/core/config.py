@@ -166,6 +166,10 @@ class Settings(BaseSettings):
             self.screenshot_storage_dir,
             self.analysis_storage_dir,
         ):
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise ValueError(f"Storage path could not be created: {path}") from exc
             if not os.access(path, os.W_OK):
                 raise ValueError(f"Storage path is not writable: {path}")
         return self

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { MapCanvas } from "../MapCanvas";
 import { PositionSample, TraceEntry, WadMap } from "@/lib/api";
 
@@ -101,5 +101,30 @@ describe("MapCanvas", () => {
     const svg = container.querySelector("svg");
     expect(svg).toHaveAttribute("tabindex", "0");
     expect(svg).toHaveAttribute("role", "application");
+    expect(svg).toHaveAttribute("preserveAspectRatio", "xMidYMid meet");
+  });
+
+  it("contains the live map in the smaller available dimension", async () => {
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = () => ({
+      x: 0,
+      y: 0,
+      width: 420,
+      height: 260,
+      top: 0,
+      left: 0,
+      right: 420,
+      bottom: 260,
+      toJSON: () => ({}),
+    });
+
+    try {
+      const { container } = render(<MapCanvas map={mockMap} fit="contain" className="h-full w-full" />);
+      const frame = container.querySelector(".bg-neutral-950") as HTMLElement;
+      await waitFor(() => expect(frame.style.width).toBe("260px"));
+      expect(frame.style.height).toBe("260px");
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = originalRect;
+    }
   });
 });

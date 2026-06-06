@@ -408,9 +408,12 @@ def finish(
     Args:
         summary: Brief summary of findings (e.g. "Map is a dead-end corridor
             with no exits. 2 Demons killed. Softlock confirmed.").
-        outcome: One of: "completed" (full exploration done), "timeout"
-            (budget exhausted but findings recorded), "softlock" (agent
-            unable to progress), "agent_died" (player died).
+        outcome: One of: "qa_completed" (enough QA evidence gathered),
+            "timeout" (budget exhausted but findings recorded),
+            "inconclusive_agent_stall" (the harness did not make measurable
+            progress), or "player_died" (player died). Legacy values such as
+            "completed", "softlock", and "agent_died" are normalized by the
+            backend.
 
     Returns a confirmation that the run is ending.
     """

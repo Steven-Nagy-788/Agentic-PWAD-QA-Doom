@@ -25,3 +25,14 @@ async def test_smoke_state_reads_normalized_player_values() -> None:
     assert stage["pass"] is True
     assert stage["detail"]["player_health"] == 87
     assert stage["detail"]["player_ammo"] == 12
+
+
+@pytest.mark.asyncio
+async def test_smoke_missing_gemini_key_is_deterministic_skip(monkeypatch) -> None:
+    service = SmokeService()
+    monkeypatch.setattr(service.settings, "gemini_api_key", "")
+
+    stage = await service._stage_check_gemini_key()
+
+    assert stage["pass"] is True
+    assert "deterministic fallback" in stage["detail"]["skipped"]

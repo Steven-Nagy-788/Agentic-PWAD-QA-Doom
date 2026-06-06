@@ -8,7 +8,7 @@ import pytest
 
 from app.models import StaticAnalysisResult, TestRun, WadFile
 from app.services.mcp_client_service import McpStartupError
-from app.services.run_loop import _classify_startup_failure, _estimate_total_map_cells, _execute_tool, _history_position_from_state
+from app.services.run_loop import _classify_startup_failure, _estimate_total_map_cells, _execute_tool, _history_position_from_state, _normalize_run_outcome
 
 
 def _mock_run():
@@ -79,6 +79,12 @@ def test_history_position_uses_uppercase_vizdoom_variables() -> None:
     assert x == 123.5
     assert y == -42
     assert angle == 270
+
+
+def test_normalize_run_outcome_maps_legacy_finish_values() -> None:
+    assert _normalize_run_outcome("agent_died") == "player_died"
+    assert _normalize_run_outcome("softlock") == "inconclusive_agent_stall"
+    assert _normalize_run_outcome("completed") == "qa_completed"
 
 
 @pytest.mark.asyncio

@@ -56,6 +56,8 @@ class TestReport(Base):
     pass_fail_summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     risk_areas: Mapped[list[dict[str, Any]] | dict[str, Any] | None] = mapped_column(JSONB)
     good_quality_areas: Mapped[list[dict[str, Any]] | dict[str, Any] | None] = mapped_column(JSONB)
+    qa_sections: Mapped[list[dict[str, Any]] | dict[str, Any] | None] = mapped_column(JSONB)
+    evidence_matrix: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     major_activities_summary: Mapped[str | None] = mapped_column(Text)
     activity_variances: Mapped[str | None] = mapped_column(Text)
     elapsed_time_seconds: Mapped[int | None] = mapped_column(Integer)

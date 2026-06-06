@@ -1,12 +1,18 @@
 """Integration tests for GameManager (requires ViZDoom runtime)."""
 
+import re
+import struct
+from pathlib import Path
+
 import pytest
 from fastmcp.exceptions import ToolError
+import vizdoom as vzd
 
 from doom_mcp.game_manager import GameManager
 
 
 pytestmark = pytest.mark.integration
+_MAP_MARKER_RE = re.compile(r"^(MAP\d\d|E\dM\d)$")
 
 
 @pytest.fixture
@@ -14,6 +20,72 @@ def manager():
     m = GameManager()
     yield m
     m.stop()
+
+
+def _freedoom_map_fixture(tmp_path: Path, mode: str, map_name: str = "MAP01") -> str:
+    base_wad = Path(vzd.__file__).with_name("freedoom2.wad")
+    data = base_wad.read_bytes()
+    magic, lump_count, directory_offset = struct.unpack_from("<4sii", data, 0)
+    assert magic in {b"IWAD", b"PWAD"}
+    directory = []
+    for index in range(lump_count):
+        offset, size, raw_name = struct.unpack_from("<ii8s", data, directory_offset + index * 16)
+        name = raw_name.rstrip(b"\0").decode("ascii", errors="ignore").upper()
+        directory.append((name, offset, size))
+    start_index = next(index for index, (name, _, _) in enumerate(directory) if name == map_name)
+    end_index = len(directory)
+    for index in range(start_index + 1, len(directory)):
+        if _MAP_MARKER_RE.match(directory[index][0]):
+            end_index = index
+            break
+    lumps: list[tuple[str, bytes]] = []
+    for name, offset, size in directory[start_index:end_index]:
+        lump_data = bytearray(data[offset : offset + size])
+        if name == "THINGS":
+            _mutate_start_things(lump_data, mode)
+        lumps.append((name, bytes(lump_data)))
+    return str(_write_pwad(tmp_path / f"{mode}-{map_name}.wad", lumps))
+
+
+def _mutate_start_things(things: bytearray, mode: str) -> None:
+    player_one_offsets = []
+    player_start_offsets = []
+    for pos in range(0, len(things), 10):
+        thing_type = struct.unpack_from("<h", things, pos + 6)[0]
+        if thing_type in {1, 2, 3, 4}:
+            player_start_offsets.append(pos)
+        if thing_type == 1:
+            player_one_offsets.append(pos)
+    if not player_one_offsets:
+        return
+    if mode == "no_player_one":
+        for pos in player_start_offsets:
+            struct.pack_into("<h", things, pos + 6, 11)
+        return
+    if mode == "multi_player_one":
+        template = bytes(things[player_one_offsets[0] : player_one_offsets[0] + 10])
+        for delta in (64, 128):
+            extra = bytearray(template)
+            x = struct.unpack_from("<h", extra, 0)[0]
+            struct.pack_into("<h", extra, 0, x + delta)
+            struct.pack_into("<h", extra, 6, 1)
+            things.extend(extra)
+
+
+def _write_pwad(path: Path, lumps: list[tuple[str, bytes]]) -> Path:
+    payload = bytearray()
+    out_directory = []
+    for name, lump_data in lumps:
+        offset = 12 + len(payload)
+        payload.extend(lump_data)
+        out_directory.append((offset, len(lump_data), name))
+    directory_offset = 12 + len(payload)
+    result = bytearray(struct.pack("<4sii", b"PWAD", len(out_directory), directory_offset))
+    result.extend(payload)
+    for offset, size, name in out_directory:
+        result.extend(struct.pack("<ii8s", offset, size, name.encode("ascii")[:8].ljust(8, b"\0")))
+    path.write_bytes(result)
+    return path
 
 
 def test_start_and_stop(manager):
@@ -205,29 +277,27 @@ def test_load_freedoom1_map(manager):
     assert state["episode_finished"] is False
 
 
-def test_custom_map_normalizes_player_one_starts(manager, monkeypatch):
-    import os
-
-    import doom_mcp.game_manager as game_manager
+def test_custom_map_normalizes_player_one_starts(manager, tmp_path):
     from doom_mcp.game_manager import _wad_map_player_one_start_count
 
-    no_start_wad = os.path.abspath("../Backend/storage/wads/a08955ed-e988-4de9-b553-3ba8476c037e.wad")
-    multi_start_wad = os.path.abspath("../Backend/storage/wads/a2c3fe65-0427-4d17-b88c-0c3fbaf9f1ed.wad")
-    valid_wad = os.path.abspath("../Backend/storage/wads/e90e40b9-1f1e-49a0-a473-c91fdc069b61.wad")
+    no_start_wad = _freedoom_map_fixture(tmp_path, "no_player_one")
+    multi_start_wad = _freedoom_map_fixture(tmp_path, "multi_player_one")
+    valid_wad = _freedoom_map_fixture(tmp_path, "valid")
 
     assert _wad_map_player_one_start_count(no_start_wad, "MAP01") == 0
-    assert _wad_map_player_one_start_count(multi_start_wad, "E1M1") == 3
-    assert _wad_map_player_one_start_count(valid_wad, "E1M1") == 1
+    assert _wad_map_player_one_start_count(multi_start_wad, "MAP01") >= 2
+    assert _wad_map_player_one_start_count(valid_wad, "MAP01") == 1
 
     result = manager.start(wad="freedoom2", scenario_wad=no_start_wad, map_name="MAP01")
     assert result["status"] == "running"
+    assert result["start_normalization"]["mode"] == "deathmatch_to_player_one"
     state = manager.get_state()
     assert state["episode_finished"] is False
     manager.stop()
 
-    monkeypatch.setattr(game_manager, "_PREFLIGHT_TIMEOUT_SECONDS", 1.0)
-    with pytest.raises(ToolError, match="could not be loaded safely"):
-        manager.start(wad="freedoom1", scenario_wad=multi_start_wad, map_name="E1M1")
+    result = manager.start(wad="freedoom2", scenario_wad=multi_start_wad, map_name="MAP01")
+    assert result["status"] == "running"
+    assert result["start_normalization"]["mode"] == "multiple_player_starts_to_player_one"
 
 
 def test_campaign_timeout_does_not_auto_advance(manager):

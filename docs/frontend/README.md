@@ -12,8 +12,7 @@ Next.js 16 dashboard for launching, monitoring, and reviewing autonomous Doom WA
 | Styling | Tailwind CSS v4 (PostCSS via `@tailwindcss/postcss`) |
 | Data Fetching | `@tanstack/react-query` ^5.100.11 |
 | Icons | `lucide-react` ^1.16.0 |
-| Charts | `recharts` ^3.8.1 (used in future extensions) |
-| Testing | Vitest ^4.1.7, `@testing-library/react` ^16.3.2 |
+| Testing | Vitest ^4.1.7, `@testing-library/react` ^16.3.2, Playwright |
 | Package Manager | bun |
 | Fonts | Geist (Sans + Mono) via `next/font/google` |
 

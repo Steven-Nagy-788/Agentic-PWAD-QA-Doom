@@ -395,7 +395,8 @@ MCP:
 
 ```bash
 cd mcp-doom
-.venv/bin/python -m pytest -q
+.venv/bin/python -m pytest -q -m "not integration"
+xvfb-run -a .venv/bin/python -m pytest -q -m integration
 ```
 
 Frontend:
@@ -414,16 +415,19 @@ cd frontend
 bun run test
 bun run lint
 bun run build
+PLAYWRIGHT_WEB_SERVER_COMMAND="bun run start --hostname 127.0.0.1 --port 3100" bun run test:e2e
 ```
 
-CI is defined in `.github/workflows/ci.yml` and runs backend tests, MCP tests, frontend tests, lint, and build.
+CI is defined in `.github/workflows/ci.yml` and runs backend tests, fresh PostgreSQL Alembic checks, MCP unit tests, frontend Vitest/lint/build/browser checks, and Docker image builds. `.github/workflows/full-e2e.yml` is scheduled/manual and starts the Docker Compose stack, runs `/health/smoke`, uploads a generated PWAD fixture, creates a short run, and verifies PDF/recording artifacts.
 
-Latest local verification on 2026-05-24:
+Latest local verification on 2026-06-06:
 
-- Backend: `194 passed`.
-- MCP: `100 passed`.
-- Frontend: `18 passed`, lint clean, production build successful.
-- Browser E2E: production `next start` run page displayed live video, LLM reasoning, MCP input, MCP output, recording playback, trail overlay, and PDF report status.
+- Backend: `183 passed`.
+- Backend targeted report/path/outcome/smoke tests: `28 passed`.
+- MCP unit: `51 passed, 57 deselected`.
+- MCP generated-PWAD integration fixture: `1 passed` under `xvfb-run`.
+- Frontend: `23 passed`, lint clean, production build successful.
+- Browser E2E: Playwright live map layout test `1 passed` with production server override.
 
 ## Operational Constraints
 
@@ -433,6 +437,7 @@ Latest local verification on 2026-05-24:
 - Run cancellation across multiple backend replicas is not supported.
 - Report PDF generation and WAD analysis use CPU-bound libraries. PDF generation is threaded; map analysis should remain off the event loop when called from async paths.
 - Docker Compose binds host ports to `127.0.0.1` for local demonstration use.
+- PR CI is deterministic and does not require paid Gemini calls; scheduled/manual full e2e uses `GEMINI_API_KEY` when the secret is configured and otherwise exercises deterministic fallback mode.
 
 ## Troubleshooting
 
@@ -453,6 +458,7 @@ ViZDoom fails to start:
 No Gemini decisions:
 
 - Confirm `GEMINI_API_KEY` is set in `Backend/.env`.
+- If the key is intentionally absent, `/health/smoke` reports the Gemini probe as skipped and the run loop uses deterministic fallback behavior where implemented.
 - Run `/health/gemini`.
 - Lower `GEMINI_RATE_LIMIT_CALLS_PER_MINUTE` if the API returns rate-limit errors.
 

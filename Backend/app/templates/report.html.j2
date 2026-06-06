@@ -127,6 +127,40 @@
   </p>
   {% endif %}
 
+  {% if report.qa_sections or report.evidence_matrix %}
+  <h2>Evidence Matrix</h2>
+  {% if report.qa_sections %}
+  <table>
+    <tr><th>Section</th><th>Classification</th><th>Verdict</th><th>Evidence</th></tr>
+    {% for section in report.qa_sections %}
+    <tr>
+      <td><strong>{{ section.title }}</strong><br>{{ section.summary }}</td>
+      <td>{{ section.classification }}</td>
+      <td><span class="badge verdict-{{ section.verdict }}">{{ section.verdict }}</span><br><span class="muted">confidence {{ section.confidence }}</span></td>
+      <td>
+        <ul>{% for item in section.evidence or [] %}<li>{{ item }}</li>{% endfor %}</ul>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  {% if report.evidence_matrix and report.evidence_matrix.findings %}
+  <h3>Classified Findings</h3>
+  <table>
+    <tr><th>Finding</th><th>Class</th><th>Confidence</th><th>Evidence</th><th>Recommendation</th></tr>
+    {% for finding in report.evidence_matrix.findings %}
+    <tr>
+      <td><strong>{{ finding.title }}</strong><br><span class="muted">{{ finding.defect_type or "run_outcome" }}</span></td>
+      <td>{{ finding.classification }}</td>
+      <td>{{ finding.confidence }}</td>
+      <td><ul>{% for item in finding.evidence or [] %}<li>{{ item }}</li>{% endfor %}</ul></td>
+      <td>{{ finding.recommendation }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  {% endif %}
+
   <h2>Static Analysis Context</h2>
   {% if analysis %}
   <table>

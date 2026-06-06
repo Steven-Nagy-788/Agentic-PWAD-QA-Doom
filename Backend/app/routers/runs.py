@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.path_security import resolve_path_within
 from app.repositories.defect_repository import DefectRepository
 from app.repositories.agent_decision_repository import AgentDecisionRepository
 from app.repositories.game_event_repository import GameEventRepository
@@ -407,14 +408,13 @@ async def get_recording(run_id: UUID, db: AsyncSession = Depends(get_db)) -> Fil
                 },
             )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Recording not found")
-    path = Path(run.recording_mp4_path)
-    if not path.exists():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Recording file is missing")
-    resolved = path.resolve()
-    allowed = get_settings().recording_storage_dir.resolve()
-    if not str(resolved).startswith(str(allowed)):
+    try:
+        resolved = resolve_path_within(run.recording_mp4_path, get_settings().recording_storage_dir)
+    except ValueError:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied")
-    return FileResponse(path, media_type="video/mp4")
+    if not resolved.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Recording file is missing")
+    return FileResponse(resolved, media_type="video/mp4")
 
 
 @router.get("/{run_id}/usage", tags=["Runs"])

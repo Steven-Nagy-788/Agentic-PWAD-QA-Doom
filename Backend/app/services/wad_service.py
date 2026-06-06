@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import SessionLocal
+from app.core.path_security import unlink_if_within
 from app.models import NotableEventScreenshot, TestRun
 from app.core.config import get_settings
 from app.models import WadFile
@@ -164,19 +165,20 @@ class WadService:
         screenshot_result = await self.db.execute(
             select(NotableEventScreenshot).where(NotableEventScreenshot.run_id.in_([run.id for run in runs]))
         )
+        settings = get_settings()
         for screenshot in screenshot_result.scalars().all():
-            Path(screenshot.screenshot_path).unlink(missing_ok=True)
+            unlink_if_within(screenshot.screenshot_path, settings.screenshot_storage_dir)
         for run in runs:
             if run.recording_mp4_path:
                 recording_path = Path(run.recording_mp4_path)
-                recording_path.unlink(missing_ok=True)
-                recording_path.with_name(f"{recording_path.stem}.source.mp4").unlink(missing_ok=True)
+                unlink_if_within(recording_path, settings.recording_storage_dir)
+                unlink_if_within(recording_path.with_name(f"{recording_path.stem}.source.mp4"), settings.recording_storage_dir)
             await self.db.delete(run)
         for analysis in analyses:
             if analysis.map_overview_png_path:
-                Path(analysis.map_overview_png_path).unlink(missing_ok=True)
+                unlink_if_within(analysis.map_overview_png_path, settings.analysis_storage_dir)
             await self.db.delete(analysis)
-        Path(wad.stored_path).unlink(missing_ok=True)
+        unlink_if_within(wad.stored_path, settings.wad_storage_dir)
         await self.db.delete(wad)
         await self.db.commit()
 
@@ -275,9 +277,10 @@ async def reanalyze_wad_task(wad_id: uuid.UUID) -> None:
         if wad is None:
             return
         analyses = await AnalysisRepository(db).list_by_wad(wad_id)
+        settings = get_settings()
         for analysis in analyses:
             if analysis.map_overview_png_path:
-                Path(analysis.map_overview_png_path).unlink(missing_ok=True)
+                unlink_if_within(analysis.map_overview_png_path, settings.analysis_storage_dir)
             await db.delete(analysis)
         await db.flush()
         await AnalysisService(db).analyze_wad(wad)

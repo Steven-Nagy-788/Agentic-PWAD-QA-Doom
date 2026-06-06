@@ -98,9 +98,9 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
         </div>
       </header>
 
-      <main className="grid min-h-0 grid-cols-1 gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_420px]">
+      <main className="grid min-h-0 grid-cols-1 grid-rows-[minmax(0,1fr)_minmax(11rem,0.55fr)] gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_420px] lg:grid-rows-1">
         <section className="grid min-h-0 grid-rows-[minmax(0,1fr)_auto] overflow-hidden rounded border border-neutral-200 bg-white">
-          <div className="grid min-h-0 grid-cols-1 overflow-hidden xl:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="grid min-h-0 grid-cols-1 grid-rows-[minmax(0,0.75fr)_minmax(16rem,1fr)] overflow-hidden xl:grid-cols-[minmax(0,1fr)_320px] xl:grid-rows-1">
             <div className="grid min-h-0 place-items-center bg-white overflow-hidden p-2">
               {stream.frame ? (
                 <img src={stream.frame} alt="Live game frame" role="img" aria-label="Live game frame" className="h-full w-full object-contain" />
@@ -122,7 +122,8 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
                   livePosition={stream.state?.position ?? null}
                   visitedCells={stream.visitedCells ?? {}}
                   visitedCellSize={stream.visitedCellSize}
-                  className="h-full max-h-full"
+                  fit="contain"
+                  className="h-full w-full"
                 />
               </div>
               <div className="grid grid-cols-3 gap-2 border-t border-neutral-200 bg-white p-3 text-xs">

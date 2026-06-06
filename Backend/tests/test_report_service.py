@@ -142,6 +142,84 @@ def test_report_voice_sanitizer_avoids_agent_blame() -> None:
     assert sanitized["items"][1] == "agentic QA remains valid"
 
 
+def test_evidence_model_classifies_low_confidence_as_harness_limited() -> None:
+    run = SimpleNamespace(
+        map_name="MAP01",
+        status="completed",
+        outcome="timeout",
+        total_kills=0,
+        total_items_collected=0,
+        secrets_found=0,
+    )
+    metrics = {
+        "position_sample_count": 1,
+        "coverage_percent": 3.0,
+        "recording_metadata": {"quality_status": "warning"},
+        "agent_quality_flags": {"warnings": ["no progress"]},
+        "fallback_action_count": 2,
+        "validation_rejection_count": 1,
+        "progress_metrics": {"consecutive_no_progress_decisions": 4},
+        "decision_count": 3,
+        "event_count": 2,
+        "movement_distance_units": 12,
+        "raw_enemy_count": 0,
+        "spawned_enemy_count": 0,
+        "raw_item_count": 0,
+        "spawned_item_count": 0,
+        "selected_skill_summary": {},
+    }
+
+    model = ReportService._build_evidence_model(run, [], metrics, None, "timeout", "FAIL")
+
+    assert model["evidence_matrix"]["harness_confidence"]["level"] == "LOW"
+    assert model["evidence_matrix"]["findings"][0]["classification"] == "agent_harness"
+    assert model["qa_sections"][0]["verdict"] == "LIMITED"
+
+
+def test_evidence_model_classifies_static_resource_defect_as_map_side() -> None:
+    defect = SimpleNamespace(
+        title="Static ammo insufficiency",
+        defect_type="static_ammo_risk",
+        description="Ammo ratio is below threshold.",
+        severity=1,
+        priority=1,
+        detected_at_tick=None,
+        occurrence_count=1,
+        recommendation="Add ammo or reduce monster HP.",
+    )
+    metrics = {
+        "position_sample_count": 20,
+        "coverage_percent": 55.0,
+        "recording_metadata": {"quality_status": "ok"},
+        "agent_quality_flags": {"warnings": []},
+        "fallback_action_count": 0,
+        "validation_rejection_count": 0,
+        "progress_metrics": {},
+        "decision_count": 6,
+        "event_count": 8,
+        "movement_distance_units": 500,
+        "raw_enemy_count": 10,
+        "spawned_enemy_count": 10,
+        "raw_item_count": 2,
+        "spawned_item_count": 2,
+        "selected_skill_summary": {"ammo_ratio": 0.1},
+    }
+    run = SimpleNamespace(
+        map_name="MAP01",
+        status="completed",
+        outcome="player_died",
+        total_kills=1,
+        total_items_collected=0,
+        secrets_found=0,
+    )
+
+    model = ReportService._build_evidence_model(run, [defect], metrics, None, "player_died", "FAIL")
+
+    finding = model["evidence_matrix"]["findings"][0]
+    assert finding["classification"] == "map"
+    assert finding["confidence"] == "HIGH"
+
+
 def test_report_merge_keeps_factual_environment_fields() -> None:
     defaults = {
         "test_environment_summary": "Measured summary",

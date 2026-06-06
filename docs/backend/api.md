@@ -102,7 +102,7 @@ Probes the configured Gemini model with a small test prompt and returns the resp
 Tests reachability of the MCP Doom SSE endpoint.
 
 ### `GET /health/smoke`
-Runs a full smoke test (LLM probe, MCP probe, DB ping). Returns `503` if overall != `pass`.
+Runs a smoke test for MCP connectivity, game startup, and state fetch. If `GEMINI_API_KEY` is configured, it also probes the LLM; otherwise the LLM stage is skipped for deterministic fallback mode. Returns `503` if overall != `pass`.
 
 ### `GET /health/detailed`
 Comprehensive dependency check: PostgreSQL (SELECT 1), MCP SSE, Gemini API key presence, storage directory writability, active run count.

@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS wad_files (
     original_filename   VARCHAR(255)    NOT NULL,
     stored_path         TEXT            NOT NULL UNIQUE,
     file_size_bytes     BIGINT          NOT NULL,
-    sha256_hash         CHAR(64)        NOT NULL UNIQUE,
+    sha256_hash         VARCHAR(64)     NOT NULL UNIQUE,
     uploaded_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
     validation_status   VARCHAR(32)     NOT NULL DEFAULT 'pending',
     validation_error    TEXT,

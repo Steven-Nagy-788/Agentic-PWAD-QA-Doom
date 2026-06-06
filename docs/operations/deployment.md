@@ -2,82 +2,46 @@
 
 ```mermaid
 flowchart LR
-  A([Push / PR]) --> B{CI Pipeline}
-  B --> C[Backend tests<br/>Python 3.11 / pytest]
-  B --> D[MCP Doom tests<br/>Python 3.11 / ViZDoom]
-  B --> E[Frontend checks<br/>Bun 1.3 / test + lint + build]
-
-  subgraph C [Backend — ubuntu-latest]
-    direction TB
-    C1[setup-python 3.11<br/>pip cache]
-    C2[apt: ffmpeg, libcairo2,<br/>libpango, libharfbuzz,<br/>libgdk-pixbuf]
-    C3[venv + pip install<br/>-r requirements.txt]
-    C4[pytest -q]
-    C1 --> C2 --> C3 --> C4
-  end
-
-  subgraph D [MCP Doom — ubuntu-latest]
-    direction TB
-    D1[setup-python 3.11<br/>pip cache]
-    D2[apt: libgl1, libsdl2-2.0-0]
-    D3[venv + pip install<br/>-e ".[dev]"]
-    D4[pytest -q]
-    D1 --> D2 --> D3 --> D4
-  end
-
-  subgraph E [Frontend — ubuntu-latest]
-    direction TB
-    E1[setup-bun 1.3]
-    E2[bun install<br/>--frozen-lockfile]
-    E3[bun run test]
-    E4[bun run lint]
-    E5[bun run build]
-    E1 --> E2 --> E3 --> E4 --> E5
-  end
+  A([Push / PR]) --> B{Fast CI}
+  B --> C[Backend<br/>Python 3.12 + Postgres]
+  B --> D[MCP Doom unit<br/>Python 3.12]
+  B --> E[Frontend<br/>Bun + Playwright]
+  B --> F[Docker image builds]
+  G([Schedule / Manual]) --> H{Full Product E2E}
+  H --> I[Docker Compose stack]
+  I --> J[health/smoke]
+  J --> K[Generated PWAD run]
+  K --> L[PDF + recording artifacts]
 ```
 
-## Trigger
+## Fast CI
 
-| Event | Branches |
+Fast CI lives in `.github/workflows/ci.yml` and runs on every push and pull request.
+
+| Job | Main checks |
 |---|---|
-| `push` | `**` (all branches) |
-| `pull_request` | all |
+| Backend | Python 3.12, dependency install, `pytest -q`, fresh PostgreSQL `alembic upgrade head`, `alembic current`, `alembic check` |
+| MCP Doom | Python 3.12, editable install, `pytest -q -m "not integration"` |
+| Frontend | Bun 1.3, `bun ci`, Playwright Chromium install, `bun run test`, `bun run lint`, `bun run build`, Playwright against the built app |
+| Docker | Build backend, MCP Doom, and frontend images |
 
-## Jobs
+Fast CI is deterministic and does not require paid Gemini calls.
 
-### 1. Backend tests
+## Full Product E2E
 
-| Step | Action |
-|---|---|
-| Checkout | `actions/checkout@v4` |
-| Python | `actions/setup-python@v5` — Python 3.11, pip cache keyed on `Backend/requirements.txt` |
-| System deps | `apt-get install ffmpeg libcairo2 libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libgdk-pixbuf-2.0-0` |
-| Python deps | `.venv/bin/pip install -r requirements.txt` |
-| Run tests | `.venv/bin/python -m pytest -q` |
+Full e2e lives in `.github/workflows/full-e2e.yml` and runs nightly or manually.
 
-Working directory: `Backend`
+The workflow:
 
-### 2. MCP Doom tests
+1. Builds and starts `docker-compose.yml`.
+2. Waits for backend health.
+3. Runs `/health/smoke`; a missing Gemini key is treated as deterministic fallback mode.
+4. Generates a temporary PWAD from bundled Freedoom in the MCP container.
+5. Uploads that PWAD, starts a short run, waits for terminal status, and verifies report PDF and MP4 recording endpoints.
+6. Uploads JSON responses, PDF, recording, and compose logs as artifacts.
 
-| Step | Action |
-|---|---|
-| Checkout | `actions/checkout@v4` |
-| Python | `actions/setup-python@v5` — Python 3.11, pip cache keyed on `mcp-doom/pyproject.toml` |
-| System deps | `apt-get install libgl1 libsdl2-2.0-0` (ViZDoom runtime) |
-| Python deps | `.venv/bin/pip install -e ".[dev]"` |
-| Run tests | `.venv/bin/python -m pytest -q` |
+## Runtime Notes
 
-Working directory: `mcp-doom`
-
-### 3. Frontend checks
-
-| Step | Action |
-|---|---|
-| Checkout | `actions/checkout@v4` |
-| Bun | `oven-sh/setup-bun@v2` — Bun 1.3 |
-| Install | `bun install --frozen-lockfile` |
-| Test | `bun run test` |
-| Lint | `bun run lint` |
-| Build | `bun run build` |
-
-Working directory: `frontend`
+- Docker Compose binds service ports to `127.0.0.1`.
+- Scheduled/manual e2e uses `GEMINI_API_KEY` when available, but does not require it for deterministic smoke coverage.
+- MCP integration tests still require ViZDoom runtime libraries and should run under `xvfb` in headless environments.

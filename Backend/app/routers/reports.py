@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.path_security import resolve_path_within
 from app.repositories.report_repository import ReportRepository
 from app.repositories.run_repository import RunRepository
 from app.serializers.report_serializers import ReportOut, ReportStatusOut
@@ -109,11 +110,12 @@ async def get_report_pdf(run_id: UUID, db: AsyncSession = Depends(get_db)) -> Fi
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Report PDF generation failed: {exc}") from exc
     if not report.pdf_path:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Report generation is still in progress, try again later")
-    path = Path(get_settings().report_storage_dir.parent, report.pdf_path)
-    if not path.exists():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Report PDF file is missing")
-    resolved = path.resolve()
-    allowed = get_settings().report_storage_dir.resolve()
-    if not str(resolved).startswith(str(allowed)):
+    settings = get_settings()
+    path = Path(settings.report_storage_dir.parent, report.pdf_path)
+    try:
+        resolved = resolve_path_within(path, settings.report_storage_dir)
+    except ValueError:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied")
-    return FileResponse(path, media_type="application/pdf")
+    if not resolved.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Report PDF file is missing")
+    return FileResponse(resolved, media_type="application/pdf")

@@ -40,6 +40,8 @@ class ReportOut(BaseModel):
     pass_fail_summary: Optional[dict[str, Any]] = None
     risk_areas: Optional[list[Any] | dict[str, Any]] = None
     good_quality_areas: Optional[list[Any] | dict[str, Any]] = None
+    qa_sections: Optional[list[Any] | dict[str, Any]] = None
+    evidence_matrix: Optional[dict[str, Any]] = None
     major_activities_summary: Optional[str] = None
     activity_variances: Optional[str] = None
     elapsed_time_seconds: Optional[int] = None

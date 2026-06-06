@@ -62,12 +62,14 @@ NEXT_PUBLIC_WS_BASE=https://backend.example.com/v1
 npm test -- --run
 npm run lint
 npm run build
+PLAYWRIGHT_WEB_SERVER_COMMAND="npm run start -- --hostname 127.0.0.1 --port 3100" npm run test:e2e
 ```
 
 ```bash
 bun run test
 bun run lint
 bun run build
+PLAYWRIGHT_WEB_SERVER_COMMAND="bun run start --hostname 127.0.0.1 --port 3100" bun run test:e2e
 ```
 
 ## Main Screens

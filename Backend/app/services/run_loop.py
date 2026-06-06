@@ -670,7 +670,7 @@ async def agent_run_task(run_id: UUID) -> None:
                     outcome = "player_died"
                     break
                 if tool == "finish":
-                    outcome = str(summary_d.get("outcome", "completed"))
+                    outcome = _normalize_run_outcome(str(summary_d.get("outcome", "qa_completed")))
                     break
                 if _lockstep_should_stop_as_stuck(lockstep_state):
                     outcome = _lockstep_stop_outcome(lockstep_state)
@@ -740,6 +740,7 @@ async def agent_run_task(run_id: UUID) -> None:
     finally:
         if mcp_client is not None:
             await mcp_client.stop_game()
+        outcome = _normalize_run_outcome(outcome)
         recording_path = recorder.finalize()
         recording_metadata = recorder.validate(recording_path, outcome=outcome)
         progress_metrics = _lockstep_progress_metrics(lockstep_state)
@@ -876,6 +877,22 @@ def _situation_finished(situation: dict[str, Any]) -> bool:
         or situation.get("next_map")
         or situation.get("dead")
     )
+
+
+def _normalize_run_outcome(outcome: str | None) -> str:
+    value = str(outcome or "timeout").strip().lower()
+    aliases = {
+        "completed": "qa_completed",
+        "complete": "qa_completed",
+        "qa_complete": "qa_completed",
+        "agent_died": "player_died",
+        "death": "player_died",
+        "died": "player_died",
+        "softlock": "inconclusive_agent_stall",
+        "stuck": "inconclusive_agent_stall",
+        "agent_stall": "inconclusive_agent_stall",
+    }
+    return aliases.get(value, value)
 
 
 async def _safe_context_tool(mcp: McpDoomClient, tool_name: str) -> dict[str, Any]:
