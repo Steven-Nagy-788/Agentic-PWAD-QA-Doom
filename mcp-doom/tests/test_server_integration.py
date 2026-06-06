@@ -2,7 +2,6 @@
 
 import pytest
 from fastmcp.exceptions import ToolError
-from pathlib import Path
 
 from doom_mcp import server
 
@@ -51,9 +50,8 @@ def test_stop_game_idempotent():
     assert result["status"] == "stopped"
 
 
-def test_list_wad_maps():
-    wad_path = Path(__file__).resolve().parents[2] / "Backend" / "storage" / "wads" / "ac683d7a-65e6-4b06-b94f-b7c0cf8961af.wad"
-    result = server.list_wad_maps(str(wad_path))
+def test_list_wad_maps(test_wad_path: str):
+    result = server.list_wad_maps(test_wad_path)
     assert result["maps"] == ["E1M1"]
 
 
