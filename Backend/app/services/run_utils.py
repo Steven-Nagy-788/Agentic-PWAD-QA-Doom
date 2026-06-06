@@ -1150,3 +1150,77 @@ def _compute_dynamic_throttle(
         return 10.0
 
     return 12.0
+
+
+def generate_map_layout_png(
+    base_overview_path: str | None,
+    positions: list[tuple[float, float]],
+    current_x: float,
+    current_y: float,
+    map_bounds: dict[str, float] | None = None,
+) -> bytes | None:
+    """Generate a map layout PNG with position trail and current position marker.
+
+    Returns PNG bytes suitable for passing to the LLM, or None if unavailable.
+    """
+    if not base_overview_path:
+        return None
+    from pathlib import Path
+    path = Path(base_overview_path)
+    if not path.exists():
+        return None
+    try:
+        from PIL import Image, ImageDraw
+        image = Image.open(path).convert("RGBA")
+        draw = ImageDraw.Draw(image, "RGBA")
+        width, height = image.size
+
+        if map_bounds:
+            min_x = float(map_bounds["min_x"])
+            max_x = float(map_bounds["max_x"])
+            min_y = float(map_bounds["min_y"])
+            max_y = float(map_bounds["max_y"])
+        elif positions:
+            xs = [p[0] for p in positions] + [current_x]
+            ys = [p[1] for p in positions] + [current_y]
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+        else:
+            return None
+
+        if min_x == max_x:
+            min_x -= 1
+            max_x += 1
+        if min_y == max_y:
+            min_y -= 1
+            max_y += 1
+
+        margin = 20
+        def project(x: float, y: float) -> tuple[int, int]:
+            px = int(margin + ((x - min_x) / (max_x - min_x)) * (width - 2 * margin))
+            py = int(height - margin - ((y - min_y) / (max_y - min_y)) * (height - 2 * margin))
+            return px, py
+
+        # Draw position trail
+        trail_points = [project(x, y) for x, y in positions]
+        if len(trail_points) > 1:
+            draw.line(trail_points, fill=(37, 99, 235, 200), width=5, joint="curve")
+            draw.line(trail_points, fill=(147, 197, 253, 180), width=2, joint="curve")
+        for px, py in trail_points:
+            draw.ellipse((px - 3, py - 3, px + 3, py + 3), fill=(59, 130, 246, 150))
+
+        # Draw current position (bright cyan)
+        cx, cy = project(current_x, current_y)
+        draw.ellipse((cx - 8, cy - 8, cx + 8, cy + 8), fill=(8, 145, 178, 230), outline=(255, 255, 255, 220), width=2)
+
+        # Draw start marker if we have positions
+        if trail_points:
+            sx, sy = trail_points[0]
+            draw.ellipse((sx - 6, sy - 6, sx + 6, sy + 6), fill=(22, 163, 74, 200), outline=(255, 255, 255, 200), width=2)
+
+        from io import BytesIO
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        return buffer.getvalue()
+    except Exception:
+        return None

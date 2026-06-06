@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, String, Text, func, text
+from sqlalchemy import DateTime, REAL, ForeignKey, Index, String, Text, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -34,7 +34,7 @@ class WadHypothesis(Base):
     map_name: Mapped[str] = mapped_column(String(16), nullable=False)
     tag: Mapped[str] = mapped_column(String(32), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    confidence: Mapped[float] = mapped_column(Float, nullable=False, server_default=text("0.5"))
+    confidence: Mapped[float] = mapped_column(REAL, nullable=False, server_default=text("0.5"))
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     refuted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_seen_run_id: Mapped[uuid.UUID | None] = mapped_column(

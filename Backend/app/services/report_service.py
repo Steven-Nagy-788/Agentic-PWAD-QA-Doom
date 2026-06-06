@@ -521,14 +521,6 @@ class ReportService:
                     f"Confirmed defects: {len(defects)}",
                 ],
             },
-            {
-                "title": "Harness Confidence",
-                "classification": "agent_harness",
-                "verdict": confidence["level"],
-                "confidence": confidence["level"],
-                "summary": confidence["summary"],
-                "evidence": confidence["reasons"] or ["No harness confidence penalties were recorded."],
-            },
         ]
         return {
             "qa_sections": qa_sections,
@@ -619,12 +611,18 @@ class ReportService:
         if defect_type.startswith("static_") or defect_type in {"ammo_starvation", "health_deficit"}:
             return "map"
         if defect_type == "softlock_navigation":
-            return "map" if confidence["level"] == "HIGH" else "inconclusive"
+            return "map"
         if defect_type == "inconclusive_agent_stall":
-            return "agent_harness" if confidence["level"] != "HIGH" else "inconclusive"
-        if defect_type.startswith("agent_observed") or defect_type.startswith("visual_"):
-            return "inconclusive"
-        return "map" if confidence["level"] == "HIGH" else "inconclusive"
+            return "agent_harness"
+        if defect_type.startswith("agent_observed"):
+            return "map"
+        if defect_type.startswith("visual_"):
+            if defect_type in {"visual_hom", "visual_stuck_monster", "visual_geometry_glitch"}:
+                return "map"
+            if defect_type == "visual_hud_anomaly":
+                return "infrastructure"
+            return "map"
+        return "map"
 
     @staticmethod
     def _run_outcome_finding(
@@ -638,14 +636,10 @@ class ReportService:
             classification = "map"
             title = "Map progression completed"
             summary = "The exit path was reached in the automated playthrough."
-        elif confidence["level"] == "LOW":
-            classification = "agent_harness"
-            title = "Gameplay conclusion limited by harness confidence"
-            summary = "The run did not produce enough runtime evidence to blame the map."
         else:
             classification = "inconclusive"
             title = "Run ended before a map-completion verdict"
-            summary = "The run ended before exit validation and no confirmed map-side defect was available."
+            summary = "The run ended before exit validation. Review static analysis and runtime evidence to assess map quality."
         return {
             "title": title,
             "classification": classification,
@@ -661,19 +655,19 @@ class ReportService:
                 f"Decisions: {metrics.get('decision_count', 0)}",
             ],
             "recommendation": (
-                "Re-test with a larger tick budget or review static defects before changing the map."
-                if classification != "map"
-                else "Use additional seeds/difficulties before release sign-off."
+                "Use additional seeds/difficulties before release sign-off."
+                if classification == "map"
+                else "Re-test with a larger tick budget or review static defects before changing the map."
             ),
         }
 
     @staticmethod
     def _map_verdict_summary(run: TestRun, outcome: str, overall_verdict: str, confidence: dict[str, Any]) -> str:
         if run.outcome == "map_completed":
-            return "The tested route reached the exit; remaining recommendations should focus on coverage breadth and difficulty variance."
+            return "The tested route reached the exit. Remaining recommendations focus on coverage breadth, encounter balance, and difficulty variance."
         if confidence["level"] == "LOW":
-            return "The map did not receive a definitive gameplay verdict because harness confidence was low."
-        return f"The run ended as {outcome}; the deterministic verdict is {overall_verdict} and should be read with the listed evidence."
+            return "Limited runtime evidence was collected. Map quality conclusions should rely on static analysis and confirmed defects."
+        return f"The run ended as {outcome}. The map verdict is {overall_verdict} based on the available gameplay and static evidence."
 
     @staticmethod
     def _safe_file_size(path_str: str | None) -> int | None:
@@ -1369,22 +1363,27 @@ class ReportService:
     @staticmethod
     def _build_ai_behavior(run: TestRun, metrics: dict[str, Any], defects: list[Defect]) -> str:
         parts = []
-        flags = metrics.get("agent_quality_flags") or {}
-        warnings = flags.get("warnings", [])
-        if warnings:
-            parts.append(f"Harness quality warnings: {len(warnings)}.")
-            for w in warnings[:3]:
-                parts.append(f"  - {w}")
-        stuck_defects = [d for d in defects if d.defect_type in ("softlock_navigation", "inconclusive_agent_stall")]
-        if stuck_defects:
-            classified = [ReportService._defect_classification(d.defect_type, ReportService._harness_confidence(metrics)) for d in stuck_defects]
-            parts.append(f"Navigation stall evidence: {len(stuck_defects)} occurrence(s), classifications: {', '.join(classified)}.")
-        progress = metrics.get("progress_metrics") or {}
-        progress_score = progress.get("progress_score", 0)
-        if progress_score < 5:
-            parts.append("Harness progress score is low; gameplay conclusions require static or repeated-run support.")
+        spawned = int(metrics.get("spawned_enemy_count") or 0)
+        kills = run.total_kills or 0
+        if spawned == 0:
+            parts.append("No enemies spawn at the selected difficulty. Enemy behavior analysis is not applicable.")
+        else:
+            kill_rate = kills / spawned * 100
+            parts.append(f"Enemy engagement: {kills}/{spawned} eliminated ({kill_rate:.0f}% kill rate).")
+            stuck_defects = [d for d in defects if d.defect_type in ("softlock_navigation",) or "stuck" in d.defect_type]
+            if stuck_defects:
+                parts.append(f"Map-side navigation defects detected: {len(stuck_defects)} occurrence(s). "
+                             "These indicate geometry or pathing issues in the map itself.")
+            combat_defects = [d for d in defects if "combat" in d.defect_type or d.defect_type in ("ammo_starvation", "health_deficit")]
+            if combat_defects:
+                parts.append(f"Combat-related map defects: {len(combat_defects)}. "
+                             "Review encounter balance, enemy placement, and resource distribution.")
+            hitscanner_pct = float((metrics.get("selected_skill_summary") or {}).get("hitscanner_percent") or 0)
+            if hitscanner_pct > 40:
+                parts.append(f"Hitscanner ratio is high ({hitscanner_pct:.0f}%). "
+                             "Expect significant ranged pressure on the player from enemy composition.")
         if not parts:
-            parts.append("Harness behavior was within expected bounds for this run.")
+            parts.append("Enemy behavior and encounter design analysis requires more gameplay data from this map.")
         return " ".join(parts)
 
     @staticmethod
@@ -1489,7 +1488,6 @@ class ReportService:
         analysis: StaticAnalysisResult | None,
     ) -> str:
         recs = []
-        # Map complexity check — trivial maps need fundamental redesign, not tweaks
         if analysis:
             complexity = ReportService._assess_map_complexity(analysis)
             if complexity == "TRIVIAL":
@@ -1502,20 +1500,20 @@ class ReportService:
             sev1 = [d for d in defects if d.severity == 1]
             sev2 = [d for d in defects if d.severity == 2]
             if sev1:
-                recs.append(f"PRIORITY 1: Address {len(sev1)} critical/major defect(s) before release.")
+                recs.append(f"PRIORITY 1: Address {len(sev1)} critical/major map defect(s) before release.")
             if sev2:
                 recs.append(f"PRIORITY 2: Review {len(sev2)} moderate defect(s) for gameplay impact.")
         coverage = float(metrics.get("coverage_percent") or 0)
         if coverage < 50:
-            recs.append("Increase run budget or test additional maps to improve coverage confidence.")
+            recs.append("Test with a larger tick budget or additional runs to improve map coverage confidence.")
         if run.outcome != "map_completed":
-            recs.append("Review the evidence matrix classification before changing the map for this run outcome.")
+            recs.append("Re-test to verify map exit reachability and full progression path.")
         if analysis and analysis.health_ratio < 0.2:
-            recs.append("Add health pickups to improve survivability at the tested difficulty.")
+            recs.append("Map health economy is critically low. Add health pickups to improve player survivability.")
         if analysis and analysis.ammo_ratio < 0.5:
-            recs.append("Add ammo pickups or reduce monster count to prevent resource starvation.")
+            recs.append("Map ammo economy is deficient. Add ammo pickups or reduce enemy count.")
         if not recs:
-            recs.append("No immediate action required. Map passed automated QA checks.")
+            recs.append("No immediate map changes required. Map passed automated QA checks.")
         return " ".join(recs)
 
     @staticmethod

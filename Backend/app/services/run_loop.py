@@ -68,6 +68,7 @@ from app.services.run_utils import (
     _factual_game_tic,
     _update_combat_log,
     _update_objective_history,
+    generate_map_layout_png,
     get_behavior_profile,
 )
 from app.services.websocket_service import websocket_service
@@ -178,6 +179,19 @@ async def agent_run_task(run_id: UUID) -> None:
         difficulty_level = run_orm.difficulty_level
         llm_model = run_orm.llm_model
         wad_stored_path = wad.stored_path
+        map_overview_png_path = getattr(analysis, "map_overview_png_path", None)
+        map_bounds_raw = (analysis.spawn_summary_by_skill or {}).get("_map_features", {}).get("bounds") if analysis else None
+        map_bounds_for_layout = None
+        if isinstance(map_bounds_raw, dict):
+            try:
+                map_bounds_for_layout = {
+                    "min_x": float(map_bounds_raw["min_x"]),
+                    "max_x": float(map_bounds_raw["max_x"]),
+                    "min_y": float(map_bounds_raw["min_y"]),
+                    "max_y": float(map_bounds_raw["max_y"]),
+                }
+            except (KeyError, TypeError, ValueError):
+                pass
         recording_fps = max(15.0, _bounded_float(runtime_value("recording_fps", settings.recording_fps), settings.recording_fps))
         gemini_rate_limit = _bounded_int(
             runtime_value("gemini_rate_limit_calls_per_minute", settings.gemini_rate_limit_calls_per_minute),
@@ -367,7 +381,23 @@ async def agent_run_task(run_id: UUID) -> None:
                     sequence_number += 1
 
                     llm_started = time.monotonic()
-                    decision, token_usage = await gemini.decide(prompt, llm_input, screenshot_png=screenshot_png)
+                    # Generate map layout overlay with position trail for spatial awareness
+                    map_layout_png = generate_map_layout_png(
+                        map_overview_png_path,
+                        lockstep_state.get("_position_trail_for_layout") or [],
+                        float(llm_input.get("player", {}).get("position", {}).get("x") or 0),
+                        float(llm_input.get("player", {}).get("position", {}).get("y") or 0),
+                        map_bounds_for_layout,
+                    )
+                    # Track position for layout overlay
+                    pos_x = float(llm_input.get("player", {}).get("position", {}).get("x") or 0)
+                    pos_y = float(llm_input.get("player", {}).get("position", {}).get("y") or 0)
+                    trail = lockstep_state.setdefault("_position_trail_for_layout", [])
+                    if not trail or trail[-1] != (pos_x, pos_y):
+                        trail.append((pos_x, pos_y))
+                        if len(trail) > 200:
+                            trail[:] = trail[-200:]
+                    decision, token_usage = await gemini.decide(prompt, llm_input, screenshot_png=screenshot_png, map_layout_png=map_layout_png)
                     total_llm_calls += 1
                     llm_duration_ms = (time.monotonic() - llm_started) * 1000
                     cost_estimate_usd = round(

@@ -166,7 +166,7 @@ class GeminiService:
         response = await self._generate_content("Return ok.", {})
         return {"model": self.llm_model, "response": response.text or ""}
 
-    async def decide(self, system_prompt: str, llm_input: dict[str, Any], screenshot_png: bytes | None = None) -> tuple[dict[str, Any], dict[str, int]]:
+    async def decide(self, system_prompt: str, llm_input: dict[str, Any], screenshot_png: bytes | None = None, map_layout_png: bytes | None = None) -> tuple[dict[str, Any], dict[str, int]]:
         if not self.settings.gemini_api_key:
             return self._fallback_decision(llm_input, "Gemini API key is not configured; using deterministic fallback."), {}
         return await self._call_with_retry(
@@ -181,6 +181,7 @@ class GeminiService:
                 {},
             ),
             screenshot_png=screenshot_png,
+            map_layout_png=map_layout_png,
         )
 
     async def detect_visual_defect_from_screenshot(
@@ -258,12 +259,13 @@ class GeminiService:
         parser: Callable[[str], dict[str, Any]],
         fallback: Callable[[], tuple[dict[str, Any], dict[str, int]]],
         screenshot_png: bytes | None = None,
+        map_layout_png: bytes | None = None,
     ) -> tuple[dict[str, Any], dict[str, int]]:
         last_error = ""
         await _throttle_local_rate(self.rate_limit_calls_per_minute)
         for attempt in range(3):
             try:
-                response, token_usage = await self._call_gemini(system_prompt, llm_input, screenshot_png=screenshot_png)
+                response, token_usage = await self._call_gemini(system_prompt, llm_input, screenshot_png=screenshot_png, map_layout_png=map_layout_png)
                 _record_api_call()
                 return parser(response), token_usage
             except Exception as exc:
@@ -286,8 +288,8 @@ class GeminiService:
         )
         return fallback_result, fallback_tokens
 
-    async def _call_gemini(self, system_prompt: str, llm_input: dict, screenshot_png: bytes | None = None) -> tuple[str, dict[str, int]]:
-        response = await self._generate_content(system_prompt, llm_input, screenshot_png=screenshot_png)
+    async def _call_gemini(self, system_prompt: str, llm_input: dict, screenshot_png: bytes | None = None, map_layout_png: bytes | None = None) -> tuple[str, dict[str, int]]:
+        response = await self._generate_content(system_prompt, llm_input, screenshot_png=screenshot_png, map_layout_png=map_layout_png)
         token_usage: dict[str, int] = {}
         if hasattr(response, "usage_metadata") and response.usage_metadata:
             token_usage = {
@@ -296,7 +298,7 @@ class GeminiService:
             }
         return response.text or "", token_usage
 
-    async def _generate_content(self, system_prompt: str, llm_input: dict, screenshot_png: bytes | None = None) -> Any:
+    async def _generate_content(self, system_prompt: str, llm_input: dict, screenshot_png: bytes | None = None, map_layout_png: bytes | None = None) -> Any:
         try:
             from google import genai
             from google.genai import types
@@ -309,16 +311,19 @@ class GeminiService:
         if config is None:
             user_content = f"{system_prompt}\n\n{user_content}"
 
+        # Build parts list: text + optional screenshots
+        has_images = screenshot_png is not None or map_layout_png is not None
         async with _get_gemini_sem():
             client = genai.Client(api_key=self.settings.gemini_api_key)
             async_client = getattr(client, "aio", None)
 
             if async_client is not None and hasattr(async_client, "models"):
-                if screenshot_png is not None:
-                    parts = [
-                        types.Part.from_text(text=user_content),
-                        types.Part.from_bytes(data=screenshot_png, mime_type="image/png"),
-                    ]
+                if has_images:
+                    parts = [types.Part.from_text(text=user_content)]
+                    if map_layout_png is not None:
+                        parts.append(types.Part.from_bytes(data=map_layout_png, mime_type="image/png"))
+                    if screenshot_png is not None:
+                        parts.append(types.Part.from_bytes(data=screenshot_png, mime_type="image/png"))
                     kwargs = {
                         "model": self.llm_model,
                         "contents": types.Content(parts=parts, role="user"),
@@ -330,11 +335,12 @@ class GeminiService:
                 return await async_client.models.generate_content(**kwargs)
 
             def generate() -> Any:
-                if screenshot_png is not None:
-                    parts = [
-                        types.Part.from_text(text=user_content),
-                        types.Part.from_bytes(data=screenshot_png, mime_type="image/png"),
-                    ]
+                if has_images:
+                    parts = [types.Part.from_text(text=user_content)]
+                    if map_layout_png is not None:
+                        parts.append(types.Part.from_bytes(data=map_layout_png, mime_type="image/png"))
+                    if screenshot_png is not None:
+                        parts.append(types.Part.from_bytes(data=screenshot_png, mime_type="image/png"))
                     kwargs = {
                         "model": self.llm_model,
                         "contents": types.Content(parts=parts, role="user"),

@@ -68,9 +68,13 @@ with tool counts, stop-reason counts, target outcomes, checkpoints, and
 hypotheses. `aggregates` and `budget` summarize the run. Check this ledger
 before acting so you do not repeat failed actions without new evidence.
 
-You also receive a screenshot. Use it to verify visible geometry, switches,
-doors, enemies, and HUD state. Occluded-threat counts are context only: never
-invent or reuse a hidden target id.
+You also receive a screenshot and a map layout overlay. The screenshot shows your
+first-person view. The map layout overlay shows the full map geometry with your
+position trail (blue line = path traveled, cyan dot = current position, green dot =
+starting position). Use the map layout to understand the overall map structure,
+identify unexplored directions, and avoid revisiting areas. Use the screenshot to
+verify visible geometry, switches, doors, enemies, and HUD state. Occluded-threat
+counts are context only: never invent or reuse a hidden target id.
 
 ============================================================
 TACTICAL DOCTRINE
