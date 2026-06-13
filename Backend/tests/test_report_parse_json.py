@@ -2,100 +2,96 @@ from __future__ import annotations
 
 import asyncio
 import json
-import types
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
-from app.services import report_service as report_service_mod
 from app.services.report_service import ReportService
 
 
 def test_parse_well_formed_json() -> None:
     text = '{"report_purpose": "test", "nested": {"key": "val"}}'
-    result = ReportService._parse_report_response(text)
+    result = ReportService._parse_report_json(text)
     assert result == {"report_purpose": "test", "nested": {"key": "val"}}
 
 
 def test_parse_json_in_code_block() -> None:
     text = '```json\n{"report_purpose": "from block", "count": 3}\n```'
-    result = ReportService._parse_report_response(text)
+    result = ReportService._parse_report_json(text)
     assert result == {"report_purpose": "from block", "count": 3}
 
 
 def test_parse_json_in_code_block_without_json_label() -> None:
     text = '```\n{"report_purpose": "no lang tag"}\n```'
-    result = ReportService._parse_report_response(text)
+    result = ReportService._parse_report_json(text)
     assert result == {"report_purpose": "no lang tag"}
 
 
 def test_parse_json_with_surrounding_text() -> None:
     text = 'Here is the report:\n{"report_purpose": "extracted"}\nDone.'
-    result = ReportService._parse_report_response(text)
+    result = ReportService._parse_report_json(text)
     assert result == {"report_purpose": "extracted"}
 
 
 def test_parse_json_with_prefix_and_suffix() -> None:
     text = 'Some preamble\n{"purpose": "x"}\nAnd trailing text'
-    result = ReportService._parse_report_response(text)
+    result = ReportService._parse_report_json(text)
     assert result == {"purpose": "x"}
-
-
-def test_parse_empty_string_returns_empty_dict() -> None:
-    result = ReportService._parse_report_response("")
-    assert result == {}
-
-
-def test_parse_whitespace_only_returns_empty_dict() -> None:
-    result = ReportService._parse_report_response("   \n  \t  ")
-    assert result == {}
-
-
-def test_parse_broken_json_returns_empty_dict() -> None:
-    result = ReportService._parse_report_response("{not valid json!!!")
-    assert result == {}
-
-
-def test_parse_partial_json_returns_empty_dict() -> None:
-    result = ReportService._parse_report_response('{"key": "value"')
-    assert result == {}
-
-
-def test_parse_list_json_returns_empty_dict() -> None:
-    result = ReportService._parse_report_response('[1, 2, 3]')
-    assert result == {}
-
-
-def test_parse_nested_json_extracted_from_braces() -> None:
-    text = 'text before {"a": 1} text after'
-    result = ReportService._parse_report_response(text)
-    assert result == {"a": 1}
-
-
-def test_parse_multiple_braces_uses_first_and_last_returns_empty_on_invalid() -> None:
-    text = '{"first": 1} noise {"second": 2}'
-    result = ReportService._parse_report_response(text)
-    assert result == {}
-
-
-def test_parse_empty_code_block_returns_empty_dict() -> None:
-    text = '```\n```'
-    result = ReportService._parse_report_response(text)
-    assert result == {}
 
 
 def test_parse_whitespace_around_json() -> None:
     text = '  \n  {"key": "val"}  \n  '
-    result = ReportService._parse_report_response(text)
+    result = ReportService._parse_report_json(text)
     assert result == {"key": "val"}
 
 
 def test_parse_large_valid_json() -> None:
     data = {f"key_{i}": i for i in range(100)}
     text = json.dumps(data)
-    result = ReportService._parse_report_response(text)
+    result = ReportService._parse_report_json(text)
     assert result == data
+
+
+def test_parse_json_extracted_from_braces() -> None:
+    text = 'text before {"a": 1} text after'
+    result = ReportService._parse_report_json(text)
+    assert result == {"a": 1}
+
+
+def test_parse_json_raises_on_empty_string() -> None:
+    with pytest.raises((json.JSONDecodeError, ValueError)):
+        ReportService._parse_report_json("")
+
+
+def test_parse_json_raises_on_whitespace_only() -> None:
+    with pytest.raises((json.JSONDecodeError, ValueError)):
+        ReportService._parse_report_json("   \n  \t  ")
+
+
+def test_parse_json_raises_on_broken_json() -> None:
+    with pytest.raises((json.JSONDecodeError, ValueError)):
+        ReportService._parse_report_json("{not valid json!!!")
+
+
+def test_parse_json_raises_on_partial_json() -> None:
+    with pytest.raises((json.JSONDecodeError, ValueError)):
+        ReportService._parse_report_json('{"key": "value"')
+
+
+def test_parse_json_raises_on_list() -> None:
+    with pytest.raises((json.JSONDecodeError, ValueError)):
+        ReportService._parse_report_json('[1, 2, 3]')
+
+
+def test_parse_json_raises_on_multiple_braces() -> None:
+    with pytest.raises((json.JSONDecodeError, ValueError)):
+        ReportService._parse_report_json('{"first": 1} noise {"second": 2}')
+
+
+def test_parse_json_raises_on_empty_code_block() -> None:
+    with pytest.raises((json.JSONDecodeError, ValueError)):
+        ReportService._parse_report_json('```\n```')
 
 
 def _minimal_payload() -> dict:
@@ -161,23 +157,48 @@ def _minimal_payload() -> dict:
     }
 
 
+class _FakeGeminiResponse:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.usage_metadata = SimpleNamespace(
+            prompt_token_count=10,
+            candidates_token_count=5,
+        )
+
+
 @pytest.mark.asyncio
 async def test_call_gemini_returns_valid_json(monkeypatch) -> None:
     service = object.__new__(ReportService)
     service.settings = SimpleNamespace(
         gemini_api_key="test-key",
         llm_model="gemini-test",
+        gemini_rate_limit_calls_per_minute=15,
+        gemini_max_concurrency=1,
+        report_gemini_timeout_seconds=60,
     )
     payload = _minimal_payload()
 
-    class FakeGemini:
-        async def _call_gemini(self_inner, system_prompt, llm_input):
-            return '{"report_purpose": "gemini narrative"}', {"prompt_tokens": 10, "completion_tokens": 5}
+    async def fake_generate_content(**kwargs):
+        return _FakeGeminiResponse('{"report_purpose": "gemini narrative"}')
 
-    monkeypatch.setattr("app.services.gemini_service.GeminiService", lambda: FakeGemini())
+    monkeypatch.setattr(
+        "app.services.gemini_service._get_gemini_sem",
+        lambda: asyncio.Lock(),
+    )
+    monkeypatch.setattr(
+        "app.services.gemini_service._throttle_local_rate",
+        lambda _: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        "app.services.gemini_service._record_api_call",
+        lambda: None,
+    )
 
-    fake_prompt_path = SimpleNamespace(read_text=lambda: "sys")
-    report_service_mod.report_prompt_path = lambda: fake_prompt_path
+    import google.genai as _genai_mod
+    monkeypatch.setattr(
+        "google.genai.Client",
+        lambda api_key: SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=fake_generate_content))),
+    )
 
     result = await service._call_gemini_or_fallback(payload)
     assert result["report_purpose"] == "gemini narrative"
@@ -190,20 +211,36 @@ async def test_call_gemini_raises_exception_falls_back(monkeypatch) -> None:
     service.settings = SimpleNamespace(
         gemini_api_key="test-key",
         llm_model="gemini-test",
+        gemini_rate_limit_calls_per_minute=15,
+        gemini_max_concurrency=1,
+        report_gemini_timeout_seconds=60,
     )
     payload = _minimal_payload()
 
-    class FakeGemini:
-        async def _call_gemini(self_inner, system_prompt, llm_input):
-            raise RuntimeError("Gemini timeout")
+    async def fake_generate_content(**kwargs):
+        raise RuntimeError("Gemini timeout")
 
-    monkeypatch.setattr("app.services.gemini_service.GeminiService", lambda: FakeGemini())
+    monkeypatch.setattr(
+        "app.services.gemini_service._get_gemini_sem",
+        lambda: asyncio.Lock(),
+    )
+    monkeypatch.setattr(
+        "app.services.gemini_service._throttle_local_rate",
+        lambda _: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        "app.services.gemini_service._record_api_call",
+        lambda: None,
+    )
 
-    fake_prompt_path = SimpleNamespace(read_text=lambda: "sys")
-    report_service_mod.report_prompt_path = lambda: fake_prompt_path
+    import google.genai as _genai_mod
+    monkeypatch.setattr(
+        "google.genai.Client",
+        lambda api_key: SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=fake_generate_content))),
+    )
 
     result = await service._call_gemini_or_fallback(payload)
-    assert "deterministic-fallback" in result["_report_model"]
+    assert result["_report_model"] == "deterministic-grounded-template"
     assert "report_purpose" in result
 
 
@@ -224,18 +261,89 @@ async def test_call_gemini_returns_non_dict_falls_back(monkeypatch) -> None:
     service.settings = SimpleNamespace(
         gemini_api_key="test-key",
         llm_model="gemini-test",
+        gemini_rate_limit_calls_per_minute=15,
+        gemini_max_concurrency=1,
+        report_gemini_timeout_seconds=60,
     )
     payload = _minimal_payload()
 
-    class FakeGemini:
-        async def _call_gemini(self_inner, system_prompt, llm_input):
-            return '[1, 2, 3]', {"prompt_tokens": 5, "completion_tokens": 2}
+    async def fake_generate_content(**kwargs):
+        return _FakeGeminiResponse('[1, 2, 3]')
 
-    monkeypatch.setattr("app.services.gemini_service.GeminiService", lambda: FakeGemini())
+    monkeypatch.setattr(
+        "app.services.gemini_service._get_gemini_sem",
+        lambda: asyncio.Lock(),
+    )
+    monkeypatch.setattr(
+        "app.services.gemini_service._throttle_local_rate",
+        lambda _: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        "app.services.gemini_service._record_api_call",
+        lambda: None,
+    )
 
-    fake_prompt_path = SimpleNamespace(read_text=lambda: "sys")
-    report_service_mod.report_prompt_path = lambda: fake_prompt_path
+    import google.genai as _genai_mod
+    monkeypatch.setattr(
+        "google.genai.Client",
+        lambda api_key: SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=fake_generate_content))),
+    )
 
     result = await service._call_gemini_or_fallback(payload)
     assert "report_purpose" in result
-    assert result["_report_model"] == "gemini-test"
+    assert result["_report_model"] == "deterministic-grounded-template"
+
+
+def test_merge_preserves_deterministic_fields() -> None:
+    defaults = {
+        "report_purpose": "deterministic purpose",
+        "executive_summary": "deterministic summary",
+        "pass_fail_summary": {
+            "overall_verdict": "PASS",
+            "navigation_rationale": "det nav rationale",
+        },
+        "elapsed_time_seconds": 100,
+    }
+    generated = {
+        "report_purpose": "rich LLM narrative about the run",
+        "executive_summary": "detailed executive summary from LLM",
+        "pass_fail_summary": {
+            "overall_verdict": "FAIL",
+            "navigation_rationale": "LLM nav rationale",
+        },
+        "elapsed_time_seconds": 999,
+    }
+    result = ReportService._merge_report_defaults(defaults, generated)
+    assert result["report_purpose"] == "rich LLM narrative about the run"
+    assert result["executive_summary"] == "detailed executive summary from LLM"
+    assert result["pass_fail_summary"]["overall_verdict"] == "PASS"
+    assert result["pass_fail_summary"]["navigation_rationale"] == "LLM nav rationale"
+    assert result["elapsed_time_seconds"] == 100
+
+
+def test_merge_ignores_empty_llm_fields() -> None:
+    defaults = {"report_purpose": "deterministic purpose"}
+    generated = {"report_purpose": "   "}
+    result = ReportService._merge_report_defaults(defaults, generated)
+    assert result["report_purpose"] == "deterministic purpose"
+
+
+def test_merge_ignores_non_string_llm_fields() -> None:
+    defaults = {"report_purpose": "deterministic purpose"}
+    generated = {"report_purpose": 123}
+    result = ReportService._merge_report_defaults(defaults, generated)
+    assert result["report_purpose"] == "deterministic purpose"
+
+
+def test_merge_includes_llm_risk_areas() -> None:
+    defaults = {"risk_areas": [{"area": "old", "risk": "old risk"}]}
+    generated = {"risk_areas": [{"area": "new", "risk": "new risk"}]}
+    result = ReportService._merge_report_defaults(defaults, generated)
+    assert result["risk_areas"] == [{"area": "new", "risk": "new risk"}]
+
+
+def test_merge_keeps_deterministic_risk_when_llm_empty() -> None:
+    defaults = {"risk_areas": [{"area": "old", "risk": "old risk"}]}
+    generated = {"risk_areas": []}
+    result = ReportService._merge_report_defaults(defaults, generated)
+    assert result["risk_areas"] == [{"area": "old", "risk": "old risk"}]

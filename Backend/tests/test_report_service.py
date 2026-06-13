@@ -241,7 +241,7 @@ def test_report_merge_keeps_factual_environment_fields() -> None:
     assert merged["hardware_spec"] == {"cpu": "measured"}
     assert merged["software_spec"] == {"vizdoom": "1.3.0"}
     assert merged["pass_fail_summary"] == {"overall_verdict": "PASS"}
-    assert "report_purpose" not in merged
+    assert merged["report_purpose"] == "Useful narrative"
 
 
 def _crash_report_payload() -> dict:

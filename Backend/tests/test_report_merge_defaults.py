@@ -66,16 +66,17 @@ def test_merge_underscore_keys_ignored() -> None:
     assert merged["report_purpose"] == "Override"
 
 
-def test_merge_pass_fail_summary_gemini_overrides() -> None:
+def test_merge_pass_fail_summary_gemini_overrides_rationale() -> None:
     defaults = {
-        "pass_fail_summary": {"overall_verdict": "PASS", "map_navigation": "PASS"},
+        "pass_fail_summary": {"overall_verdict": "PASS", "navigation_rationale": "det rationale"},
     }
     generated = {
-        "pass_fail_summary": {"overall_verdict": "FAIL"},
+        "pass_fail_summary": {"overall_verdict": "FAIL", "navigation_rationale": "LLM rationale"},
     }
     merged = ReportService._merge_report_defaults(defaults, generated)
 
-    assert merged["pass_fail_summary"] == {"overall_verdict": "FAIL"}
+    assert merged["pass_fail_summary"]["overall_verdict"] == "PASS"
+    assert merged["pass_fail_summary"]["navigation_rationale"] == "LLM rationale"
 
 
 def test_merge_pass_fail_summary_gemini_empty_keeps_default() -> None:
@@ -174,13 +175,14 @@ def test_merge_mixed_override_and_keep() -> None:
     }
     generated = {
         "report_purpose": "Gemini purpose",
-        "pass_fail_summary": {"overall_verdict": "FAIL"},
+        "pass_fail_summary": {"overall_verdict": "FAIL", "navigation_rationale": "LLM nav"},
     }
     merged = ReportService._merge_report_defaults(defaults, generated)
 
     assert merged["report_purpose"] == "Gemini purpose"
     assert merged["problem_and_escalation"] == "Default escalation"
-    assert merged["pass_fail_summary"] == {"overall_verdict": "FAIL"}
+    assert merged["pass_fail_summary"]["overall_verdict"] == "PASS"
+    assert merged["pass_fail_summary"]["navigation_rationale"] == "LLM nav"
     assert merged["metrics"] == {"event_count": 5}
 
 

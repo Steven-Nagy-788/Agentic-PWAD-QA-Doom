@@ -684,14 +684,192 @@ class ReportService:
 
     async def _call_gemini_or_fallback(self, payload: dict[str, Any]) -> dict[str, Any]:
         fallback = self._fallback_report(payload)
-        fallback["_report_model"] = "deterministic-grounded-template"
-        return fallback
+        if not self.settings.gemini_api_key:
+            logger.info("No GEMINI_API_KEY configured, using deterministic report")
+            fallback["_report_model"] = "deterministic-grounded-template"
+            return fallback
+        try:
+            llm_report = await self._call_gemini_report(payload, fallback)
+            merged = self._merge_report_defaults(fallback, llm_report)
+            merged["_report_model"] = self.settings.llm_model
+            return merged
+        except Exception as exc:
+            logger.warning("Gemini report generation failed, using deterministic fallback: %s", exc)
+            fallback["_report_model"] = "deterministic-grounded-template"
+            return fallback
+
+    async def _call_gemini_report(self, payload: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
+        from google import genai
+        from google.genai import types
+
+        run: TestRun = payload["run"]
+        metrics: dict[str, Any] = payload["metrics"]
+        decisions = payload.get("decisions") or []
+        notable = payload.get("notable_events") or []
+        decision_sources = metrics.get("decision_source_counts") or {}
+        decision_log = []
+        for d in decisions[:30]:
+            if isinstance(d, AgentDecision):
+                decision_log.append({
+                    "seq": d.sequence_number,
+                    "source": d.decision_source,
+                    "tool": d.mcp_tool,
+                    "reasoning": (d.reasoning_summary or "")[:200],
+                })
+        notable_log = []
+        for ev in notable[:20]:
+            if isinstance(ev, GameEvent):
+                notable_log.append({
+                    "tick": ev.tick,
+                    "type": ev.event_type,
+                    "summary": (ev.summary or "")[:200],
+                })
+        system_prompt = (
+            "You are a senior Doom PWAD QA engineer writing a professional test report. "
+            "You will receive deterministic run data and a draft report. "
+            "Your job is to REWRITE the narrative/analysis sections with rich, expert-level QA prose. "
+            "You MUST keep all factual/numerical fields EXACTLY as provided — do NOT invent numbers, "
+            "kill counts, percentages, or verdicts. Only improve the writing quality of text fields. "
+            "Return a JSON object with ONLY the fields you are rewriting. "
+            "Do not include any fields you are not improving. "
+            "Return ONLY the JSON object, no markdown fences, no extra text."
+        )
+        llm_input = {
+            "run_id": str(run.id),
+            "map_name": run.map_name,
+            "difficulty_level": run.difficulty_level,
+            "outcome": run.outcome,
+            "status": run.status,
+            "total_actions_taken": run.total_actions_taken,
+            "total_llm_calls": run.total_llm_calls,
+            "total_kills": run.total_kills,
+            "final_hp": run.final_hp,
+            "final_armor": run.final_armor,
+            "secrets_found": run.secrets_found,
+            "duration_seconds": run.duration_seconds,
+            "llm_model": run.llm_model,
+            "decision_source_counts": decision_sources,
+            "fallback_action_count": metrics.get("fallback_action_count", 0),
+            "coverage_percent": metrics.get("coverage_percent", 0),
+            "spawned_enemy_count": metrics.get("spawned_enemy_count", 0),
+            "decision_log": decision_log,
+            "notable_events": notable_log,
+            "draft_report": {
+                "report_purpose": fallback.get("report_purpose"),
+                "problem_and_escalation": fallback.get("problem_and_escalation"),
+                "test_items_summary": fallback.get("test_items_summary"),
+                "test_environment_summary": fallback.get("test_environment_summary"),
+                "test_coverage_evaluation": fallback.get("test_coverage_evaluation"),
+                "defect_summary_narrative": fallback.get("defect_summary_narrative"),
+                "defect_patterns": fallback.get("defect_patterns"),
+                "major_activities_summary": fallback.get("major_activities_summary"),
+                "activity_variances": fallback.get("activity_variances"),
+                "executive_summary": fallback.get("executive_summary"),
+                "critical_issues": fallback.get("critical_issues"),
+                "geometry_technical_analysis": fallback.get("geometry_technical_analysis"),
+                "gameplay_flow_analysis": fallback.get("gameplay_flow_analysis"),
+                "combat_design_review": fallback.get("combat_design_review"),
+                "itemization_audit": fallback.get("itemization_audit"),
+                "ai_enemy_behavior": fallback.get("ai_enemy_behavior"),
+                "navigation_readability": fallback.get("navigation_readability"),
+                "secrets_optional_content": fallback.get("secrets_optional_content"),
+                "performance_engine_compliance": fallback.get("performance_engine_compliance"),
+                "speedrunning_advanced_play": fallback.get("speedrunning_advanced_play"),
+                "recommendations": fallback.get("recommendations"),
+                "final_verdict": fallback.get("final_verdict"),
+                "pass_fail_summary": fallback.get("pass_fail_summary"),
+                "risk_areas": fallback.get("risk_areas"),
+                "good_quality_areas": fallback.get("good_quality_areas"),
+            },
+        }
+        user_content = f"RUN DATA AND DRAFT REPORT:\n{json.dumps(llm_input, default=str)}"
+        config_cls = getattr(types, "GenerateContentConfig", None)
+        config = config_cls(system_instruction=system_prompt) if config_cls is not None else None
+        if config is None:
+            user_content = f"{system_prompt}\n\n{user_content}"
+
+        from app.services.gemini_service import _get_gemini_sem, _throttle_local_rate, _record_api_call
+        await _throttle_local_rate(self.settings.gemini_rate_limit_calls_per_minute)
+        last_error = ""
+        for attempt in range(3):
+            try:
+                async with _get_gemini_sem():
+                    client = genai.Client(api_key=self.settings.gemini_api_key)
+                    async_client = getattr(client, "aio", None)
+                    kwargs: dict[str, Any] = {"model": self.settings.llm_model, "contents": user_content}
+                    if config is not None:
+                        kwargs["config"] = config
+                    if async_client is not None and hasattr(async_client, "models"):
+                        response = await async_client.models.generate_content(**kwargs)
+                    else:
+                        response = await asyncio.to_thread(lambda: client.models.generate_content(**kwargs))
+                _record_api_call()
+                text = response.text or ""
+                if not text or text.strip().lower() == "null":
+                    raise ValueError("Empty Gemini response")
+                return self._parse_report_json(text)
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning("Gemini report attempt %d/3 failed: %s", attempt + 1, last_error)
+                if attempt < 2:
+                    await asyncio.sleep(5.0 if attempt == 0 else 10.0)
+        raise RuntimeError(f"Gemini report failed after 3 attempts: {last_error}")
+
+    @staticmethod
+    def _parse_report_json(text: str) -> dict[str, Any]:
+        match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+        candidate = match.group(1).strip() if match else text.strip()
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start >= 0 and end >= start:
+            candidate = candidate[start : end + 1]
+        data = json.loads(candidate)
+        if not isinstance(data, dict):
+            raise ValueError("LLM report response is not a JSON object")
+        return data
+
+    _LLM_NARRATIVE_FIELDS = {
+        "report_purpose", "problem_and_escalation", "test_items_summary",
+        "test_coverage_evaluation", "test_procedure_variances",
+        "test_case_variances", "test_process_changes", "defect_summary_narrative",
+        "defect_patterns", "test_item_limitations", "dropped_features",
+        "major_activities_summary", "activity_variances", "uncovered_attributes",
+        "executive_summary", "critical_issues", "geometry_technical_analysis",
+        "gameplay_flow_analysis", "combat_design_review", "itemization_audit",
+        "ai_enemy_behavior", "navigation_readability", "secrets_optional_content",
+        "performance_engine_compliance", "speedrunning_advanced_play",
+        "recommendations", "final_verdict",
+    }
+
+    _LLM_LIST_FIELDS = {
+        "objectives_planned", "objectives_covered", "objectives_omitted",
+    }
 
     @staticmethod
     def _merge_report_defaults(defaults: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:
-        # Model prose is not evidence. Keep deterministic fields authoritative
-        # until a claim-level grounding validator exists.
-        return dict(defaults)
+        merged = dict(defaults)
+        for field in ReportService._LLM_NARRATIVE_FIELDS:
+            llm_value = generated.get(field)
+            if isinstance(llm_value, str) and llm_value.strip():
+                merged[field] = llm_value
+        for field in ReportService._LLM_LIST_FIELDS:
+            llm_value = generated.get(field)
+            if isinstance(llm_value, list) and llm_value:
+                merged[field] = llm_value
+        llm_risk = generated.get("risk_areas")
+        if isinstance(llm_risk, list) and llm_risk:
+            merged["risk_areas"] = llm_risk
+        llm_good = generated.get("good_quality_areas")
+        if isinstance(llm_good, list) and llm_good:
+            merged["good_quality_areas"] = llm_good
+        llm_pf = generated.get("pass_fail_summary")
+        if isinstance(llm_pf, dict) and llm_pf:
+            deterministic_pf = defaults.get("pass_fail_summary") or {}
+            for key in ("navigation_rationale", "combat_rationale", "resource_rationale", "secret_rationale"):
+                if key in llm_pf and isinstance(llm_pf[key], str) and llm_pf[key].strip():
+                    deterministic_pf[key] = llm_pf[key]
+            merged["pass_fail_summary"] = deterministic_pf
+        return merged
 
     @staticmethod
     def _fallback_report(payload: dict[str, Any]) -> dict[str, Any]:
