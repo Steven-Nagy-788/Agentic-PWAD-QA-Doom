@@ -96,3 +96,14 @@ result = get_state()
 if result.get("level_completed"):
     new_episode()  # auto-advances to E1M2
 ```
+
+## Further Reading
+
+| Document | Description |
+|----------|-------------|
+| [Tools Reference](tools.md) | Complete MCP tools with parameters, return types, stop reasons |
+| [Game Manager](game-manager.md) | GameManager lifecycle, compound actions, campaign mode, director API |
+| [Executor](executor.md) | AutonomousExecutor state machine, combat, exploration, stuck recovery |
+| [Navigation](navigation.md) | NavigationMemory grid cells, key/door detection, direction analysis |
+| [State](state.md) | Game state extraction: variables, objects, sectors, depth buffer |
+| [Objects](objects.md) | Entity database: 70+ Doom entities with threat/attack/HP metadata |

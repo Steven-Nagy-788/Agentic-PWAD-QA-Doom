@@ -46,105 +46,6 @@ ViZDoom + Freedoom/PWAD
 Gemini decision service
 ```
 
-### Service Responsibilities
-
-`Backend/` is the FastAPI application. It owns uploads, database models, static analysis, run orchestration, LLM calls, report generation, WebSocket broadcasts, settings, and audit APIs.
-
-`mcp-doom/` is a separate FastMCP service. It owns ViZDoom startup, IWAD/PWAD loading, game state extraction, compound actions, navigation helpers, and the optional async executor/director path.
-
-`frontend/` is the Next.js application. It provides upload, WAD detail, run start, run live monitor, reports, settings, and aggregate run views.
-
-`Backend/storage/` contains local runtime artifacts. It is not source code and should be treated as generated data.
-
-Supplemental docs:
-
-- `docs/db schema.md`
-- `docs/backend/`
-- `docs/frontend/`
-- `docs/operations/`
-- `docs/historical/` for superseded reviews and implementation notes
-
-## Core Design
-
-### Lockstep AI Loop
-
-The active production loop is lockstep:
-
-1. Backend asks MCP for state/screenshot.
-2. Backend builds compact current-state JSON plus a bounded same-run action ledger.
-3. Gemini returns one structured MCP action.
-4. Backend normalizes technical parameters and rejects malformed requests without inventing a replacement.
-5. MCP executes the action and advances the game.
-6. Backend records the decision, telemetry, video frame, cost, and progress.
-
-This is slower than a fully autonomous real-time agent, but it is much easier to audit and defend in a QA context because every game advancement is tied to a stored decision and tool call.
-
-### MCP Boundary
-
-The backend does not directly press ViZDoom buttons. It calls MCP tools such as `start_game`, `get_state`, `explore`, `move_to`, `aim_and_shoot`, `strafe_and_shoot`, `retreat`, and `take_action`. That boundary keeps simulator code out of the API process and gives the decision trace clear action semantics.
-
-### Persistence
-
-PostgreSQL stores:
-
-- `wad_files`
-- `static_analysis_results`
-- `test_runs`
-- `agent_decisions`
-- `game_events`
-- `agent_position_trail`
-- `defects`
-- `test_reports`
-- `notable_event_screenshots`
-- `config_entries`
-- `wad_spatial_memory`
-- `wad_hypotheses`
-
-Spatial cells and hypotheses are reviewer-only analytics. They are not injected into later gameplay decisions.
-
-### Reports
-
-Reports are rendered from `Backend/app/templates/report.html.j2` through Jinja2 and compiled with WeasyPrint. PDF rendering runs in a worker thread so the FastAPI event loop is not blocked by CPU-bound PDF work.
-
-### MCP Executor
-
-MCP-Doom retains its standalone async executor for direct MCP use. The backend product runtime is lockstep-only and does not include a Director adapter.
-
-## Repository Layout
-
-```text
-.
-|-- Backend/
-|   |-- app/
-|   |   |-- core/           # settings, DB, typed runtime structures
-|   |   |-- models/         # SQLAlchemy models
-|   |   |-- repositories/   # DB access wrappers
-|   |   |-- routers/        # FastAPI routes
-|   |   |-- serializers/    # Pydantic API schemas
-|   |   |-- services/       # analysis, run loop, reports, memory, LLM, recording
-|   |   `-- templates/      # PDF/HTML report templates
-|   |-- migrations/         # Alembic migrations
-|   |-- sql/schema.sql      # full schema bootstrap
-|   |-- tests/              # backend unit/service tests
-|   `-- storage/            # generated artifacts and uploaded WADs
-|-- mcp-doom/
-|   |-- src/doom_mcp/
-|   |   |-- server.py       # FastMCP tool definitions
-|   |   |-- game_manager.py # game lifecycle and tool behavior
-|   |   |-- game_setup.py   # WAD parsing, map discovery, load preflight
-|   |   |-- executor.py     # experimental async executor
-|   |   |-- state.py        # screenshots, variables, sectors, objects
-|   |   `-- objects.py      # Doom entity metadata
-|   `-- tests/
-|-- frontend/
-|   |-- app/                # Next.js App Router pages
-|   |-- components/         # UI primitives
-|   |-- hooks/              # API/query/stream hooks
-|   `-- lib/                # REST client and shared types
-|-- docs/
-`-- .github/workflows/ci.yml
-```
-
 ## Prerequisites
 
 Local development assumes Linux.
@@ -153,18 +54,167 @@ Local development assumes Linux.
 - PostgreSQL 14 or newer
 - Node.js 22 or newer with npm, or Bun, for the frontend
 - FFmpeg for MP4 recording
-- WeasyPrint system libraries, normally installed by the Python wheel on modern Linux but may require Cairo/Pango packages on some distros
-- ViZDoom runtime libraries: OpenGL and SDL, for example `libgl1` and `libsdl2-2.0-0`
-- Gemini API key for real LLM decisions
+- WeasyPrint system libraries (Cairo, Pango)
+- ViZDoom runtime libraries: OpenGL and SDL
+- Gemini API key for real LLM decisions (optional — deterministic fallback is used when absent)
 
 On Debian/Ubuntu:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y postgresql postgresql-contrib ffmpeg libgl1 libsdl2-2.0-0
+sudo apt-get install -y postgresql postgresql-contrib ffmpeg libgl1 libsdl2-2.0-0 \
+  libcairo2 libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libgdk-pixbuf-2.0-0
 ```
 
-## Backend Setup
+## Quick Start (Docker)
+
+The fastest way to run the full stack. No local Python or Node.js installation needed.
+
+```bash
+# 1. Configure environment
+cp .env.example .env
+# Edit .env — set POSTGRES_PASSWORD (GEMINI_API_KEY is optional)
+
+# 2. Build and start all 4 containers
+make docker-up
+
+# 3. Open the app
+# Frontend: http://127.0.0.1:3000
+# API docs: http://127.0.0.1:8000/docs
+```
+
+Stop with:
+
+```bash
+make docker-down
+```
+
+## Quick Start (venv)
+
+From the repo root:
+
+```bash
+# 1. Install all services (creates venvs + installs deps)
+make install
+
+# 2. Configure environment
+cp Backend/.env.example Backend/.env
+# Edit Backend/.env — set POSTGRES_PASSWORD and GEMINI_API_KEY (optional)
+
+# 3. Initialize database (first time only)
+make -C Backend db-init
+make -C Backend db-upgrade
+
+# 4. Start all services
+make dev-venv
+```
+
+Open `http://127.0.0.1:3000`.
+
+## Makefile Commands
+
+Run `make help` to see all available targets:
+
+```bash
+make install          # Install all services into venvs + npm/bun install
+make dev-venv         # Start all services locally (postgres, mcp-doom, backend, frontend)
+make test             # Run all test suites
+make lint             # Run linters across all services
+make docker-up        # Build and start the full Docker Compose stack
+make docker-down      # Stop and remove the Docker Compose stack
+make docker-build     # Build all Docker images without starting
+make clean            # Remove caches, build artifacts, and __pycache__
+```
+
+## Installation
+
+### Option A: One-Command Install (venv)
+
+```bash
+make install
+```
+
+This creates venvs for Backend and mcp-doom, installs all Python and Node dependencies. Then configure and initialize the database:
+
+```bash
+cp Backend/.env.example Backend/.env
+# Edit Backend/.env — set POSTGRES_PASSWORD and GEMINI_API_KEY (optional)
+make -C Backend db-init
+make -C Backend db-upgrade
+```
+
+### Option B: Docker Compose
+
+```bash
+cp .env.example .env
+# Edit .env — set POSTGRES_PASSWORD and GEMINI_API_KEY (optional)
+make docker-up
+```
+
+This builds and starts PostgreSQL, mcp-doom, backend, and frontend in containers. No local Python/Node installation needed.
+
+### Option C: Manual Per-Service Install
+
+See the detailed Backend, MCP Doom, and Frontend sections below.
+
+## Running
+
+### With Makefile (recommended)
+
+```bash
+# Full local development (starts all services)
+make dev-venv
+
+# Docker (builds and starts all 4 containers)
+make docker-up
+
+# Run all test suites
+make test
+
+# Run linters
+make lint
+
+# Stop Docker stack
+make docker-down
+
+# Clean build artifacts
+make clean
+```
+
+### With Docker Compose
+
+```bash
+# Build and start
+make docker-up
+
+# View logs
+docker compose logs -f
+
+# Stop and remove volumes
+make docker-down
+```
+
+### With venv (manual)
+
+Start each service in a separate terminal:
+
+```bash
+# Terminal 1: Backend
+cd Backend
+.venv/bin/uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+
+# Terminal 2: MCP-Doom
+cd mcp-doom
+.venv/bin/fastmcp run src/doom_mcp/server.py --transport sse --host 127.0.0.1 --port 8001 --path /sse
+
+# Terminal 3: Frontend
+cd frontend
+npm run dev   # or: bun dev
+```
+
+Open `http://127.0.0.1:3000`.
+
+## Backend Setup (detailed)
 
 ```bash
 cd Backend
@@ -180,9 +230,9 @@ Edit `Backend/.env`:
 ```dotenv
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
-POSTGRES_DB=doom_agentic_qa
-POSTGRES_USER=doom_agentic
-POSTGRES_PASSWORD=
+POSTGRES_DB=doom_qa
+POSTGRES_USER=doom_qa
+POSTGRES_PASSWORD=your_secret_here
 DATABASE_URL=
 
 GEMINI_API_KEY=your_key_here
@@ -192,8 +242,7 @@ LLM_THROTTLE_SECONDS=2
 GEMINI_RATE_LIMIT_CALLS_PER_MINUTE=15
 ```
 
-Set `POSTGRES_PASSWORD` to a generated local secret. Leave `DATABASE_URL` blank to derive it
-from the `POSTGRES_*` fields, or provide a complete async SQLAlchemy URL.
+Set `POSTGRES_PASSWORD` to a generated local secret. Leave `DATABASE_URL` blank to derive it from the `POSTGRES_*` fields, or provide a complete async SQLAlchemy URL.
 
 Create the database and apply the schema:
 
@@ -219,7 +268,7 @@ Useful backend URLs:
 - `http://127.0.0.1:8000/docs`
 - `http://127.0.0.1:8000/metrics`
 
-## MCP Doom Setup
+## MCP Doom Setup (detailed)
 
 ```bash
 cd mcp-doom
@@ -239,7 +288,7 @@ cd mcp-doom
 
 The MCP server supports both campaign maps and uploaded PWADs. For normal backend use, keep it running while the backend starts runs.
 
-## Frontend Setup
+## Frontend Setup (detailed)
 
 ```bash
 cd frontend
@@ -384,50 +433,17 @@ Important categories include:
 
 ## Testing
 
-Backend:
-
 ```bash
-cd Backend
-.venv/bin/python -m pytest -q
+# Run all test suites
+make test
+
+# Or per-service:
+cd Backend && .venv/bin/python -m pytest -q
+cd mcp-doom && .venv/bin/python -m pytest -q -m "not integration"
+cd frontend && npm test -- --run   # or: bun run test
 ```
 
-MCP:
-
-```bash
-cd mcp-doom
-.venv/bin/python -m pytest -q -m "not integration"
-xvfb-run -a .venv/bin/python -m pytest -q -m integration
-```
-
-Frontend:
-
-```bash
-cd frontend
-npm test -- --run
-npm run lint
-npm run build
-```
-
-Equivalent Bun commands:
-
-```bash
-cd frontend
-bun run test
-bun run lint
-bun run build
-PLAYWRIGHT_WEB_SERVER_COMMAND="bun run start --hostname 127.0.0.1 --port 3100" bun run test:e2e
-```
-
-CI is defined in `.github/workflows/ci.yml` and runs backend tests, fresh PostgreSQL Alembic checks, MCP unit tests, frontend Vitest/lint/build/browser checks, and Docker image builds. `.github/workflows/full-e2e.yml` is scheduled/manual and starts the Docker Compose stack, runs `/health/smoke`, uploads a generated PWAD fixture, creates a short run, and verifies PDF/recording artifacts.
-
-Latest local verification on 2026-06-06:
-
-- Backend: `183 passed`.
-- Backend targeted report/path/outcome/smoke tests: `28 passed`.
-- MCP unit: `51 passed, 57 deselected`.
-- MCP generated-PWAD integration fixture: `1 passed` under `xvfb-run`.
-- Frontend: `23 passed`, lint clean, production build successful.
-- Browser E2E: Playwright live map layout test `1 passed` with production server override.
+CI is defined in `.github/workflows/ci.yml` and runs backend tests, linting (ruff), type checking (TypeScript), Alembic checks, MCP unit tests, frontend Vitest/lint/build/browser E2E, and Docker image builds with layer caching. `.github/workflows/full-e2e.yml` is scheduled/manual and starts the Docker Compose stack, runs `/health/smoke`, uploads a generated PWAD fixture, creates a short run, and verifies PDF/recording artifacts.
 
 ## Operational Constraints
 
@@ -480,17 +496,6 @@ Recording is missing:
 - Confirm FFmpeg is installed.
 - If the PWAD crashed before gameplay initialized, no recording can be produced.
 - Use `/v1/runs/{run_id}` to inspect `recording_metadata` and failure fields.
-
-## Roadmap
-
-High-value remaining work:
-
-- Worker queue for report regeneration and heavier analysis jobs.
-- Multi-replica run orchestration with persistent task state.
-- Backup/restore scripts for PostgreSQL and storage artifacts.
-- Load testing with k6 or Locust.
-- Frontend browser E2E tests once a Node runtime and a stable local test fixture are available.
-- Benchmarks comparing behavior profiles, throttle settings, and model choices.
 
 ## License and Assets
 

@@ -2,15 +2,15 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: doom_qa
-      POSTGRES_USER: doom_qa
+      POSTGRES_DB: "${POSTGRES_DB:-doom_agentic_qa}"
+      POSTGRES_USER: "${POSTGRES_USER:-doom_agentic}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:5433:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U doom_qa"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-doom_agentic} -d ${POSTGRES_DB:-doom_agentic_qa}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -40,10 +40,22 @@ services:
       context: ./Backend
       dockerfile: Dockerfile
     environment:
-      DATABASE_URL: "postgresql+asyncpg://doom_qa:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/doom_qa"
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-doom_agentic}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-doom_agentic_qa}"
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      LLM_MODEL: "${LLM_MODEL:-gemma-4-31b-it}"
+      LLM_THROTTLE_SECONDS: "${LLM_THROTTLE_SECONDS:-4}"
       MCP_DOOM_SSE_URL: "http://mcp-doom:8001/sse"
       STORAGE_DIR: "/app/storage"
+      WAD_STORAGE_DIR: "/app/storage/wads"
+      REPORT_STORAGE_DIR: "/app/storage/reports"
+      RECORDING_STORAGE_DIR: "/app/storage/recordings"
+      SCREENSHOT_STORAGE_DIR: "/app/storage/screenshots"
+      ANALYSIS_STORAGE_DIR: "/app/storage/analysis"
+      IWAD_USED: "${IWAD_USED:-freedoom2}"
+      MAX_RUN_TICKS: "${MAX_RUN_TICKS:-35000}"
+      DEFAULT_RUN_TICKS: "${DEFAULT_RUN_TICKS:-3000}"
+      LIVE_FRAME_FPS: "${LIVE_FRAME_FPS:-35}"
+      RECORDING_TELEMETRY_STRIDE: "${RECORDING_TELEMETRY_STRIDE:-1}"
       CORS_ORIGINS: "http://localhost:3000"
     volumes:
       - wad_storage:/app/storage/wads

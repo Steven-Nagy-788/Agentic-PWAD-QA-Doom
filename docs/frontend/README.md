@@ -125,3 +125,13 @@ frontend/
 │       └── HealthSparkline.tsx  # Inline HP sparkline SVG
 └── vitest.config.ts
 ```
+
+## Further Reading
+
+| Document | Description |
+|----------|-------------|
+| [Pages](pages.md) | All 7 pages with data fetching, user actions, and components |
+| [Components](components.md) | All 10 major UI components with props and behavior |
+| [Hooks & API](hooks-api.md) | useRunStream hook and API client library documentation |
+| [Testing](testing.md) | Vitest unit tests and Playwright E2E tests |
+```

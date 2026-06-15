@@ -141,10 +141,9 @@ export default function RunHistoryPage() {
   );
 }
 
-function FilterInput({ icon, placeholder, value, onChange }: { icon?: React.ReactElement; placeholder: string; value: string; onChange: (value: string) => void }) {
+function FilterInput({ placeholder, value, onChange }: { placeholder: string; value: string; onChange: (value: string) => void }) {
   return (
     <label className="flex h-10 items-center gap-2 rounded border border-neutral-200 bg-white px-3">
-      {icon ? <span className="text-neutral-400 [&>svg]:h-4 [&>svg]:w-4">{icon}</span> : null}
       <input className="min-w-0 flex-1 bg-transparent text-sm outline-none" placeholder={placeholder} value={value} onChange={(event) => onChange(event.target.value)} />
     </label>
   );

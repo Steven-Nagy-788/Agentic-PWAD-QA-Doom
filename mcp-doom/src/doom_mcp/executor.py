@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 import vizdoom as vzd
 
+from .combat_constants import ATTACK_URGENCY, THREAT_WEIGHTS
 from .objects import get_object_info
 from .state import extract_objects
 
@@ -86,10 +87,6 @@ class _TickSnapshot:
     depth: np.ndarray | None
     objects: list[dict]
 
-
-# Threat classification constants
-_THREAT_WEIGHTS = {"none": 0, "low": 1, "medium": 2, "high": 3}
-_ATTACK_URGENCY = {"hitscan": 3, "projectile": 2, "melee": 1, "none": 0}
 
 # Navigation constants
 _WALL_CLOSE = 15.0
@@ -309,7 +306,6 @@ class AutonomousExecutor:
                 "timestamp": e.timestamp,
             }
             for e in snapshot
-            if id(e) not in (0,)  # always true, just iterate
         ]
         # Cursor-based: return events since last call
         new_events = result[self._event_cursor:]
@@ -834,8 +830,8 @@ class AutonomousExecutor:
                 continue
 
             dist = max(obj["distance"], 1.0)
-            threat_w = _THREAT_WEIGHTS.get(info["threat"], 0)
-            attack_u = _ATTACK_URGENCY.get(info["attack"], 0)
+            threat_w = THREAT_WEIGHTS.get(info["threat"], 0)
+            attack_u = ATTACK_URGENCY.get(info["attack"], 0)
             proximity = 1000.0 / dist
             score = threat_w * 10 + attack_u * 5 + proximity + 5.0
 

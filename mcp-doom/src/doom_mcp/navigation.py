@@ -13,7 +13,7 @@ _DOOR_DEDUP_RANGE = 128.0   # doors within this range are merged
 
 
 def _cell(x: float, y: float) -> tuple[int, int]:
-    return (int(x) // _CELL_SIZE, int(y) // _CELL_SIZE)
+    return (math.floor(x / _CELL_SIZE), math.floor(y / _CELL_SIZE))
 
 
 class NavigationMemory:

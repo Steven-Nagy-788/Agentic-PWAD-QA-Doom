@@ -16,6 +16,7 @@ from fastmcp.exceptions import ToolError
 
 from . import game_setup as _game_setup
 from .actions import BUTTON_NAMES, names_to_action_list
+from .combat_constants import ATTACK_URGENCY, THREAT_WEIGHTS
 from .executor import AutonomousExecutor, ExecutorState, Objective, ObjectiveType
 from .game_setup import (
     list_wad_maps,
@@ -1979,9 +1980,6 @@ class GameManager:
     # Threat assessment (no tics consumed)
     # ------------------------------------------------------------------
 
-    _THREAT_WEIGHTS = {"none": 0, "low": 1, "medium": 2, "high": 3}
-    _ATTACK_URGENCY = {"hitscan": 3, "projectile": 2, "melee": 1, "none": 0}
-
     def get_threat_assessment(self) -> dict:
         """Analyze all visible threats and return prioritized tactical info.
 
@@ -2028,8 +2026,8 @@ class GameManager:
                 continue
 
             dist = max(obj["distance"], 1.0)
-            threat_w = self._THREAT_WEIGHTS.get(info["threat"], 0)
-            attack_u = self._ATTACK_URGENCY.get(info["attack"], 0)
+            threat_w = THREAT_WEIGHTS.get(info["threat"], 0)
+            attack_u = ATTACK_URGENCY.get(info["attack"], 0)
             proximity = 1000.0 / dist
             visibility_bonus = 5.0 if obj["is_visible"] else 0.0
 

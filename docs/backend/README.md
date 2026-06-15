@@ -130,9 +130,24 @@ Backend/
 │   ├── repositories/         # DB query layer per model
 │   ├── services/             # Business logic layer
 │   ├── serializers/          # Pydantic request/response models
-│   └── routers/              # 8 route modules
-├── migrations/               # Alembic versioned migrations
-├── tests/                    # pytest suite
+│   └── routers/              # 10 route modules
+├── migrations/               # Alembic versioned migrations (12 revisions)
+├── tests/                    # pytest suite (28 test files)
 ├── storage/                  # WAD files, recordings, screenshots, reports
 └── scripts/                  # init_db.sh and helpers
 ```
+
+## Further Reading
+
+| Document | Description |
+|----------|-------------|
+| [API Reference](api.md) | All 42 HTTP/WS endpoints with methods and descriptions |
+| [Data Model](data-model.md) | 11 core record models and evidence semantics |
+| [Full Models](models.md) | All 13 SQLAlchemy ORM models with field types and constraints |
+| [Routers](routers.md) | All 10 API routers with endpoint details |
+| [Services](services.md) | Services catalog: active runtime, evidence, analytics |
+| [Services Detail](services-detail.md) | In-depth service documentation |
+| [Prompts](prompts.md) | LLM prompt templates and engineering details |
+| [Run Lifecycle](run-lifecycle.md) | Lockstep loop: creation, iteration, completion |
+| [Defect Detection](defect-detection.md) | 7 post-run detectors and fingerprinting |
+| [Migrations](migrations.md) | Alembic migration history and schema evolution |

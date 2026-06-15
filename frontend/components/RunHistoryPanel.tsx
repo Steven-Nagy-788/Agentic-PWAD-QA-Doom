@@ -47,9 +47,9 @@ export function RunHistoryPanel({ memory }: { memory: SameRunMemory | null }) {
       </div>
       <Section icon={<Clock3 />} label="Budget" defaultOpen>
         <div className="grid grid-cols-3 gap-1.5">
-          <Metric label="Used" value={memory.budget.ticks_used} />
-          <Metric label="Remaining" value={memory.budget.ticks_remaining} />
-          <Metric label="Avg/action" value={memory.budget.avg_ticks_per_decision} />
+          <RunMetric label="Used" value={memory.budget.ticks_used} />
+          <RunMetric label="Remaining" value={memory.budget.ticks_remaining} />
+          <RunMetric label="Avg/action" value={memory.budget.avg_ticks_per_decision} />
         </div>
       </Section>
       <Section icon={<ListChecks />} label="Recent Actions" count={memory.recent_actions.length} defaultOpen>
@@ -85,7 +85,7 @@ export function RunHistoryPanel({ memory }: { memory: SameRunMemory | null }) {
   );
 }
 
-function Metric({ label, value }: { label: string; value: string | number }) {
+function RunMetric({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="rounded bg-neutral-100 p-1.5 text-center">
       <div className="text-[10px] text-neutral-500">{label}</div>
