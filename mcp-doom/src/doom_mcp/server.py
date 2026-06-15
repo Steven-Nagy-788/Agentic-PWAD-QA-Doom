@@ -663,6 +663,19 @@ def get_map_knowledge() -> dict:
 
 
 @mcp.tool
+def get_map_graph() -> dict:
+    """Build sector connectivity graph and analyze reachability.
+
+    Returns a topological graph of sector adjacency, reachability from
+    current position, and identification of sink nodes (sectors with no
+    path to exit — potential softlock areas).
+
+    No game tics are consumed. Use to detect softlocks and plan routes.
+    """
+    return manager.get_map_graph()
+
+
+@mcp.tool
 def stop_game() -> dict:
     """Stop the current game and release resources."""
     return manager.stop()

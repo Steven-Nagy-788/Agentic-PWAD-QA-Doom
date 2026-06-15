@@ -199,6 +199,195 @@ def _compact_context_for_llm(context: dict[str, Any], *, list_limit: int = 5) ->
     return _json_safe(compact)
 
 
+def _build_ascii_map_grid(
+    variables: dict[str, Any],
+    objects: list[dict[str, Any]],
+    navigation_info: dict[str, Any],
+    lockstep_state: LockstepState,
+) -> str | None:
+    """Build a Cartesian ASCII grid map for LLM spatial reasoning.
+
+    Characters:
+      # = wall/unknown    . = explored floor    ? = unexplored adjacent
+      P = player          E = enemy              I = item/ammo/health/armor
+      W = weapon          K = key                D = door
+      X = exit            > = lift               T = teleporter
+
+    Grid is centered on the player, 21x21 cells (each cell = CELL_SIZE units).
+    Returns None if no position data is available.
+    """
+    px = float(variables.get("x") or 0)
+    py = float(variables.get("y") or 0)
+    if not variables.get("x") and not variables.get("y"):
+        return None
+
+    player_cell_x = int(math.floor(px / CELL_SIZE))
+    player_cell_y = int(math.floor(py / CELL_SIZE))
+
+    half = 10  # 21x21 grid, player at center
+    grid_w = 2 * half + 1
+    grid_h = 2 * half + 1
+
+    # Initialize grid with unknown walls
+    grid = [["#" for _ in range(grid_w)] for _ in range(grid_h)]
+
+    # Mark visited cells
+    visited = lockstep_state.get("visited_cells") or {}
+    for cell_key in visited:
+        try:
+            cx, cy = cell_key.split(",")
+            cx, cy = int(cx), int(cy)
+        except (ValueError, AttributeError):
+            continue
+        gx = cx - player_cell_x + half
+        gy = half - (cy - player_cell_y)  # invert Y for display
+        if 0 <= gx < grid_w and 0 <= gy < grid_h:
+            if grid[gy][gx] == "#":
+                grid[gy][gx] = "."
+
+    # Mark unexplored neighbors of visited cells
+    for cell_key in visited:
+        try:
+            cx, cy = cell_key.split(",")
+            cx, cy = int(cx), int(cy)
+        except (ValueError, AttributeError):
+            continue
+        for dcx, dcy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nx, ny = cx + dcx, cy + dcy
+            nkey = f"{nx},{ny}"
+            if nkey not in visited:
+                gx = nx - player_cell_x + half
+                gy = half - (ny - player_cell_y)
+                if 0 <= gx < grid_w and 0 <= gy < grid_h:
+                    if grid[gy][gx] == "#":
+                        grid[gy][gx] = "?"
+
+    # Place player
+    grid[half][half] = "P"
+
+    # Place objects on the grid
+    for obj in objects:
+        ox = float(obj.get("position_x") or obj.get("distance", 0) * math.cos(math.radians(float(obj.get("angle_to_aim") or 0))))
+        oy = float(obj.get("position_y") or obj.get("distance", 0) * math.sin(math.radians(float(obj.get("angle_to_aim") or 0))))
+        # Use position_x/y if available (they are in the raw state, not always in compact)
+        # Fallback: use angle_to_aim + distance from player
+        if not obj.get("position_x"):
+            dist = float(obj.get("distance") or 0)
+            angle_rad = math.radians(float(obj.get("angle_to_aim") or 0))
+            ox = px + dist * math.cos(angle_rad)
+            oy = py + dist * math.sin(angle_rad)
+
+        gx = int(math.floor(ox / CELL_SIZE)) - player_cell_x + half
+        gy = half - (int(math.floor(oy / CELL_SIZE)) - player_cell_y)
+        if 0 <= gx < grid_w and 0 <= gy < grid_h and grid[gy][gx] not in ("P",):
+            obj_type = obj.get("type", "")
+            if obj_type == "monster":
+                grid[gy][gx] = "E"
+            elif obj_type in ("ammo", "item", "health", "armor"):
+                grid[gy][gx] = "I"
+            elif obj_type == "weapon":
+                grid[gy][gx] = "W"
+            elif obj_type == "key":
+                grid[gy][gx] = "K"
+
+    # Place doors from navigation info
+    for door in (navigation_info.get("nearby_doors") or []):
+        dx = float(door.get("x") or 0)
+        dy = float(door.get("y") or 0)
+        gx = int(math.floor(dx / CELL_SIZE)) - player_cell_x + half
+        gy = half - (int(math.floor(dy / CELL_SIZE)) - player_cell_y)
+        if 0 <= gx < grid_w and 0 <= gy < grid_h and grid[gy][gx] not in ("P", "E", "I", "W", "K"):
+            grid[gy][gx] = "D"
+
+    # Place known keys
+    for key_loc in (navigation_info.get("known_key_locations") or []):
+        kx = float(key_loc.get("x") or 0)
+        ky = float(key_loc.get("y") or 0)
+        gx = int(math.floor(kx / CELL_SIZE)) - player_cell_x + half
+        gy = half - (int(math.floor(ky / CELL_SIZE)) - player_cell_y)
+        if 0 <= gx < grid_w and 0 <= gy < grid_h and grid[gy][gx] not in ("P", "E"):
+            grid[gy][gx] = "K"
+
+    # Convert to string
+    lines = ["".join(row) for row in grid]
+    header = f"Player at ({px:.0f},{py:.0f}) facing {variables.get('compass', '?')}"
+    legend = "Legend: #wall .floor ?unexplored P(player) E(enemy) I(item) W(weapon) K(key) D(door)"
+    return header + "\n" + legend + "\n" + "\n".join(lines)
+
+
+_MAX_FAILURE_CRITIQUES = 8
+
+
+def _record_failure_critique(
+    lockstep_state: LockstepState,
+    *,
+    tick: int,
+    tool: str,
+    params: dict[str, Any],
+    reason: str,
+) -> None:
+    """Record a Reflexion-style failure critique for the LLM to learn from."""
+    critiques: list[dict] = lockstep_state.setdefault("failure_critiques", [])
+    critiques.append({
+        "tick": tick,
+        "action": tool,
+        "params_summary": str(params)[:200],
+        "critique": reason,
+    })
+    if len(critiques) > _MAX_FAILURE_CRITIQUES:
+        lockstep_state["failure_critiques"] = critiques[-_MAX_FAILURE_CRITIQUES:]
+
+
+def _determine_agent_phase(
+    variables: dict[str, Any],
+    threat_assessment: dict[str, Any],
+    navigation_info: dict[str, Any],
+    lockstep_state: LockstepState,
+    objects: list[dict[str, Any]],
+) -> str:
+    """Determine the agent's current behavioral phase for the LLM.
+
+    Returns one of: "combat", "retreating", "collecting", "interacting", "exploring".
+    """
+    health = int(float(variables.get("health") or 100))
+    visible_threats = [
+        t for t in (threat_assessment.get("threats") or [])
+        if isinstance(t, dict) and t.get("is_visible") is not False
+    ]
+    threat_level = str(threat_assessment.get("threat_level") or "none")
+
+    # Retreating: low health or recent retreat action
+    if health < 30:
+        return "retreating"
+    recent_actions = list(lockstep_state.get("decision_history") or [])
+    last_tool = recent_actions[-1].get("tool") if recent_actions else None
+    if last_tool == "retreat":
+        return "retreating"
+
+    # Combat: visible threats at medium or high level
+    if visible_threats and threat_level in ("medium", "high"):
+        return "combat"
+    if visible_threats and len(visible_threats) >= 2:
+        return "combat"
+
+    # Collecting: nearby items/ammo/health/weapons with no immediate threats
+    nearby_items = [
+        o for o in objects
+        if o.get("type") in ("ammo", "item", "health", "armor", "weapon")
+        and (o.get("distance") or 9999) < 512
+    ]
+    if nearby_items and not visible_threats:
+        return "collecting"
+
+    # Interacting: nearby doors, keys, or switches
+    nearby_doors = navigation_info.get("nearby_doors") or []
+    known_keys = navigation_info.get("known_key_locations") or []
+    if nearby_doors or known_keys:
+        return "interacting"
+
+    return "exploring"
+
+
 def _build_llm_input(
     state: dict[str, Any],
     threat_assessment: dict[str, Any],
@@ -305,6 +494,12 @@ def _build_llm_input(
                 "frontier_cells": _compute_frontier_cells(lockstep_state, variables),
             },
             "distance_context": distance_context,
+            "agent_phase": _determine_agent_phase(
+                variables, threat_assessment, navigation_info, lockstep_state, objects
+            ),
+            "map_ascii_grid": _build_ascii_map_grid(
+                variables, objects, navigation_info, lockstep_state
+            ),
             "same_run_memory": _build_same_run_memory(lockstep_state),
         }
     )
@@ -330,6 +525,7 @@ def _build_same_run_memory(
             "recent_actions": recent,
             "aggregates": _build_ledger_aggregates(all_actions, state),
             "budget": _build_budget_summary(state),
+            "failure_critiques": list(state.get("failure_critiques") or [])[-_MAX_FAILURE_CRITIQUES:],
         }
         if _serialized_size(projected) <= char_limit:
             return projected
@@ -1130,7 +1326,7 @@ def _bound_mcp_tool_params(tool: str, params: dict[str, Any]) -> dict[str, Any]:
             params["backpedal"] = bool(params["backpedal"])
     elif tool == "select_weapon":
         params["weapon_slot"] = _bounded_int(params.get("weapon_slot"), default=2, lower=0, upper=9)
-        params["max_tics"] = _bounded_int(params.get("max_tics"), default=20, lower=1, upper=20)
+        params["max_tics"] = _bounded_int(params.get("max_tics"), default=20, lower=1, upper=40)
     if tool in COMPOUND_TELEMETRY_TOOLS and "telemetry_stride" in params:
         params["telemetry_stride"] = _bounded_int(params.get("telemetry_stride"), default=1, lower=1, upper=10)
     return params

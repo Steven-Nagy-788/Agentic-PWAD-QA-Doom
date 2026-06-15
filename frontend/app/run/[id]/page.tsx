@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import { use, useState } from "react";
+import { use, useMemo, useState } from "react";
 import type React from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
@@ -13,6 +13,7 @@ import { Metric, OutcomeBadge, SkeletonRows, formatTime } from "@/lib/components
 import { DefectBadge } from "@/components/DefectBadge";
 import { DecisionTimeline } from "@/components/DecisionTimeline";
 import { MapCanvas } from "@/components/MapCanvas";
+import { AsciiGrid } from "@/components/AsciiGrid";
 import { ReasoningLog } from "@/components/ReasoningLog";
 import { RunHistoryPanel } from "@/components/RunHistoryPanel";
 import { StatBar } from "@/components/StatBar";
@@ -61,6 +62,14 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
   const map = maps.data?.find((item) => item.map_name === run.map_name);
 
   const [tab, setTab] = useState<"reasoning" | "mcp" | "memory" | "defects">("reasoning");
+  const [mapView, setMapView] = useState<"map" | "grid">("map");
+
+  // Extract ASCII grid from latest decision's LLM input
+  const asciiGrid = useMemo(() => {
+    const latest = stream.decisions.at(-1);
+    const llmInput = (latest as any)?.llmInput;
+    return llmInput?.map_ascii_grid ?? null;
+  }, [stream.decisions]);
 
   return (
     <div className="fixed inset-0 z-50 grid grid-rows-[auto_1fr_auto] overflow-hidden bg-neutral-100">
@@ -111,20 +120,38 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
               )}
             </div>
             <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden border-t border-neutral-200 bg-neutral-50 xl:border-l xl:border-t-0">
-              <div className="border-b border-neutral-200 bg-white px-3 py-2">
+              <div className="flex items-center justify-between border-b border-neutral-200 bg-white px-3 py-2">
                 <h2 className="text-xs font-semibold uppercase text-neutral-500">Map And Trail</h2>
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => setMapView("map")}
+                    className={`rounded px-2 py-0.5 text-[10px] font-medium ${mapView === "map" ? "bg-neutral-900 text-white" : "bg-neutral-100 text-neutral-600 hover:bg-neutral-200"}`}
+                  >
+                    SVG
+                  </button>
+                  <button
+                    onClick={() => setMapView("grid")}
+                    className={`rounded px-2 py-0.5 text-[10px] font-medium ${mapView === "grid" ? "bg-neutral-900 text-white" : "bg-neutral-100 text-neutral-600 hover:bg-neutral-200"}`}
+                  >
+                    Grid
+                  </button>
+                </div>
               </div>
               <div className="min-h-0 overflow-hidden p-3">
-                <MapCanvas
-                  map={map}
-                  trail={trail}
-                  events={events}
-                  livePosition={stream.state?.position ?? null}
-                  visitedCells={stream.visitedCells ?? {}}
-                  visitedCellSize={stream.visitedCellSize}
-                  fit="contain"
-                  className="h-full w-full"
-                />
+                {mapView === "map" ? (
+                  <MapCanvas
+                    map={map}
+                    trail={trail}
+                    events={events}
+                    livePosition={stream.state?.position ?? null}
+                    visitedCells={stream.visitedCells ?? {}}
+                    visitedCellSize={stream.visitedCellSize}
+                    fit="contain"
+                    className="h-full w-full"
+                  />
+                ) : (
+                  <AsciiGrid grid={asciiGrid} className="h-full w-full" />
+                )}
               </div>
               <div className="grid grid-cols-3 gap-2 border-t border-neutral-200 bg-white p-3 text-xs">
                 <MiniStat label="Trail" value={trail.length} />

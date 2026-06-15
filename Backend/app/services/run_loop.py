@@ -60,6 +60,7 @@ from app.services.run_utils import (
     _record_checkpoint,
     _record_decision_in_history,
     _record_event_in_history,
+    _record_failure_critique,
     _record_position_in_trail,
     _state_report_call,
     _summary,
@@ -469,6 +470,11 @@ async def agent_run_task(run_id: UUID) -> None:
                     # Get_state spam guard: after 2 consecutive get_state, force explore
                     get_state_count = lockstep_state.get("consecutive_get_state", 0)
                     if guard_enabled and get_state_count >= 2 and decision.get("mcp_tool") == "get_state":
+                        _record_failure_critique(
+                            lockstep_state, tick=tick, tool="get_state",
+                            params={},
+                            reason="Called get_state multiple times consecutively instead of taking action.",
+                        )
                         decision["mcp_tool"] = "explore"
                         decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": True, "turn_before": 180.0}
                         decision["reasoning_summary"] = "OVERRIDE: Consecutive get_state detected. Forced explore with 180° turn to advance gameplay."
@@ -479,6 +485,11 @@ async def agent_run_task(run_id: UUID) -> None:
                     stuck_counter = lockstep_state.get("position_stuck_counter", 0)
                     combat_tools = {"aim_and_shoot", "strafe_and_shoot", "select_weapon"}
                     if guard_enabled and stuck_counter >= 2 and decision.get("mcp_tool") in ("explore", "move_to", "take_action"):
+                        _record_failure_critique(
+                            lockstep_state, tick=tick, tool=decision.get("mcp_tool", "unknown"),
+                            params=decision.get("mcp_params", {}),
+                            reason=f"Agent stuck for {stuck_counter} decisions without meaningful movement. Need different approach.",
+                        )
                         # Alternate turn direction to avoid repeating the same wall
                         turn_amount = 180.0 if stuck_counter % 2 == 0 else -180.0
                         decision["mcp_tool"] = "explore"
@@ -494,6 +505,11 @@ async def agent_run_task(run_id: UUID) -> None:
                     # Skip during combat — don't interrupt active fights
                     diversity_counter = lockstep_state.get("decision_diversity_counter", 0)
                     if guard_enabled and diversity_counter >= 3 and decision.get("mcp_tool") in ("explore", "move_to", "take_action") and decision.get("mcp_tool") not in combat_tools:
+                        _record_failure_critique(
+                            lockstep_state, tick=tick, tool=decision.get("mcp_tool", "unknown"),
+                            params=decision.get("mcp_params", {}),
+                            reason=f"Decision loop: {diversity_counter} repeated {decision.get('mcp_tool')} calls. Must change strategy.",
+                        )
                         decision["mcp_tool"] = "explore"
                         decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": False, "ignore_object_ids": [], "turn_before": 90.0}
                         decision["reasoning_summary"] = (
@@ -541,6 +557,26 @@ async def agent_run_task(run_id: UUID) -> None:
 
                     stop_reason = _mcp_action_summary(mcp_call).get("stop_reason")
                     tool = mcp_call.get("tool") or decision.get("mcp_tool") or "explore"
+
+                    # Record failure critiques for actionable stop reasons
+                    if stop_reason in ("target_lost", "target_not_visible"):
+                        _record_failure_critique(
+                            lockstep_state, tick=result_tick, tool=tool,
+                            params=decision.get("mcp_params", {}),
+                            reason=f"Target {stop_reason}: enemy is behind cover or no longer visible. Must reposition for line of sight.",
+                        )
+                    elif stop_reason == "out_of_ammo":
+                        _record_failure_critique(
+                            lockstep_state, tick=result_tick, tool=tool,
+                            params=decision.get("mcp_params", {}),
+                            reason="Out of ammo for current weapon. Need to find ammo or switch to melee/unlimited ammo weapon.",
+                        )
+                    elif stop_reason == "no_usable_weapon":
+                        _record_failure_critique(
+                            lockstep_state, tick=result_tick, tool=tool,
+                            params=decision.get("mcp_params", {}),
+                            reason="No usable weapon available. Must retreat and find weapons/ammo.",
+                        )
 
                     self_x = float(state.get("game_variables", {}).get("POSITION_X", 0))
                     self_y = float(state.get("game_variables", {}).get("POSITION_Y", 0))

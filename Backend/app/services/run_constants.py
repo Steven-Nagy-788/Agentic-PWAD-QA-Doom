@@ -80,4 +80,5 @@ TOOL_PARAM_ALLOWLIST: dict[str, set[str]] = {
     "get_state": {"include_sectors", "include_depth"},
     "get_threat_assessment": set(),
     "get_navigation_info": set(),
+    "get_map_graph": set(),
 }

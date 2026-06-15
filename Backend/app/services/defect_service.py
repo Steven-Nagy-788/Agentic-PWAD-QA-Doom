@@ -41,6 +41,7 @@ class DefectService:
     async def detect_for_run(self, run: TestRun) -> None:
         await self._pwad_crash(run)
         analysis = await self.db.get(StaticAnalysisResult, run.static_analysis_id) if run.static_analysis_id else None
+        await self._voodoo_dolls(run, analysis)
         await self._difficulty_spawn_mismatch(run, analysis)
         await self._static_resource_balance(run, analysis)
         result = await self.db.execute(
@@ -76,6 +77,36 @@ class DefectService:
                 recommendation=(
                     "Open the WAD in a Doom editor/source port, verify map markers and required resources, "
                     "and compare with the raw runtime diagnostic stored on the run."
+                ),
+            )
+        )
+
+    async def _voodoo_dolls(self, run: TestRun, analysis: StaticAnalysisResult | None) -> None:
+        if analysis is None:
+            return
+        features = {}
+        if hasattr(analysis, "spawn_summary_by_skill") and isinstance(analysis.spawn_summary_by_skill, dict):
+            features = analysis.spawn_summary_by_skill.get("_map_features", {})
+        if not features.get("voodoo_doll_risk"):
+            return
+        player_starts = int(features.get("player_start_count", 0))
+        await self.repo.create(
+            Defect(
+                run_id=run.id,
+                severity=2,
+                priority=2,
+                defect_type="geometry_voodoo_dolls",
+                title=f"Multiple Player 1 start points detected ({player_starts})",
+                description=(
+                    f"The map contains {player_starts} Player 1 start points. In Doom, extra start points create "
+                    "'voodoo dolls' — dormant player copies. If these dolls are damaged or crushed, the real player "
+                    "takes the same damage. This can cause soft-locks, unexplained deaths, or undefined weapon bugs."
+                ),
+                detected_at_tick=0,
+                recommendation=(
+                    "Remove all but one Player 1 start point from the map. Each extra start creates a voodoo doll "
+                    "that shares damage with the player. Open the WAD in a Doom editor and verify only one Player 1 "
+                    "start (thing type 1) exists."
                 ),
             )
         )

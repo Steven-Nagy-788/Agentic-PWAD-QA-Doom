@@ -1091,7 +1091,7 @@ class GameManager:
     # Compound action helpers
     # ------------------------------------------------------------------
 
-    def _select_weapon_slot(self, game: vzd.DoomGame, weapon_slot: int, max_tics: int = 20) -> tuple[bool, int]:
+    def _select_weapon_slot(self, game: vzd.DoomGame, weapon_slot: int, max_tics: int = 40) -> tuple[bool, int]:
         """Select a weapon slot with SELECT_WEAPONn when configured, otherwise cycle."""
         slot = max(0, min(9, int(weapon_slot)))
         if slot in _SLOT_WEAPON_PREFERENCE:
@@ -1111,6 +1111,15 @@ class GameManager:
         tics_used = 0
 
         if direct_button in button_names:
+            # If current weapon is attacking, wait for attack to clear
+            if not game.get_game_variable(vzd.GameVariable.ATTACK_READY):
+                for _ in range(6):
+                    if game.is_episode_finished():
+                        break
+                    self._make_action(game, self._build_action_list({}), 1)
+                    tics_used += 1
+                    if game.get_game_variable(vzd.GameVariable.ATTACK_READY):
+                        break
             self._make_action(game, self._build_action_list({direct_button: 1}), 1)
             tics_used += 1
             retry_at = max(1, int(max_tics) // 2)
@@ -1605,6 +1614,7 @@ class GameManager:
                 stuck_recoveries = 0
                 tics_used = 0
                 turn_bias = 0.0
+                first_iteration = True
 
                 if turn_before != 0.0:
                     abs_turn = abs(turn_before)
@@ -1661,7 +1671,7 @@ class GameManager:
                                     "angle_to_aim": obj["angle_to_aim"],
                                 }
                                 summary["enemies_seen"].append(enemy_info)
-                                if stop_on_enemy:
+                                if stop_on_enemy and not first_iteration:
                                     cx, cy = self._get_position(game)
                                     summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
                                     return self._compound_result(game, summary, "enemy_spotted")
@@ -1675,7 +1685,7 @@ class GameManager:
                                     "distance": obj["distance"],
                                 }
                                 summary["items_seen"].append(item_info)
-                                if stop_on_item:
+                                if stop_on_item and not first_iteration:
                                     cx, cy = self._get_position(game)
                                     summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
                                     return self._compound_result(game, summary, "item_found")
@@ -1750,6 +1760,7 @@ class GameManager:
                     action_list = self._build_action_list(actions)
                     self._make_action(game, action_list, 1)
                     tics_used += 1
+                    first_iteration = False
 
                 cx, cy = self._get_position(game)
                 summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
@@ -2285,3 +2296,49 @@ class GameManager:
             result["objectives"] = self._executor.get_objectives()
 
         return result
+
+    def get_map_graph(self) -> dict:
+        """Build and return the sector connectivity graph.
+
+        Returns a topological graph of sector adjacency, reachability analysis,
+        and identification of sink nodes (potential softlock areas).
+        No game tics are consumed.
+        """
+        from doom_mcp.navigation import MapGraph, build_map_graph
+
+        game = self._require_running()
+
+        with self._game_lock:
+            if game.is_episode_finished():
+                return {"error": "episode_finished"}
+
+            state = game.get_state()
+            if state is None:
+                return {"error": "no_state"}
+
+            sectors = state.sectors if hasattr(state, "sectors") and state.sectors else []
+            if not sectors:
+                return {"error": "no_sector_data", "hint": "Sector data not available. Use get_state with include_sectors=True first."}
+
+            px, py, pa = self._get_player_pos(game)
+            current_sector = self._nav_memory._current_sector_id
+
+            # Build graph
+            graph = build_map_graph(sectors)
+            if current_sector is not None:
+                graph.set_spawn_sector(current_sector)
+
+            summary = graph.summary()
+            summary["current_sector"] = current_sector
+
+            # Add path to exit if possible
+            if current_sector is not None:
+                path = graph.path_to_exit(current_sector)
+                if path is not None:
+                    summary["path_to_exit"] = path
+                    summary["path_to_exit_length"] = len(path)
+                else:
+                    summary["path_to_exit"] = None
+                    summary["path_to_exit_length"] = 0
+
+        return summary

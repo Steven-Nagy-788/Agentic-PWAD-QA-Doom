@@ -63,6 +63,11 @@ def render_agent_prompt(
         "key_requirements": key_summary,
         "teleporter_count": map_features.get("teleporter_count", "unknown"),
         "lift_count": map_features.get("lift_count", "unknown"),
+        "exit_count": map_features.get("exit_count", "unknown"),
+        "damaging_floor_count": map_features.get("damaging_floor_count", "unknown"),
+        "total_linedefs": map_features.get("total_linedefs", "unknown"),
+        "total_sectors": map_features.get("total_sectors", "unknown"),
+        "total_things": map_features.get("total_things", "unknown"),
     }
     for key, value in values.items():
         template = template.replace("{" + key + "}", _sanitize_prompt_value(value))

@@ -355,6 +355,8 @@ class AnalysisService:
         door_specials = {1, 26, 31, 32, 33, 34, 46, 61, 62, 90, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118}
         key_lock_specials = {32, 33, 34, 103, 106, 109}
         lift_specials = {10, 14, 62, 66, 67, 68, 69, 70, 87, 88, 95, 100, 121, 122, 123, 124, 125, 126, 127, 128}
+        exit_specials = {52, 53, 54, 55, 56, 57, 58, 59, 197, 198}
+        teleporter_specials = {10, 125, 126, 127}
         # Thing 14 is a teleport destination. Thing 39 is a yellow key card.
         teleporter_things = {14}
 
@@ -362,6 +364,7 @@ class AnalysisService:
         locked_door_count = 0
         lift_count = 0
         teleporter_count = sum(thing_counts[t] for t in teleporter_things if t in thing_counts)
+        exit_count = 0
 
         red_key_count = thing_counts.get(13, 0) + thing_counts.get(38, 0)
         yellow_key_count = thing_counts.get(6, 0) + thing_counts.get(39, 0)
@@ -375,6 +378,20 @@ class AnalysisService:
                     locked_door_count += 1
             if special in lift_specials:
                 lift_count += 1
+            if special in exit_specials:
+                exit_count += 1
+
+        # Analyze sector types for damaging floors, secrets, etc.
+        damaging_floor_count = 0
+        secret_sector_count = 0
+        for sector in editor.sectors:
+            stype = int(sector.type)
+            # Sector types 16-31 are damage floors (16=10%, 20=20%, 25=30%, 30=40%)
+            if 16 <= stype <= 31:
+                damaging_floor_count += 1
+            # Sector type 9 is a secret sector
+            if stype == 9:
+                secret_sector_count += 1
 
         return {
             "door_count": door_count,
@@ -386,6 +403,14 @@ class AnalysisService:
             },
             "teleporter_count": teleporter_count,
             "lift_count": lift_count,
+            "exit_count": exit_count,
+            "damaging_floor_count": damaging_floor_count,
+            "secret_sector_count": secret_sector_count,
+            "player_start_count": int(thing_counts.get(1, 0)),
+            "voodoo_doll_risk": int(thing_counts.get(1, 0)) > 1,
+            "total_linedefs": len(editor.linedefs),
+            "total_sectors": len(editor.sectors),
+            "total_things": len(editor.things),
         }
 
     @staticmethod

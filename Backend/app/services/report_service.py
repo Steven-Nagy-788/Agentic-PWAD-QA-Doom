@@ -275,14 +275,12 @@ class ReportService:
             result = value
             for source, target in long_first_replacements:
                 result = re.sub(source, target, result)
-            doubled = False
-            if "automated automated" in result.lower():
-                doubled = True
-                result = re.sub(r"\b[Aa]utomated\s+[Aa]utomated playthrough\b", "Automated playthrough", result)
             for source, target in catch_all_replacements:
                 result = re.sub(source, target, result)
-            if doubled:
-                result = re.sub(r"\b[Aa]utomated\s+[Aa]utomated playthrough\b", "Automated playthrough", result)
+            # Collapse doubled words after all replacements
+            result = re.sub(r"\b[Aa]utomated\s+[Aa]utomated playthrough\b", "Automated playthrough", result)
+            result = re.sub(r"\bautomated playthrough playthrough\b", "automated playthrough", result)
+            result = re.sub(r"\bAutomated playthrough Playthrough\b", "Automated playthrough", result)
             if result.startswith("the automated"):
                 result = "T" + result[1:]
             return result
@@ -720,7 +718,7 @@ class ReportService:
         for ev in notable[:20]:
             if isinstance(ev, GameEvent):
                 notable_log.append({
-                    "tick": ev.tick,
+                    "tick": ev.tick_number,
                     "type": ev.event_type,
                     "summary": (ev.summary or "")[:200],
                 })
@@ -1398,7 +1396,7 @@ class ReportService:
         defect_count = len(defects)
         severity_1 = sum(1 for d in defects if d.severity == 1)
         parts = [
-            f"Automated QA analysis of map {run.map_name} (IWAD: {run.iwad_used}, difficulty {run.difficulty_level}).",
+            f"Automated QA analysis of map {run.map_name} (IWAD: {run.iwad_used or 'unknown'}, difficulty {run.difficulty_level}).",
             f"Outcome: {outcome}. Overall verdict: {overall_verdict}.",
             f"The automated playthrough executed {run.total_actions_taken or 0} lockstep decisions over "
             f"{run.duration_seconds or 0} wall-clock seconds, achieving {coverage:.1f}% coarse cell coverage.",
