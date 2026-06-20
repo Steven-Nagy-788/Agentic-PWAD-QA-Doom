@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     default_agent_behavior: str = "thorough"
     cross_run_memory_enabled: bool = False
     guard_enabled: bool = True
+    guard_consecutive_get_state_threshold: int = 2
+    guard_position_stuck_threshold: int = 2
+    guard_diversity_threshold: int = 3
     run_worker_mode: bool = False
     cors_origins: list[str] | str = "http://localhost:3000"
 
@@ -92,6 +95,9 @@ class Settings(BaseSettings):
         "same_run_ledger_max_chars",
         "same_run_ledger_recent_actions",
         "no_progress_decision_abort_threshold",
+        "guard_consecutive_get_state_threshold",
+        "guard_position_stuck_threshold",
+        "guard_diversity_threshold",
     )
     @classmethod
     def _positive_int(cls, value: int) -> int:

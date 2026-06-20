@@ -56,8 +56,8 @@ jobs:
         run: ./.venv/bin/ruff check app/
       - name: Check formatting with ruff
         run: ./.venv/bin/ruff format --check app/
-      - name: Run backend tests
-        run: ./.venv/bin/python -m pytest -q
+      - name: Run backend tests with coverage
+        run: ./.venv/bin/python -m pytest --cov=app --cov-report=term-missing --cov-report=xml -q
       - name: Verify Alembic migrations on fresh PostgreSQL
         run: |
           ./.venv/bin/alembic upgrade head
@@ -82,11 +82,11 @@ jobs:
           python -m venv .venv
           ./.venv/bin/pip install --upgrade pip
           ./.venv/bin/pip install -e ".[dev]"
-          ./.venv/bin/pip install ruff
+          ./.venv/bin/pip install ruff pytest-cov
       - name: Lint with ruff
         run: ./.venv/bin/ruff check src/
-      - name: Run MCP unit tests
-        run: ./.venv/bin/python -m pytest -q -m "not integration"
+      - name: Run MCP unit tests with coverage
+        run: ./.venv/bin/python -m pytest --cov=doom_mcp --cov-report=term-missing -q -m "not integration"
 
   frontend:
     name: Frontend checks
@@ -105,8 +105,8 @@ jobs:
         run: bunx tsc --noEmit
       - name: Install Playwright browser
         run: bunx playwright install --with-deps chromium
-      - name: Run frontend tests
-        run: bun run test
+      - name: Run frontend tests with coverage
+        run: bun run test -- --coverage
       - name: Run lint
         run: bun run lint
       - name: Build frontend

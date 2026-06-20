@@ -5,22 +5,22 @@ import pytest
 from app.services.prompt_service import _sanitize_prompt_value
 
 
-def test_sanitize_json_string_with_braces_preserved() -> None:
+def test_sanitize_json_string_with_braces_replaced() -> None:
     value = '{"key": "value", "count": 3}'
     result = _sanitize_prompt_value(value)
-    assert result == '{"key": "value", "count": 3}'
+    assert result == '("key": "value", "count": 3)'
 
 
-def test_sanitize_nested_json_preserved() -> None:
+def test_sanitize_nested_json_replaced() -> None:
     value = '{"outer": {"inner": "data"}}'
     result = _sanitize_prompt_value(value)
-    assert result == '{"outer": {"inner": "data"}}'
+    assert result == '("outer": ("inner": "data"))'
 
 
-def test_sanitize_empty_json_object_preserved() -> None:
+def test_sanitize_empty_json_object_replaced() -> None:
     value = '{}'
     result = _sanitize_prompt_value(value)
-    assert result == '{}'
+    assert result == '()'
 
 
 def test_sanitize_json_array_preserved() -> None:
@@ -66,16 +66,16 @@ def test_sanitize_string_without_braces_preserved() -> None:
     assert result == 'no braces here'
 
 
-def test_sanitize_partial_json_preserved() -> None:
+def test_sanitize_partial_json_replaced() -> None:
     value = '{"incomplete":'
     result = _sanitize_prompt_value(value)
-    assert result == '{"incomplete":'
+    assert result == '("incomplete":'
 
 
-def test_sanitize_json_with_special_chars_preserved() -> None:
+def test_sanitize_json_with_special_chars_replaced() -> None:
     value = '{"key": "value with spaces & symbols!"}'
     result = _sanitize_prompt_value(value)
-    assert result == '{"key": "value with spaces & symbols!"}'
+    assert result == '("key": "value with spaces & symbols!")'
 
 
 def test_sanitize_list_converted_to_string() -> None:
@@ -87,4 +87,4 @@ def test_sanitize_list_converted_to_string() -> None:
 def test_sanitize_dict_converted_to_string() -> None:
     value = {"a": 1, "b": 2}
     result = _sanitize_prompt_value(value)
-    assert result == "{'a': 1, 'b': 2}"
+    assert result == "('a': 1, 'b': 2)"

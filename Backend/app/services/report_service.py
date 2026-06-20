@@ -32,11 +32,22 @@ logger = logging.getLogger(__name__)
 
 class ReportService:
     def __init__(self, db: AsyncSession) -> None:
+        self._caller_db = db
         self.db = db
         self.settings = get_settings()
         self.repo = ReportRepository(db)
 
     async def generate(self, run_id: UUID) -> TestReport:
+        self.db = SessionLocal()
+        self.repo = ReportRepository(self.db)
+        try:
+            return await self._generate(run_id)
+        finally:
+            await self.db.close()
+            self.db = self._caller_db
+            self.repo = ReportRepository(self.db)
+
+    async def _generate(self, run_id: UUID) -> TestReport:
         lock_key = f"report:{run_id}"
         async with engine.connect() as raw_lock_connection:
             lock_connection = await raw_lock_connection.execution_options(isolation_level="AUTOCOMMIT")
@@ -54,11 +65,7 @@ class ReportService:
             except Exception as exc:
                 logger.warning("Report generation failed for run %s: %s", run_id, exc)
                 with contextlib.suppress(Exception):
-                    if self.db.is_active:
-                        await self.db.rollback()
-                    else:
-                        self.db = SessionLocal()
-                        self.repo = ReportRepository(self.db)
+                    await self.db.rollback()
                     await self.mark_error(run_id, str(exc))
                     await self.db.commit()
                 raise
@@ -147,12 +154,9 @@ class ReportService:
             "metrics": self._build_metrics(run, analysis, events, positions, decisions),
         }
         await self.db.commit()
-        await self.db.close()
         report_json = await self._call_gemini_or_fallback(payload)
-        self.db = SessionLocal()
-        self.repo = ReportRepository(self.db)
-        existing = await self.db.merge(existing)
-        run = await self.db.merge(run)
+        existing = await self.repo.get_by_run(run_id)
+        run = await self.db.get(TestRun, run_id)
         render_report = self._normalize_report_sections(report_json)
         pdf_path = await self._render_pdf_with_timeout(run_id, render_report, payload)
         fields = self._report_fields(run, render_report, pdf_path)
