@@ -248,9 +248,10 @@ The WebSocket server pushes JSON-encoded telemetry frames during an active run. 
 | Run sub-resources| 9     |
 | Reports          | 3     |
 | Patterns         | 1     |
+| Memory           | 1     |
 | Settings         | 3     |
 | Admin Storage    | 3     |
 | WebSocket        | 2     |
-| **Total**        | **42** |
+| **Total**        | **46** |
 
-*Note: The two WebSocket routes and the `POST /delete` + `POST /force-stop` each share the same handler, so the functional endpoint count is ~36.*
+*Note: The two WebSocket routes and the `POST /delete` + `POST /force-stop` each share the same handler, so the functional endpoint count is ~40.*

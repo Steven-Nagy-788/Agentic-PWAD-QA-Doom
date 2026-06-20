@@ -1,6 +1,6 @@
 # MCP Doom Server
 
-A [FastMCP](https://github.com/jlowin/fastmcp) server that wraps [ViZDoom](https://github.com/mwydmuch/ViZDoom) to let AI agents play Doom. The server exposes 20 MCP tools for game control, state inspection, combat, navigation, and high-level strategic direction, plus an autonomous background executor that can play at real-time speed (~35 Hz).
+A [FastMCP](https://github.com/jlowin/fastmcp) server that wraps [ViZDoom](https://github.com/mwydmuch/ViZDoom) to let AI agents play Doom. The server exposes 24 MCP tools for game control, state inspection, combat, navigation, and high-level strategic direction, plus an autonomous background executor that can play at real-time speed (~35 Hz).
 
 ## Architecture
 

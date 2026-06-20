@@ -31,7 +31,7 @@ Autonomous QA system that uploads Doom PWAD map files, runs ViZDoom through an M
 
 | Document | Description |
 |----------|-------------|
-| [Overview](mcp-doom/README.md) | FastMCP + ViZDoom, 20 MCP tools, architecture |
+| [Overview](mcp-doom/README.md) | FastMCP + ViZDoom, 24 MCP tools, architecture |
 | [Tools Reference](mcp-doom/tools.md) | Complete MCP tools with parameters and return types |
 | [Game Manager](mcp-doom/game-manager.md) | GameManager lifecycle, compound actions, campaign mode |
 | [Executor](mcp-doom/executor.md) | AutonomousExecutor: state machine, combat, exploration |

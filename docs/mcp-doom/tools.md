@@ -1,6 +1,6 @@
 # MCP Tools Reference
 
-All 20 tools exposed by the MCP Doom server. Tools are defined in `server.py` and delegate to `GameManager` methods.
+All 24 tools exposed by the MCP Doom server. Tools are defined in `server.py` and delegate to `GameManager` methods.
 
 ---
 
