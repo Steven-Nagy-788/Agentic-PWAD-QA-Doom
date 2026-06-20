@@ -26,6 +26,7 @@ class Defect(Base):
         Index("idx_defects_run_id", "run_id"),
         Index("idx_defects_severity", "run_id", "severity"),
         Index("idx_defects_fingerprint", "run_id", "fingerprint"),
+        Index("idx_defects_report_id", "report_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

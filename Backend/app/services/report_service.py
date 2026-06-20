@@ -18,7 +18,7 @@ from weasyprint import HTML
 from PIL import Image, ImageDraw
 
 from app.core.config import get_settings
-from app.core.database import engine
+from app.core.database import SessionLocal, engine
 from app.models import AgentDecision, AgentPositionTrail, Defect, GameEvent, StaticAnalysisResult, TestReport, TestRun, WadFile
 from app.repositories.defect_repository import DefectRepository
 from app.repositories.report_repository import ReportRepository
@@ -54,7 +54,11 @@ class ReportService:
             except Exception as exc:
                 logger.warning("Report generation failed for run %s: %s", run_id, exc)
                 with contextlib.suppress(Exception):
-                    await self.db.rollback()
+                    if self.db.is_active:
+                        await self.db.rollback()
+                    else:
+                        self.db = SessionLocal()
+                        self.repo = ReportRepository(self.db)
                     await self.mark_error(run_id, str(exc))
                     await self.db.commit()
                 raise
@@ -113,6 +117,21 @@ class ReportService:
             .all()
         )
         notable = [event for event in events if event.event_type != "normal"][:20]
+
+        # Load top 5 notable event screenshot paths for LLM visual context
+        screenshot_paths: list[str] = []
+        from app.models import NotableEventScreenshot
+        for event in notable[:5]:
+            ss_result = await self.db.execute(
+                select(NotableEventScreenshot.screenshot_path).where(
+                    NotableEventScreenshot.run_id == run_id,
+                    NotableEventScreenshot.game_event_id == event.id,
+                ).limit(1)
+            )
+            ss_path = ss_result.scalar_one_or_none()
+            if ss_path:
+                screenshot_paths.append(ss_path)
+
         payload = {
             "run": run,
             "analysis": analysis,
@@ -120,6 +139,7 @@ class ReportService:
             "events": events,
             "decisions": decisions,
             "notable_events": notable,
+            "screenshots": screenshot_paths,
             "first_ticks": list(events[:5]),
             "last_ticks": list(events[-5:]),
             "position_trail": positions,
@@ -127,8 +147,13 @@ class ReportService:
             "metrics": self._build_metrics(run, analysis, events, positions, decisions),
         }
         await self.db.commit()
+        await self.db.close()
         report_json = await self._call_gemini_or_fallback(payload)
-        render_report = self._sanitize_report_voice(self._normalize_report_sections(report_json))
+        self.db = SessionLocal()
+        self.repo = ReportRepository(self.db)
+        existing = await self.db.merge(existing)
+        run = await self.db.merge(run)
+        render_report = self._normalize_report_sections(report_json)
         pdf_path = await self._render_pdf_with_timeout(run_id, render_report, payload)
         fields = self._report_fields(run, render_report, pdf_path)
         created = await self.repo.update(existing, **fields)
@@ -252,43 +277,6 @@ class ReportService:
             normalized.get("good_quality_areas"), "area", "evidence"
         )
         return normalized
-
-    @staticmethod
-    def _sanitize_report_voice(value: Any) -> Any:
-        long_first_replacements = [
-            (r"\b[Tt]he automated playthrough was unable to\b", "the automated playthrough did not"),
-            (r"\b[Aa]utomated playthrough was unable to\b", "automated playthrough did not"),
-            (r"\b[Tt]he agent was unable to\b", "the automated playthrough did not"),
-            (r"\b[Aa]gent was unable to\b", "automated playthrough did not"),
-            (r"\b[Tt]he agent failed to\b", "the automated playthrough did not"),
-            (r"\b[Aa]gent failed to\b", "automated playthrough did not"),
-            (r"\b[Tt]he agent could not\b", "the automated playthrough did not"),
-            (r"\b[Aa]gent could not\b", "automated playthrough did not"),
-            (r"\b[Tt]he agent did not\b", "the automated playthrough did not"),
-            (r"\b[Aa]gent did not\b", "automated playthrough did not"),
-        ]
-        catch_all_replacements = [
-            (r"\bAgent\b", "Automated playthrough"),
-            (r"\bagent\b", "automated playthrough"),
-        ]
-        if isinstance(value, str):
-            result = value
-            for source, target in long_first_replacements:
-                result = re.sub(source, target, result)
-            for source, target in catch_all_replacements:
-                result = re.sub(source, target, result)
-            # Collapse doubled words after all replacements
-            result = re.sub(r"\b[Aa]utomated\s+[Aa]utomated playthrough\b", "Automated playthrough", result)
-            result = re.sub(r"\bautomated playthrough playthrough\b", "automated playthrough", result)
-            result = re.sub(r"\bAutomated playthrough Playthrough\b", "Automated playthrough", result)
-            if result.startswith("the automated"):
-                result = "T" + result[1:]
-            return result
-        if isinstance(value, list):
-            return [ReportService._sanitize_report_voice(item) for item in value]
-        if isinstance(value, dict):
-            return {key: ReportService._sanitize_report_voice(item) for key, item in value.items()}
-        return value
 
     @staticmethod
     def _coerce_text(value: Any) -> str | None:
@@ -425,6 +413,8 @@ class ReportService:
         for decision in decisions or []:
             source = str(decision.decision_source or "gemini")
             decision_source_counts[source] = decision_source_counts.get(source, 0) + 1
+        fallback_count = decision_source_counts.get("deterministic_fallback", 0)
+        guard_count = sum(v for k, v in decision_source_counts.items() if k.startswith("guard_"))
         return {
             "event_count": len(events),
             "decision_count": len(decisions or []),
@@ -434,7 +424,8 @@ class ReportService:
             "event_type_counts": event_type_counts,
             "action_counts": action_counts,
             "decision_source_counts": decision_source_counts,
-            "fallback_action_count": decision_source_counts.get("deterministic_fallback", 0),
+            "fallback_action_count": fallback_count + guard_count,
+            "guard_override_count": guard_count,
             "validation_rejection_count": sum(
                 1 for decision in decisions or [] if decision.mcp_stop_reason == "invalid_params"
             ),
@@ -687,105 +678,306 @@ class ReportService:
             fallback["_report_model"] = "deterministic-grounded-template"
             return fallback
         try:
-            llm_report = await self._call_gemini_report(payload, fallback)
+            llm_report = await self._call_gemini_report(payload)
+            llm_report = self._validate_llm_report(llm_report, payload, fallback)
             merged = self._merge_report_defaults(fallback, llm_report)
-            merged["_report_model"] = self.settings.llm_model
+            merged["_report_model"] = self.settings.llm_report_model
             return merged
         except Exception as exc:
             logger.warning("Gemini report generation failed, using deterministic fallback: %s", exc)
             fallback["_report_model"] = "deterministic-grounded-template"
             return fallback
 
-    async def _call_gemini_report(self, payload: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _load_report_prompt() -> str:
+        from pathlib import Path
+        prompt_path = Path(__file__).parent.parent / "prompts" / "report_generation_prompt.md"
+        if prompt_path.exists():
+            return prompt_path.read_text(encoding="utf-8").strip()
+        return (
+            "You are a senior Doom PWAD QA engineer writing a professional test report. "
+            "Return a JSON object with the report fields. Return ONLY the JSON."
+        )
+
+    @staticmethod
+    def _truncate(value: Any, limit: int = 2000) -> Any:
+        """Truncate large strings/ dicts to a max character count for LLM context."""
+        if isinstance(value, str):
+            return value[:limit] if len(value) > limit else value
+        if isinstance(value, (dict, list)):
+            text = json.dumps(value, default=str)
+            if len(text) <= limit:
+                return value
+            truncated = text[:limit]
+            try:
+                return json.loads(truncated)
+            except json.JSONDecodeError:
+                return truncated
+        return value
+
+    def _build_raw_data_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        run: TestRun = payload["run"]
+        metrics: dict[str, Any] = payload["metrics"]
+        analysis = payload.get("analysis")
+        decisions = payload.get("decisions") or []
+        all_events = payload.get("events") or []
+        positions = payload.get("position_trail") or []
+        map_bounds = payload.get("map_bounds")
+
+        selected_skill = metrics.get("selected_skill_summary") or {}
+        spawn_summary = {}
+        if analysis and isinstance(analysis.spawn_summary_by_skill, dict):
+            for lvl in (1, 3, 5):
+                key = f"skill_{lvl}"
+                spawn_summary[key] = analysis.spawn_summary_by_skill.get(key, {})
+
+        # Static analysis — full
+        static: dict[str, Any] = {}
+        if analysis:
+            static = {
+                "map_title": getattr(analysis, "map_title", None),
+                "map_display_name": getattr(analysis, "map_display_name", None),
+                "thing_count_total": getattr(analysis, "thing_count_total", None),
+                "thing_count_enemies": getattr(analysis, "thing_count_enemies", None),
+                "thing_count_items": getattr(analysis, "thing_count_items", None),
+                "thing_count_keys": getattr(analysis, "thing_count_keys", None),
+                "thing_count_weapons": getattr(analysis, "thing_count_weapons", None),
+                "secret_sector_count": getattr(analysis, "secret_sector_count", None),
+                "linedef_count": getattr(analysis, "linedef_count", None),
+                "sector_count": getattr(analysis, "sector_count", None),
+                "vertex_count": getattr(analysis, "vertex_count", None),
+                "map_width_units": getattr(analysis, "map_width_units", None),
+                "map_height_units": getattr(analysis, "map_height_units", None),
+                "total_monster_hp": getattr(analysis, "total_monster_hp", None),
+                "total_health_pickup_pts": getattr(analysis, "total_health_pickup_pts", None),
+                "total_armor_pickup_pts": getattr(analysis, "total_armor_pickup_pts", None),
+                "hitscanner_percent": float(analysis.hitscanner_percent or 0),
+                "health_ratio": float(selected_skill.get("health_ratio") or 0),
+                "ammo_ratio": float(selected_skill.get("ammo_ratio") or 0),
+                "estimated_difficulty": getattr(analysis, "estimated_difficulty", None),
+                "enemy_breakdown": getattr(analysis, "enemy_breakdown", None),
+                "item_breakdown": getattr(analysis, "item_breakdown", None),
+                "spawn_summary_by_skill": spawn_summary,
+            }
+
+        # Full decision trace — ALL decisions with full MCP input/output
+        decision_trace = []
+        for d in decisions:
+            if isinstance(d, AgentDecision):
+                entry: dict[str, Any] = {
+                    "seq": d.sequence_number,
+                    "tick_before": d.tick_before,
+                    "tick_after": d.tick_after,
+                    "status": d.status,
+                    "source": d.decision_source,
+                    "tool": d.mcp_tool,
+                    "reasoning": d.reasoning_summary or "",
+                    "mcp_stop_reason": d.mcp_stop_reason,
+                    "guard_modified": d.guard_modified,
+                    "guard_reason": d.guard_reason,
+                    "llm_duration_ms": d.llm_duration_ms,
+                    "mcp_duration_ms": d.mcp_duration_ms,
+                    "llm_input_tokens": d.llm_input_tokens,
+                    "llm_output_tokens": d.llm_output_tokens,
+                    "llm_cost_estimate_usd": d.llm_cost_estimate_usd,
+                    "error_message": d.error_message,
+                }
+                if d.mcp_input:
+                    entry["mcp_input"] = self._truncate(d.mcp_input, 500)
+                if d.mcp_output:
+                    entry["mcp_output"] = self._truncate(d.mcp_output, 500)
+                if d.llm_input_summary:
+                    entry["llm_state_context"] = self._truncate(d.llm_input_summary, 1000)
+                decision_trace.append(entry)
+
+        # Full game events — ALL events with complete fields
+        game_events_log = []
+        for ev in all_events:
+            if isinstance(ev, GameEvent):
+                game_events_log.append({
+                    "tick": ev.tick_number,
+                    "type": ev.event_type,
+                    "player_x": ev.player_x,
+                    "player_y": ev.player_y,
+                    "player_angle": ev.player_angle,
+                    "health": ev.health,
+                    "armor": ev.armor,
+                    "ammo_bullets": ev.ammo_bullets,
+                    "ammo_shells": ev.ammo_shells,
+                    "ammo_rockets": ev.ammo_rockets,
+                    "ammo_cells": ev.ammo_cells,
+                    "kill_count": ev.kill_count,
+                    "item_count": ev.item_count,
+                    "secret_count": ev.secret_count,
+                    "weapon_selected": ev.weapon_selected,
+                    "killed_enemy_type": ev.killed_enemy_type,
+                    "damage_received": ev.damage_received,
+                    "llm_reasoning": self._truncate(ev.llm_reasoning, 500) if ev.llm_reasoning else None,
+                    "action_taken": self._truncate(ev.action_taken, 500) if ev.action_taken else None,
+                })
+
+        # Position trail — every sampled position
+        trail_log = []
+        for pos in positions:
+            if isinstance(pos, AgentPositionTrail):
+                trail_log.append({
+                    "tick": pos.tick_number,
+                    "x": pos.x,
+                    "y": pos.y,
+                    "angle": pos.angle,
+                    "health": pos.health,
+                })
+
+        # Full defects
+        all_defects = payload.get("defects") or []
+        defect_log = []
+        for defect in all_defects:
+            defect_log.append({
+                "defect_type": getattr(defect, "defect_type", None),
+                "title": getattr(defect, "title", None),
+                "description": getattr(defect, "description", None),
+                "severity": getattr(defect, "severity", None),
+                "priority": getattr(defect, "priority", None),
+                "resolution_status": getattr(defect, "resolution_status", None),
+                "detected_at_tick": getattr(defect, "detected_at_tick", None),
+                "position_x": getattr(defect, "position_x", None),
+                "position_y": getattr(defect, "position_y", None),
+                "reproduction_steps": getattr(defect, "reproduction_steps", None),
+                "recommendation": getattr(defect, "recommendation", None),
+                "first_seen_tick": getattr(defect, "first_seen_tick", None),
+                "last_seen_tick": getattr(defect, "last_seen_tick", None),
+                "occurrence_count": getattr(defect, "occurrence_count", None),
+                "fingerprint": getattr(defect, "fingerprint", None),
+            })
+
+        # Map bounds for spatial context
+        bounds_info = None
+        if map_bounds:
+            bounds_info = {
+                "min_x": map_bounds.get("min_x"),
+                "max_x": map_bounds.get("max_x"),
+                "min_y": map_bounds.get("min_y"),
+                "max_y": map_bounds.get("max_y"),
+            }
+
+        # Coverage stats
+        coverage_percent = metrics.get("coverage_percent", 0)
+        meaningful_progress = metrics.get("meaningful_progress_events", 0)
+        consecutive_no_progress = metrics.get("consecutive_no_progress_decisions", 0)
+
+        # Failure details
+        failure_details = None
+        if run.failure_category or run.error_message or run.failure_summary:
+            failure_details = {
+                "failure_category": run.failure_category,
+                "failure_stage": run.failure_stage,
+                "failure_summary": run.failure_summary,
+                "error_message": run.error_message,
+                "failure_diagnostics": self._truncate(run.failure_diagnostics, 2000) if run.failure_diagnostics else None,
+            }
+
+        return {
+            "run_summary": {
+                "run_id": str(run.id),
+                "map_name": run.map_name,
+                "iwad_used": run.iwad_used,
+                "difficulty_level": run.difficulty_level,
+                "llm_model": run.llm_model,
+                "behavior_profile": getattr(run, "behavior_profile", None),
+                "seed": run.seed,
+                "status": run.status,
+                "outcome": run.outcome,
+                "started_at": str(run.started_at) if run.started_at else None,
+                "completed_at": str(run.completed_at) if run.completed_at else None,
+                "duration_seconds": run.duration_seconds,
+                "max_ticks": run.max_ticks,
+                "total_kills": run.total_kills,
+                "total_deaths": run.total_deaths,
+                "final_hp": run.final_hp,
+                "final_armor": run.final_armor,
+                "secrets_found": run.secrets_found,
+                "total_items_collected": run.total_items_collected,
+                "total_actions_taken": run.total_actions_taken,
+                "total_llm_calls": run.total_llm_calls,
+            },
+            "static_analysis": static,
+            "metrics": {
+                "raw_enemy_count": metrics.get("raw_enemy_count", 0),
+                "spawned_enemy_count": metrics.get("spawned_enemy_count", 0),
+                "hidden_enemy_count": metrics.get("hidden_enemy_count", 0),
+                "raw_item_count": metrics.get("raw_item_count", 0),
+                "spawned_item_count": metrics.get("spawned_item_count", 0),
+                "hidden_item_count": metrics.get("hidden_item_count", 0),
+                "selected_skill_summary": selected_skill,
+                "coverage_percent": coverage_percent,
+                "meaningful_progress_events": meaningful_progress,
+                "consecutive_no_progress_decisions": consecutive_no_progress,
+                "fallback_action_count": metrics.get("fallback_action_count", 0),
+                "decision_source_counts": metrics.get("decision_source_counts") or {},
+                "progress_metrics": metrics.get("progress_metrics") or {},
+                "agent_quality_flags": metrics.get("agent_quality_flags") or {},
+                "recording_metadata": metrics.get("recording_metadata") or {},
+                "position_cluster_count": metrics.get("position_cluster_count", 0),
+                "total_distance": metrics.get("total_distance", 0),
+            },
+            "map_bounds": bounds_info,
+            "decision_trace": decision_trace,
+            "game_events": game_events_log,
+            "position_trail": trail_log,
+            "defects": defect_log,
+            "failure_details": failure_details,
+        }
+
+    async def _call_gemini_report(self, payload: dict[str, Any]) -> dict[str, Any]:
         from google import genai
         from google.genai import types
 
-        run: TestRun = payload["run"]
-        metrics: dict[str, Any] = payload["metrics"]
-        decisions = payload.get("decisions") or []
-        notable = payload.get("notable_events") or []
-        decision_sources = metrics.get("decision_source_counts") or {}
-        decision_log = []
-        for d in decisions[:30]:
-            if isinstance(d, AgentDecision):
-                decision_log.append({
-                    "seq": d.sequence_number,
-                    "source": d.decision_source,
-                    "tool": d.mcp_tool,
-                    "reasoning": (d.reasoning_summary or "")[:200],
-                })
-        notable_log = []
-        for ev in notable[:20]:
-            if isinstance(ev, GameEvent):
-                notable_log.append({
-                    "tick": ev.tick_number,
-                    "type": ev.event_type,
-                    "summary": (ev.summary or "")[:200],
-                })
-        system_prompt = (
-            "You are a senior Doom PWAD QA engineer writing a professional test report. "
-            "You will receive deterministic run data and a draft report. "
-            "Your job is to REWRITE the narrative/analysis sections with rich, expert-level QA prose. "
-            "You MUST keep all factual/numerical fields EXACTLY as provided — do NOT invent numbers, "
-            "kill counts, percentages, or verdicts. Only improve the writing quality of text fields. "
-            "Return a JSON object with ONLY the fields you are rewriting. "
-            "Do not include any fields you are not improving. "
-            "Return ONLY the JSON object, no markdown fences, no extra text."
-        )
-        llm_input = {
-            "run_id": str(run.id),
-            "map_name": run.map_name,
-            "difficulty_level": run.difficulty_level,
-            "outcome": run.outcome,
-            "status": run.status,
-            "total_actions_taken": run.total_actions_taken,
-            "total_llm_calls": run.total_llm_calls,
-            "total_kills": run.total_kills,
-            "final_hp": run.final_hp,
-            "final_armor": run.final_armor,
-            "secrets_found": run.secrets_found,
-            "duration_seconds": run.duration_seconds,
-            "llm_model": run.llm_model,
-            "decision_source_counts": decision_sources,
-            "fallback_action_count": metrics.get("fallback_action_count", 0),
-            "coverage_percent": metrics.get("coverage_percent", 0),
-            "spawned_enemy_count": metrics.get("spawned_enemy_count", 0),
-            "decision_log": decision_log,
-            "notable_events": notable_log,
-            "draft_report": {
-                "report_purpose": fallback.get("report_purpose"),
-                "problem_and_escalation": fallback.get("problem_and_escalation"),
-                "test_items_summary": fallback.get("test_items_summary"),
-                "test_environment_summary": fallback.get("test_environment_summary"),
-                "test_coverage_evaluation": fallback.get("test_coverage_evaluation"),
-                "defect_summary_narrative": fallback.get("defect_summary_narrative"),
-                "defect_patterns": fallback.get("defect_patterns"),
-                "major_activities_summary": fallback.get("major_activities_summary"),
-                "activity_variances": fallback.get("activity_variances"),
-                "executive_summary": fallback.get("executive_summary"),
-                "critical_issues": fallback.get("critical_issues"),
-                "geometry_technical_analysis": fallback.get("geometry_technical_analysis"),
-                "gameplay_flow_analysis": fallback.get("gameplay_flow_analysis"),
-                "combat_design_review": fallback.get("combat_design_review"),
-                "itemization_audit": fallback.get("itemization_audit"),
-                "ai_enemy_behavior": fallback.get("ai_enemy_behavior"),
-                "navigation_readability": fallback.get("navigation_readability"),
-                "secrets_optional_content": fallback.get("secrets_optional_content"),
-                "performance_engine_compliance": fallback.get("performance_engine_compliance"),
-                "speedrunning_advanced_play": fallback.get("speedrunning_advanced_play"),
-                "recommendations": fallback.get("recommendations"),
-                "final_verdict": fallback.get("final_verdict"),
-                "pass_fail_summary": fallback.get("pass_fail_summary"),
-                "risk_areas": fallback.get("risk_areas"),
-                "good_quality_areas": fallback.get("good_quality_areas"),
-            },
-        }
-        user_content = f"RUN DATA AND DRAFT REPORT:\n{json.dumps(llm_input, default=str)}"
+        system_prompt = self._load_report_prompt()
+        llm_input = self._build_raw_data_payload(payload)
+        user_content = f"RUN DATA:\n{json.dumps(llm_input, default=str)}"
         config_cls = getattr(types, "GenerateContentConfig", None)
-        config = config_cls(system_instruction=system_prompt) if config_cls is not None else None
+        thinking_cfg = None
+        if hasattr(types, "ThinkingConfig"):
+            thinking_cfg = types.ThinkingConfig(thinking_budget=0)
+        config = config_cls(
+            system_instruction=system_prompt,
+            max_output_tokens=8192,
+            thinking_config=thinking_cfg,
+        ) if config_cls is not None else None
         if config is None:
             user_content = f"{system_prompt}\n\n{user_content}"
 
+        # Build image parts for multimodal input
+        image_parts: list[Any] = []
+        analysis = payload.get("analysis")
+        positions = payload.get("position_trail") or []
+        events = payload.get("events") or []
+        map_bounds = payload.get("map_bounds")
+
+        # 1. Map overview PNG
+        if analysis:
+            map_path = getattr(analysis, "map_overview_png_path", None)
+            if map_path:
+                map_bytes = self._load_image_bytes(map_path)
+                if map_bytes:
+                    image_parts.append(("map_overview", map_bytes))
+
+        # 2. Position trail overlay PNG
+        if positions and analysis:
+            map_path = getattr(analysis, "map_overview_png_path", None)
+            trail_bytes = self._generate_trail_overlay_bytes(map_path, positions, events, map_bounds)
+            if trail_bytes:
+                image_parts.append(("trail_overlay", trail_bytes))
+
+        # 3. Top 5 notable event screenshots
+        screenshots = payload.get("screenshots") or []
+        for i, screenshot_path in enumerate(screenshots[:5]):
+            img_bytes = self._load_image_bytes(screenshot_path)
+            if img_bytes:
+                image_parts.append((f"screenshot_{i+1}", img_bytes))
+
+        # Build the request — text + optional images
+        has_images = len(image_parts) > 0
         from app.services.gemini_service import _get_gemini_sem, _throttle_local_rate, _record_api_call
         await _throttle_local_rate(self.settings.gemini_rate_limit_calls_per_minute)
         last_error = ""
@@ -794,17 +986,54 @@ class ReportService:
                 async with _get_gemini_sem():
                     client = genai.Client(api_key=self.settings.gemini_api_key)
                     async_client = getattr(client, "aio", None)
-                    kwargs: dict[str, Any] = {"model": self.settings.llm_model, "contents": user_content}
-                    if config is not None:
-                        kwargs["config"] = config
-                    if async_client is not None and hasattr(async_client, "models"):
-                        response = await async_client.models.generate_content(**kwargs)
+
+                    if has_images and async_client is not None and hasattr(async_client, "models"):
+                        parts = [types.Part.from_text(text=user_content)]
+                        for label, img_bytes in image_parts:
+                            parts.append(types.Part.from_bytes(data=img_bytes, mime_type="image/png"))
+                        kwargs: dict[str, Any] = {
+                            "model": self.settings.llm_report_model,
+                            "contents": types.Content(parts=parts, role="user"),
+                        }
+                    elif has_images:
+                        parts = [types.Part.from_text(text=user_content)]
+                        for label, img_bytes in image_parts:
+                            parts.append(types.Part.from_bytes(data=img_bytes, mime_type="image/png"))
+
+                        def _sync_generate():
+                            return client.models.generate_content(
+                                model=self.settings.llm_report_model,
+                                contents=types.Content(parts=parts, role="user"),
+                                **({"config": config} if config else {}),
+                            )
+                        kwargs = {}  # handled in sync path
                     else:
-                        response = await asyncio.to_thread(lambda: client.models.generate_content(**kwargs))
+                        kwargs = {"model": self.settings.llm_report_model, "contents": user_content}
+
+                    if config is not None and "config" not in kwargs:
+                        kwargs["config"] = config
+
+                    if has_images and async_client is not None and hasattr(async_client, "models"):
+                        response = await async_client.models.generate_content(**kwargs)
+                    elif has_images:
+                        response = await asyncio.to_thread(_sync_generate)
+                    else:
+                        response = await async_client.models.generate_content(**kwargs) if async_client and hasattr(async_client, "models") else await asyncio.to_thread(lambda: client.models.generate_content(**kwargs))
+
                 _record_api_call()
                 text = response.text or ""
                 if not text or text.strip().lower() == "null":
                     raise ValueError("Empty Gemini response")
+                usage = getattr(response, "usage_metadata", None)
+                candidates = getattr(response, "candidates", None) or []
+                finish_reason = getattr(candidates[0], "finish_reason", None) if candidates else None
+                logger.info(
+                    "Gemini report: %d chars, model=%s, finish=%s, tokens(in=%s, out=%s, think=%s)",
+                    len(text), self.settings.llm_report_model, finish_reason,
+                    getattr(usage, "prompt_token_count", "?"),
+                    getattr(usage, "candidates_token_count", "?"),
+                    getattr(usage, "thoughts_token_count", "?") if usage else "?",
+                )
                 return self._parse_report_json(text)
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
@@ -814,6 +1043,80 @@ class ReportService:
         raise RuntimeError(f"Gemini report failed after 3 attempts: {last_error}")
 
     @staticmethod
+    def _load_image_bytes(path_value: str | None) -> bytes | None:
+        if not path_value:
+            return None
+        path = Path(path_value)
+        if not path.exists():
+            return None
+        with contextlib.suppress(Exception):
+            return path.read_bytes()
+        return None
+
+    def _generate_trail_overlay_bytes(
+        self,
+        map_path: str | None,
+        positions: list[AgentPositionTrail],
+        events: list[GameEvent],
+        map_bounds: dict[str, int] | None = None,
+    ) -> bytes | None:
+        if not map_path or not positions:
+            return None
+        path = Path(map_path)
+        if not path.exists():
+            return None
+        try:
+            image = Image.open(path).convert("RGBA")
+            draw = ImageDraw.Draw(image, "RGBA")
+            if map_bounds:
+                min_x = map_bounds["min_x"]
+                max_x = map_bounds["max_x"]
+                min_y = map_bounds["min_y"]
+                max_y = map_bounds["max_y"]
+            else:
+                all_points = [(position.x, position.y) for position in positions]
+                min_x, max_x, min_y, max_y = _point_bounds(all_points)
+
+            def project(x: float, y: float) -> tuple[int, int]:
+                width, height = image.size
+                px = int(20 + ((x - min_x) / max(max_x - min_x, 1)) * (width - 40))
+                py = int(height - 20 - ((y - min_y) / max(max_y - min_y, 1)) * (height - 40))
+                return px, py
+
+            trail_points = [project(position.x, position.y) for position in positions]
+            if len(trail_points) > 1:
+                draw.line(trail_points, fill=(37, 99, 235, 235), width=6, joint="curve")
+                draw.line(trail_points, fill=(147, 197, 253, 210), width=2, joint="curve")
+            for x, y in trail_points:
+                draw.ellipse((x - 4, y - 4, x + 4, y + 4), fill=(59, 130, 246, 180), outline=(255, 255, 255, 180), width=1)
+            if trail_points:
+                start_x, start_y = trail_points[0]
+                end_x, end_y = trail_points[-1]
+                draw.ellipse((start_x - 8, start_y - 8, start_x + 8, start_y + 8), fill=(22, 163, 74, 240), outline=(255, 255, 255, 230), width=2)
+                draw.ellipse((end_x - 9, end_y - 9, end_x + 9, end_y + 9), fill=(245, 158, 11, 245), outline=(255, 255, 255, 240), width=2)
+            for event in events:
+                if event.event_type == "normal":
+                    continue
+                x, y = project(event.player_x, event.player_y)
+                color = {
+                    "kill": (220, 38, 38, 220),
+                    "stuck": (245, 158, 11, 220),
+                    "death": (0, 0, 0, 230),
+                    "item_pickup": (22, 163, 74, 220),
+                }.get(event.event_type, (8, 145, 178, 220))
+                if event.event_type == "death":
+                    draw.line((x - 10, y - 10, x + 10, y + 10), fill=color, width=5)
+                    draw.line((x + 10, y - 10, x - 10, y + 10), fill=color, width=5)
+                else:
+                    draw.ellipse((x - 7, y - 7, x + 7, y + 7), fill=color, outline=(255, 255, 255, 230), width=2)
+            from io import BytesIO
+            buffer = BytesIO()
+            image.save(buffer, format="PNG")
+            return buffer.getvalue()
+        except Exception:
+            return None
+
+    @staticmethod
     def _parse_report_json(text: str) -> dict[str, Any]:
         match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
         candidate = match.group(1).strip() if match else text.strip()
@@ -821,10 +1124,40 @@ class ReportService:
         end = candidate.rfind("}")
         if start >= 0 and end >= start:
             candidate = candidate[start : end + 1]
-        data = json.loads(candidate)
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError as e:
+            logger.warning("JSON parse failed at char %d, attempting repair. Original length=%d. Error: %s", e.pos, len(candidate), e)
+            repaired = candidate
+            in_string = False
+            for i, ch in enumerate(repaired):
+                if ch == '"' and (i == 0 or repaired[i - 1] != '\\'):
+                    in_string = not in_string
+            if in_string:
+                repaired += '"'
+            open_braces = repaired.count('{') - repaired.count('}')
+            open_brackets = repaired.count('[') - repaired.count(']')
+            repaired += ']' * open_brackets + '}' * open_braces
+            logger.warning("Repaired JSON length=%d, adding quotes=%s, braces=%d, brackets=%d",
+                           len(repaired), in_string, open_braces, open_brackets)
+            try:
+                data = json.loads(repaired)
+            except json.JSONDecodeError as e2:
+                logger.warning("Repaired JSON also failed: %s. Repaired tail: %s", e2, repaired[-200:])
+                raise
         if not isinstance(data, dict):
             raise ValueError("LLM report response is not a JSON object")
         return data
+
+    @staticmethod
+    def _validate_llm_report(
+        llm_report: dict[str, Any], payload: dict[str, Any], fallback: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Validate LLM report structure. Only intervenes for type safety, not content."""
+        pf = llm_report.get("pass_fail_summary")
+        if not isinstance(pf, dict):
+            llm_report["pass_fail_summary"] = fallback.get("pass_fail_summary", {})
+        return llm_report
 
     _LLM_NARRATIVE_FIELDS = {
         "report_purpose", "problem_and_escalation", "test_items_summary",
@@ -845,28 +1178,21 @@ class ReportService:
 
     @staticmethod
     def _merge_report_defaults(defaults: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:
-        merged = dict(defaults)
-        for field in ReportService._LLM_NARRATIVE_FIELDS:
-            llm_value = generated.get(field)
-            if isinstance(llm_value, str) and llm_value.strip():
-                merged[field] = llm_value
-        for field in ReportService._LLM_LIST_FIELDS:
-            llm_value = generated.get(field)
-            if isinstance(llm_value, list) and llm_value:
-                merged[field] = llm_value
-        llm_risk = generated.get("risk_areas")
-        if isinstance(llm_risk, list) and llm_risk:
-            merged["risk_areas"] = llm_risk
-        llm_good = generated.get("good_quality_areas")
-        if isinstance(llm_good, list) and llm_good:
-            merged["good_quality_areas"] = llm_good
-        llm_pf = generated.get("pass_fail_summary")
-        if isinstance(llm_pf, dict) and llm_pf:
+        """Merge LLM-generated report with deterministic fallback.
+
+        The LLM output is primary for all fields. The deterministic fallback
+        is only used when the LLM response is entirely empty (e.g. empty
+        pass_fail_summary dict).
+        """
+        merged = dict(generated)
+
+        # If LLM returned empty pass_fail_summary, fall back to deterministic
+        llm_pf = merged.get("pass_fail_summary") or {}
+        if isinstance(llm_pf, dict) and not llm_pf:
             deterministic_pf = defaults.get("pass_fail_summary") or {}
-            for key in ("navigation_rationale", "combat_rationale", "resource_rationale", "secret_rationale"):
-                if key in llm_pf and isinstance(llm_pf[key], str) and llm_pf[key].strip():
-                    deterministic_pf[key] = llm_pf[key]
-            merged["pass_fail_summary"] = deterministic_pf
+            if deterministic_pf:
+                merged["pass_fail_summary"] = dict(deterministic_pf)
+
         return merged
 
     @staticmethod
@@ -971,7 +1297,7 @@ class ReportService:
                 "and give map authors concrete evidence about completion, traversal, combat, and defects. "
                 f"The selected-difficulty gameplay evidence uses {spawned_enemies} spawned enemy/enemies.{spawn_note}"
             ),
-            "intended_audience": "Doom PWAD authors, level designers, QA engineers, and release owners.",
+            "intended_audience": "",
             "problem_and_escalation": ReportService._problem_statement(run, defects, metrics),
             "test_items_summary": (
                 f"Test item: {run.map_name} from WAD {run.wad_file_id}. "
@@ -982,12 +1308,8 @@ class ReportService:
             "hardware_spec": environment["hardware"],
             "software_spec": environment["software"],
             "variances_from_plan": variance_summary,
-            "test_procedure_variances": (
-                "No manual gameplay intervention was used. The report reflects lockstep LLM tool decisions and MCP telemetry."
-            ),
-            "test_case_variances": (
-                "Coverage depth depends on available run time, lockstep tool decisions, and whether the map exposes progression cues."
-            ),
+            "test_procedure_variances": "",
+            "test_case_variances": "",
             "test_coverage_evaluation": (
                 f"{coverage_phrase} {outcome_sentence} Combat coverage is evaluated against {spawned_enemies} "
                 f"enemy/enemies that spawn at difficulty {run.difficulty_level}, not against hidden raw THINGS."
@@ -1001,15 +1323,11 @@ class ReportService:
             "objectives_covered": ReportService._covered_objectives(run, metrics),
             "objectives_omitted": ReportService._omitted_objectives(run, metrics, outcome),
             "uncovered_attributes": ReportService._uncovered_attributes(run, metrics),
-            "test_process_changes": (
-                "Lockstep MCP actions return per-action telemetry frames so movement, position trail, and recording "
-                "coverage are sampled during bounded tool execution, while the game remains paused during LLM selection. "
-                "The PDF keeps detailed evidence in a landscape appendix so long decision tables do not clip."
-            ),
+            "test_process_changes": "",
             "defect_summary_narrative": f"{defect_phrase} {major_risk}",
             "defect_patterns": ReportService._defect_patterns(defects),
             "test_item_limitations": ReportService._test_limitations(run, metrics),
-            "dropped_features": "None.",
+            "dropped_features": "",
             "pass_fail_summary": {
                 "map_navigation": "PASS" if map_navigation_pass else "FAIL",
                 "combat_engagement": "PASS" if combat_pass else "FAIL",
@@ -1071,7 +1389,7 @@ class ReportService:
             "ai_enemy_behavior": ReportService._build_ai_behavior(run, metrics, defects),
             "navigation_readability": ReportService._build_navigation_readability(run, metrics, analysis),
             "secrets_optional_content": ReportService._build_secrets_analysis(run, metrics, analysis),
-            "multiplayer_analysis": "Not applicable. This QA run tested single-player mode only.",
+            "multiplayer_analysis": "",
             "performance_engine_compliance": ReportService._build_performance_analysis(analysis, run),
             "speedrunning_advanced_play": ReportService._build_speedrunning_analysis(run, metrics, analysis),
             "recommendations": ReportService._build_recommendations(run, defects, metrics, analysis),
@@ -1133,7 +1451,7 @@ class ReportService:
                 "ViZDoom/Freedoom test environment. This is a valid QA outcome: the product captured "
                 "the failure as structured run, defect, and report evidence instead of dropping the test."
             ),
-            "intended_audience": "Doom PWAD authors, level designers, QA engineers, and release owners.",
+            "intended_audience": "",
             "problem_and_escalation": (
                 run.failure_summary
                 or "The map could not be initialized by the configured test runtime."
@@ -1172,9 +1490,7 @@ class ReportService:
                 {"objective": "Video artifact", "reason": "No recording is expected when gameplay never initializes."},
             ],
             "uncovered_attributes": "Traversal, combat, resource balance, secrets, and progression were not exercised.",
-            "test_process_changes": (
-                "Crash runs are converted into first-class QA reports with structured failure fields and endpoint evidence."
-            ),
+            "test_process_changes": "",
             "defect_summary_narrative": (
                 "A PWAD crash/initialization defect was recorded. Review the raw diagnostic and validate required IWAD, "
                 "map markers, resources, and compatibility settings."
@@ -1184,7 +1500,7 @@ class ReportService:
                 "This report does not judge map balance or playability beyond runtime initialization. "
                 "A successful runtime launch is required before gameplay quality can be evaluated."
             ),
-            "dropped_features": "None.",
+            "dropped_features": "",
             "pass_fail_summary": {
                 "map_navigation": "FAIL",
                 "combat_engagement": "LIMITED",

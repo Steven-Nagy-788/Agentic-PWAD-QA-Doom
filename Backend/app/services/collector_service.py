@@ -30,7 +30,6 @@ class CollectorService:
         llm_input: dict[str, Any],
         decision: dict[str, Any],
         mcp_call: dict[str, Any],
-        agent_decision_id: UUID | None = None,
     ) -> GameEvent:
         variables = normalize_variables(state)
         detected_event_type = self.detect_event(variables)
@@ -78,7 +77,6 @@ class CollectorService:
             item_count=int(variables["item_count"]),
             secret_count=int(variables["secret_count"]),
             weapon_selected=int(variables["weapon_selected"]),
-            agent_decision_id=agent_decision_id,
             event_type=event_type,
             damage_received=variables.get("damage_received"),
             llm_input_summary=_compact_llm_event_summary(tick, event_type, variables),

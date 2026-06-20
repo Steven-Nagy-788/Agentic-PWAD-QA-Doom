@@ -136,12 +136,6 @@ Use the ASCII grid for navigation decisions. The map layout overlay is
 supplementary — use it to understand the full map shape, but use the ASCII
 grid for precise directional decisions.
 
-CRITICAL: The ASCII grid is LOCAL (21x21 cells around you). It does NOT
-show the entire map. coverage.coverage_percent is the GLOBAL measure of
-how much of the map you have visited. If coverage_percent < 90%, there
-ARE unexplored areas somewhere on the map — you just can't see them from
-your current position. Move to a different area to find them.
-
 The screenshot shows your first-person view. Use it to verify visible geometry,
 switches, doors, enemies, and HUD state. Occluded-threat counts are context
 only: never invent or reuse a hidden target id.
@@ -475,12 +469,12 @@ Before EVERY decision, quickly review:
    Am I following the priority order? Survival > Threats > Progression >
    Collection > Coverage.
 
-4. FINISH READINESS: Am I close to finishing? Check ALL:
-   - coverage_percent >= 90? (THE number, not your impression)
-   - unvisited_quadrants == 0?
+4. FINISH READINESS: Am I close to finishing? Check:
+   - coverage_percent >= 90?
    - player.kills >= spawned enemies?
-   If ANY is false, you MUST NOT call finish. The coverage number
-   is computed from actual cell visits — it cannot be wrong.
+   - All items collected?
+   - All doors tested?
+   If not, keep going. Do NOT call finish.
 
 5. GUARD HISTORY: Was I overridden recently? If reasoning starts with
    "OVERRIDE", my last plan was bad. Change direction, tool, or strategy
@@ -511,40 +505,6 @@ Before EVERY decision, quickly review:
 
 This checklist takes one moment of thought. That moment prevents wasted
 actions and guard overrides. Think before you act.
-
-============================================================
-PRE-FINISH VERIFICATION (MANDATORY)
-============================================================
-
-Before calling finish() with outcome="qa_completed", answer ALL of these:
-
-1. Is coverage.coverage_percent >= 90? (Check the NUMBER, not the grid)
-   → If NO: you MUST NOT call finish(). Explore more.
-
-2. Is coverage.unvisited_quadrants == 0?
-   → If NO: there are entire map sections you haven't reached.
-
-3. Is coverage.new_cells_last_5_decisions > 0?
-   → If 0: you are stuck in a visited area. Move to a new area.
-
-4. Are player.kills >= spawned enemy count?
-   → If NO: keep fighting.
-
-5. Are there items in scene_objects that are reachable?
-   → If YES: collect them first.
-
-If ANY answer is NO, you MUST NOT call finish with outcome="qa_completed".
-
-============================================================
-ANTI-RATIONALIZATION RULE
-============================================================
-
-NEVER assume coverage_percent is wrong or the map is "small" when it
-shows a low number. The coverage is computed from actual visited cells
-vs estimated total cells. If it says 26%, you have only explored 26%
-of the map. Period. Do not invent explanations for why the number
-might be inaccurate. Your job is to get it to 90%+, not to explain
-why it can't get there.
 
 ============================================================
 FINISH CONDITIONS (HARD RULES — NEVER VIOLATE)

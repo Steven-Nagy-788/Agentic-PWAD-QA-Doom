@@ -33,7 +33,7 @@ All paths are resolved relative to the project root unless absolute. Directories
 | Variable | Default | Description |
 |---|---|---|
 | `GEMINI_API_KEY` | — | Google Gemini API key |
-| `LLM_MODEL` | `gemini-2.5-flash-lite` | Model identifier |
+| `LLM_MODEL` | `gemini-3.1-flash-lite` | Model identifier |
 | `LLM_THROTTLE_SECONDS` | `2.0` | Minimum seconds between LLM calls |
 | `GEMINI_RATE_LIMIT_CALLS_PER_MINUTE` | `15` | Rate limit cap |
 | `GEMINI_MAX_CONCURRENCY` | `1` | Max concurrent Gemini requests |

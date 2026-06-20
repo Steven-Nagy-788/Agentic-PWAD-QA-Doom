@@ -19,6 +19,7 @@ def _full_payload() -> dict:
         status="completed",
         duration_seconds=15,
         total_kills=5,
+        total_deaths=0,
         final_hp=80,
         final_armor=25,
         secrets_found=1,
@@ -34,9 +35,14 @@ def _full_payload() -> dict:
         error_message=None,
         failure_summary=None,
         failure_category=None,
+        failure_stage=None,
+        failure_diagnostics=None,
+        behavior_profile=None,
         environment_metadata={},
         report_pdf_path=None,
         seed=None,
+        started_at=None,
+        completed_at=None,
     )
     analysis = SimpleNamespace(
         map_name="E1M1",
@@ -114,6 +120,7 @@ def _minimal_payload() -> dict:
         status="completed",
         duration_seconds=10,
         total_kills=None,
+        total_deaths=None,
         final_hp=100,
         final_armor=0,
         secrets_found=None,
@@ -129,9 +136,14 @@ def _minimal_payload() -> dict:
         error_message=None,
         failure_summary=None,
         failure_category=None,
+        failure_stage=None,
+        failure_diagnostics=None,
+        behavior_profile=None,
         environment_metadata={},
         report_pdf_path=None,
         seed=None,
+        started_at=None,
+        completed_at=None,
     )
     return {
         "run": run,
@@ -165,25 +177,24 @@ def _minimal_payload() -> dict:
     }
 
 
-def test_build_report_llm_input_returns_expected_keys() -> None:
+def test_build_raw_data_payload_returns_expected_keys() -> None:
     payload = _full_payload()
     service = object.__new__(ReportService)
-    result = service._build_report_llm_input(payload)
+    result = service._build_raw_data_payload(payload)
 
     assert "run_summary" in result
     assert "static_analysis" in result
     assert "metrics" in result
     assert "defects" in result
-    assert "notable_events" in result
-    assert "first_ticks" in result
-    assert "last_ticks" in result
+    assert "game_events" in result
     assert "decision_trace" in result
+    assert "position_trail" in result
 
 
 def test_run_summary_contains_all_expected_fields() -> None:
     payload = _full_payload()
     service = object.__new__(ReportService)
-    result = service._build_report_llm_input(payload)
+    result = service._build_raw_data_payload(payload)
     summary = result["run_summary"]
 
     assert summary["map_name"] == "E1M1"
@@ -194,6 +205,7 @@ def test_run_summary_contains_all_expected_fields() -> None:
     assert summary["status"] == "completed"
     assert summary["duration_seconds"] == 15
     assert summary["total_kills"] == 5
+    assert summary["total_deaths"] == 0
     assert summary["final_hp"] == 80
     assert summary["final_armor"] == 25
     assert summary["secrets_found"] == 1
@@ -201,44 +213,46 @@ def test_run_summary_contains_all_expected_fields() -> None:
     assert summary["total_actions_taken"] == 4
     assert summary["total_llm_calls"] == 4
     assert summary["max_ticks"] == 3000
+    assert summary["behavior_profile"] is None
+    assert summary["started_at"] is None
 
 
-def test_run_summary_fills_none_with_zeros() -> None:
+def test_run_summary_preserves_none_values() -> None:
     payload = _minimal_payload()
     service = object.__new__(ReportService)
-    result = service._build_report_llm_input(payload)
+    result = service._build_raw_data_payload(payload)
     summary = result["run_summary"]
 
-    assert summary["total_kills"] == 0
-    assert summary["secrets_found"] == 0
-    assert summary["total_items_collected"] == 0
-    assert summary["total_actions_taken"] == 0
-    assert summary["total_llm_calls"] == 0
+    assert summary["total_kills"] is None
+    assert summary["secrets_found"] is None
+    assert summary["total_items_collected"] is None
+    assert summary["total_actions_taken"] is None
 
 
 def test_static_analysis_snapshot() -> None:
     payload = _full_payload()
     service = object.__new__(ReportService)
-    result = service._build_report_llm_input(payload)
+    result = service._build_raw_data_payload(payload)
     analysis = result["static_analysis"]
 
     assert analysis is not None
-    assert analysis["map_name"] == "E1M1"
+    assert analysis["map_title"] == "Hangar"
     assert analysis["thing_count_enemies"] == 12
     assert analysis["thing_count_items"] == 5
+    assert analysis["linedef_count"] == 64
 
 
-def test_static_analysis_none_when_absent() -> None:
+def test_static_analysis_empty_dict_when_absent() -> None:
     payload = _minimal_payload()
     service = object.__new__(ReportService)
-    result = service._build_report_llm_input(payload)
-    assert result["static_analysis"] is None
+    result = service._build_raw_data_payload(payload)
+    assert result["static_analysis"] == {}
 
 
 def test_metrics_section_includes_key_fields() -> None:
     payload = _full_payload()
     service = object.__new__(ReportService)
-    result = service._build_report_llm_input(payload)
+    result = service._build_raw_data_payload(payload)
     metrics = result["metrics"]
 
     assert metrics["raw_enemy_count"] == 12
@@ -247,14 +261,9 @@ def test_metrics_section_includes_key_fields() -> None:
     assert metrics["raw_item_count"] == 5
     assert metrics["spawned_item_count"] == 3
     assert metrics["hidden_item_count"] == 2
-    assert metrics["event_count"] == 2
-    assert metrics["decision_count"] == 1
-    assert metrics["position_sample_count"] == 3
-    assert metrics["position_cluster_count"] == 2
-    assert metrics["movement_distance_units"] == 150.5
     assert metrics["coverage_percent"] == 35.0
     assert metrics["fallback_action_count"] == 0
-    assert metrics["validation_rejection_count"] == 0
+    assert metrics["position_cluster_count"] == 2
 
 
 def test_defects_snapshotted() -> None:
@@ -273,11 +282,12 @@ def test_defects_snapshotted() -> None:
         position_y=256.0,
         recommendation="Fix geometry.",
         resolution_status="open",
+        reproduction_steps=None,
     )
     payload = _full_payload()
     payload["defects"] = [defect]
     service = object.__new__(ReportService)
-    result = service._build_report_llm_input(payload)
+    result = service._build_raw_data_payload(payload)
 
     assert len(result["defects"]) == 1
     snap = result["defects"][0]
@@ -285,92 +295,71 @@ def test_defects_snapshotted() -> None:
     assert snap["title"] == "Stuck in corner"
     assert snap["defect_type"] == "softlock_navigation"
     assert snap["detected_at_tick"] == 100
-    assert snap["position"] == {"x": 512.0, "y": 256.0}
+    assert snap["position_x"] == 512.0
+    assert snap["position_y"] == 256.0
+    assert snap["occurrence_count"] == 3
 
 
-def test_notable_events_snapshotted() -> None:
-    event = SimpleNamespace(
-        tick_number=50,
-        event_type="kill",
-        player_x=100.0,
-        player_y=200.0,
-        player_angle=90.0,
-        health=75,
-        armor=10,
-        kill_count=1,
-        item_count=0,
-        secret_count=0,
-        damage_received=5,
-        action_taken={
-            "mcp_tool": "aim_and_shoot",
-            "mcp_output": {"action_summary": {"hit": True}},
-            "mcp_action_summary": {"hit": True},
-            "mcp_params": {},
-        },
-        llm_reasoning="Shoot the enemy.",
-    )
+def test_game_events_empty_when_no_game_events() -> None:
     payload = _full_payload()
-    payload["notable_events"] = [event]
-    payload["events"] = [event]
+    payload["events"] = []
     service = object.__new__(ReportService)
-    result = service._build_report_llm_input(payload)
-
-    assert len(result["notable_events"]) == 1
-    snap = result["notable_events"][0]
-    assert snap["tick"] == 50
-    assert snap["event_type"] == "kill"
-    assert snap["mcp_tool"] == "aim_and_shoot"
-    assert snap["reasoning"] == "Shoot the enemy."
+    result = service._build_raw_data_payload(payload)
+    assert result["game_events"] == []
 
 
-def test_decision_trace_snapshotted() -> None:
-    decision = SimpleNamespace(
-        sequence_number=1,
-        tick_before=10,
-        tick_after=50,
-        status="success",
-        reasoning_summary="Move forward.",
-        mcp_tool="explore",
-        mcp_input={"max_tics": 80},
-        mcp_stop_reason="turn_complete",
-        decision_source="gemini",
-        mcp_output={"action_summary": {"validation_error": None}},
-        llm_duration_ms=120.5,
-        mcp_duration_ms=30.0,
-        error_message=None,
-    )
+def test_decision_trace_empty_when_no_agent_decisions() -> None:
     payload = _full_payload()
-    payload["decisions"] = [decision]
+    payload["decisions"] = []
     service = object.__new__(ReportService)
-    result = service._build_report_llm_input(payload)
-
-    assert len(result["decision_trace"]) == 1
-    snap = result["decision_trace"][0]
-    assert snap["sequence_number"] == 1
-    assert snap["mcp_tool"] == "explore"
-    assert snap["decision_source"] == "gemini"
-    assert snap["llm_duration_ms"] == 120.5
+    result = service._build_raw_data_payload(payload)
+    assert result["decision_trace"] == []
 
 
-def test_first_ticks_and_last_ticks_sliced() -> None:
-    events = [
-        SimpleNamespace(
-            tick_number=i, event_type="normal",
-            player_x=0.0, player_y=0.0, player_angle=0.0,
-            health=100, armor=0, kill_count=0, item_count=0,
-            secret_count=0, damage_received=0, action_taken={},
-            llm_reasoning=None,
-        )
-        for i in range(10)
-    ]
+def test_position_trail_empty_when_no_positions() -> None:
     payload = _full_payload()
-    payload["events"] = events
     service = object.__new__(ReportService)
-    result = service._build_report_llm_input(payload)
+    result = service._build_raw_data_payload(payload)
+    assert result["position_trail"] == []
 
-    assert len(result["first_ticks"]) == 5
-    assert result["first_ticks"][0]["tick"] == 0
-    assert result["first_ticks"][4]["tick"] == 4
-    assert len(result["last_ticks"]) == 5
-    assert result["last_ticks"][0]["tick"] == 5
-    assert result["last_ticks"][4]["tick"] == 9
+
+def test_failure_details_none_when_no_failure() -> None:
+    payload = _full_payload()
+    service = object.__new__(ReportService)
+    result = service._build_raw_data_payload(payload)
+    assert result["failure_details"] is None
+
+
+def test_failure_details_populated_when_failure_category_set() -> None:
+    payload = _full_payload()
+    payload["run"].failure_category = "pwad_crash"
+    payload["run"].error_message = "Map failed to load"
+    payload["run"].failure_summary = "Init failed"
+    payload["run"].failure_stage = "init"
+    payload["run"].failure_diagnostics = "error log here"
+    service = object.__new__(ReportService)
+    result = service._build_raw_data_payload(payload)
+    details = result["failure_details"]
+    assert details is not None
+    assert details["failure_category"] == "pwad_crash"
+    assert details["failure_stage"] == "init"
+    assert details["error_message"] == "Map failed to load"
+
+
+def test_map_bounds_none_when_not_provided() -> None:
+    payload = _full_payload()
+    service = object.__new__(ReportService)
+    result = service._build_raw_data_payload(payload)
+    assert result["map_bounds"] is None
+
+
+def test_map_bounds_populated_when_provided() -> None:
+    payload = _full_payload()
+    payload["map_bounds"] = {"min_x": 0, "max_x": 2048, "min_y": 0, "max_y": 1024}
+    service = object.__new__(ReportService)
+    result = service._build_raw_data_payload(payload)
+    bounds = result["map_bounds"]
+    assert bounds["min_x"] == 0
+    assert bounds["max_x"] == 2048
+    assert bounds["min_y"] == 0
+    assert bounds["max_y"] == 1024

@@ -43,6 +43,7 @@ services:
       DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-doom_agentic}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-doom_agentic_qa}"
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       LLM_MODEL: "${LLM_MODEL:-gemma-4-31b-it}"
+      LLM_REPORT_MODEL: "${LLM_REPORT_MODEL:-gemini-3.5-flash}"
       LLM_THROTTLE_SECONDS: "${LLM_THROTTLE_SECONDS:-4}"
       MCP_DOOM_SSE_URL: "http://mcp-doom:8001/sse"
       STORAGE_DIR: "/app/storage"

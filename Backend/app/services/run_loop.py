@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import math
 import time
@@ -28,7 +29,9 @@ from app.services.mcp_client_service import McpDoomClient, McpStartupError, McpT
 from app.services.prompt_service import render_agent_prompt
 from app.services.recording_service import RecordingService, jpeg_b64, png_bytes_to_frame
 from app.services.report_service import ReportService
-from app.services.run_constants import RUN_TASKS
+from app.services.run_guards import apply_guards
+from app.services.run_finalizer import finalize_run
+from app.services.run_constants import RUN_TASKS, COMPOUND_TELEMETRY_TOOLS
 from app.services.run_tracking import (
     _lockstep_progress_metrics,
     _lockstep_quality_flags,
@@ -80,53 +83,22 @@ async def _build_cross_run_memory_context(
     wad_file_id: UUID,
     map_name: str,
 ) -> str:
-    """Build cross-run memory context from hypotheses and spatial memory."""
-    from app.models import WadHypothesis, WadSpatialMemory
-    from sqlalchemy import select
+    """Thin wrapper delegating to run_initializer for backward compatibility."""
+    from app.services.run_initializer import _build_cross_run_memory_context as _impl
+    return await _impl(db, wad_file_id, map_name)
 
-    parts: list[str] = []
 
-    # High-confidence hypotheses from previous runs
-    hyp_result = await db.execute(
-        select(WadHypothesis).where(
-            WadHypothesis.wad_file_id == wad_file_id,
-            WadHypothesis.map_name == map_name.upper(),
-            WadHypothesis.confidence >= 0.5,
-            WadHypothesis.refuted_at.is_(None),
-        ).order_by(WadHypothesis.confidence.desc()).limit(10)
-    )
-    hypotheses = list(hyp_result.scalars().all())
-    if hypotheses:
-        hyp_lines = []
-        for h in hypotheses:
-            hyp_lines.append(f"- [{h.tag}] {h.content} (confidence: {h.confidence:.1f})")
-        parts.append("CROSS-RUN HYPOTHESES:\n" + "\n".join(hyp_lines))
-
-    # Spatial memory: high-death or high-stuck cells
-    spatial_result = await db.execute(
-        select(WadSpatialMemory).where(
-            WadSpatialMemory.wad_file_id == wad_file_id,
-            WadSpatialMemory.map_name == map_name.upper(),
-            WadSpatialMemory.event_type.in_(["death", "stuck"]),
-            WadSpatialMemory.occurrence_count >= 3,
-        ).order_by(WadSpatialMemory.occurrence_count.desc()).limit(10)
-    )
-    spatial = list(spatial_result.scalars().all())
-    if spatial:
-        spatial_lines = []
-        for s in spatial:
-            spatial_lines.append(
-                f"- Cell ({s.cell_x},{s.cell_y}): {s.event_type} x{s.occurrence_count}"
-            )
-        parts.append("KNOWN DANGER ZONES:\n" + "\n".join(spatial_lines))
-
-    if not parts:
-        return ""
-    return (
-        "## CROSS-RUN MEMORY (from previous runs on this map)\n"
-        + "\n\n".join(parts)
-        + "\n\nUse this as context only. Do not blindly follow old hypotheses—verify through gameplay."
-    )
+async def _build_per_decision_cross_run_context(
+    db: AsyncSession,
+    wad_file_id: UUID,
+    map_name: str,
+    player_x: float,
+    player_y: float,
+    cell_size: int = 256,
+) -> dict[str, Any]:
+    """Thin wrapper delegating to run_initializer for per-decision cross-run context."""
+    from app.services.run_initializer import _build_per_decision_cross_run_context as _impl
+    return await _impl(db, wad_file_id, map_name, player_x, player_y, cell_size)
 
 
 logger = logging.getLogger(__name__)
@@ -223,6 +195,13 @@ async def agent_run_task(run_id: UUID) -> None:
     lockstep_state: LockstepState = _initial_lockstep_state()
     if total_map_cells_estimate is not None:
         lockstep_state["total_map_cells_estimate"] = total_map_cells_estimate
+    # Pre-compute spawned enemy count for finish guard
+    from app.services.analysis_service import selected_skill_spawn_summary
+    _skill_summary = selected_skill_spawn_summary(analysis, difficulty_level)
+    lockstep_state["_skill_summary"] = _skill_summary
+    lockstep_state["_spawned_enemy_count"] = int(
+        _skill_summary.get("thing_count_enemies", getattr(analysis, "thing_count_enemies", 0) or 0) or 0
+    )
     recorder = RecordingService(str(run_id_val), fps=recording_fps)
     gemini = GeminiService(
         llm_model=llm_model,
@@ -267,6 +246,7 @@ async def agent_run_task(run_id: UUID) -> None:
                 seed=seed,
             )
             # Set status to running in its own short session
+            prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()
             async with SessionLocal() as db:
                 run_orm = await db.get(TestRun, run_id_val)
                 if run_orm is not None:
@@ -275,6 +255,8 @@ async def agent_run_task(run_id: UUID) -> None:
                         status="running",
                         started_at=datetime.now(UTC),
                         environment_metadata=_json_safe(environment_metadata),
+                        system_prompt_hash=prompt_hash,
+                        system_prompt_text=prompt,
                     )
                     await db.commit()
             runtime_stage = "gameplay"
@@ -295,6 +277,22 @@ async def agent_run_task(run_id: UUID) -> None:
                 ticks_remaining = max(0, max_ticks - tick)
                 total_cells = lockstep_state.get("total_map_cells_estimate", 225) or 225
                 coverage_percent = round(visited_count / max(total_cells, 1) * 100, 1)
+
+                # Store guard-relevant values in lockstep_state for finish guard
+                lockstep_state["coverage_percent"] = coverage_percent
+                lockstep_state["ticks_remaining"] = ticks_remaining
+                player_kills = int(state.get("game_variables", {}).get("KILLCOUNT", 0) or 0)
+                lockstep_state["player_kills"] = player_kills
+                spawned_enemy_count = int(
+                    (lockstep_state.get("_spawned_enemy_count") or 0)
+                )
+                if not spawned_enemy_count:
+                    # Compute once from analysis if available
+                    skill_summary = lockstep_state.get("_skill_summary") or {}
+                    spawned_enemy_count = int(skill_summary.get("thing_count_enemies", 0) or 0)
+                    lockstep_state["_spawned_enemy_count"] = spawned_enemy_count
+                lockstep_state["spawned_enemy_count"] = spawned_enemy_count
+
                 coverage_warning = None
                 if coverage_percent < 20 and ticks_remaining < max_ticks * 0.7:
                     coverage_warning = (
@@ -306,6 +304,18 @@ async def agent_run_task(run_id: UUID) -> None:
                         f"CRITICAL: Coverage is {coverage_percent}% with {ticks_remaining} ticks remaining. "
                         "You are barely exploring. Find new areas NOW using the map layout frontier cells."
                     )
+                # Per-decision cross-run context (danger zones near player)
+                cross_run_ctx: dict[str, Any] = {}
+                if cross_run_enabled:
+                    player_x = float(state.get("game_variables", {}).get("POSITION_X", 0) or 0)
+                    player_y = float(state.get("game_variables", {}).get("POSITION_Y", 0) or 0)
+                    if player_x or player_y:
+                        try:
+                            cross_run_ctx = await _build_per_decision_cross_run_context(
+                                db, wad_file_id, map_name_val, player_x, player_y,
+                            )
+                        except Exception:
+                            cross_run_ctx = {}
                 llm_input = _build_llm_input(
                     state,
                     threat_assessment,
@@ -315,6 +325,7 @@ async def agent_run_task(run_id: UUID) -> None:
                     ticks_remaining=ticks_remaining,
                     total_cells=total_cells,
                     coverage_warning=coverage_warning,
+                    cross_run_context=cross_run_ctx,
                 )
 
                 # Each iteration acquires its own DB session, commits, and releases
@@ -358,7 +369,6 @@ async def agent_run_task(run_id: UUID) -> None:
                             llm_input,
                             decision,
                             mcp_call,
-                            agent_decision_id=decision_row.id,
                         )
                         await decision_repo.update(decision_row, game_event_id=latest_event.id)
                         await _broadcast_state(run_id_val, latest_event, decision)
@@ -462,62 +472,10 @@ async def agent_run_task(run_id: UUID) -> None:
                         },
                     )
                     decision.setdefault("mcp_params", {})
-                    from app.services.run_constants import COMPOUND_TELEMETRY_TOOLS
 
-                    # Check if guard is enabled
+                    # Apply guard overrides
                     guard_enabled = runtime_value("guard_enabled", settings.guard_enabled)
-
-                    # Get_state spam guard: after 2 consecutive get_state, force explore
-                    get_state_count = lockstep_state.get("consecutive_get_state", 0)
-                    if guard_enabled and get_state_count >= 2 and decision.get("mcp_tool") == "get_state":
-                        _record_failure_critique(
-                            lockstep_state, tick=tick, tool="get_state",
-                            params={},
-                            reason="Called get_state multiple times consecutively instead of taking action.",
-                        )
-                        decision["mcp_tool"] = "explore"
-                        decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": True, "turn_before": 180.0}
-                        decision["reasoning_summary"] = "OVERRIDE: Consecutive get_state detected. Forced explore with 180° turn to advance gameplay."
-                        decision["_decision_source"] = "guard_get_state"
-
-                    # Position stuck detection: override if agent hasn't moved in 2+ consecutive decisions
-                    # Exclude combat tools — agent is actively fighting, not stuck
-                    stuck_counter = lockstep_state.get("position_stuck_counter", 0)
-                    combat_tools = {"aim_and_shoot", "strafe_and_shoot", "select_weapon"}
-                    if guard_enabled and stuck_counter >= 2 and decision.get("mcp_tool") in ("explore", "move_to", "take_action"):
-                        _record_failure_critique(
-                            lockstep_state, tick=tick, tool=decision.get("mcp_tool", "unknown"),
-                            params=decision.get("mcp_params", {}),
-                            reason=f"Agent stuck for {stuck_counter} decisions without meaningful movement. Need different approach.",
-                        )
-                        # Alternate turn direction to avoid repeating the same wall
-                        turn_amount = 180.0 if stuck_counter % 2 == 0 else -180.0
-                        decision["mcp_tool"] = "explore"
-                        decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": True, "turn_before": turn_amount}
-                        decision["reasoning_summary"] = (
-                            f"OVERRIDE: Agent stuck ({stuck_counter} decisions without meaningful movement). "
-                            f"Your original plan: {decision.get('reasoning_summary', '?')}. "
-                            f"Guard forced explore with {turn_amount}° turn to break fixation."
-                        )
-                        decision["_decision_source"] = "guard_stuck"
-
-                    # Decision diversity check: if last 3 same-tool decisions had similar reasoning, break loop
-                    # Skip during combat — don't interrupt active fights
-                    diversity_counter = lockstep_state.get("decision_diversity_counter", 0)
-                    if guard_enabled and diversity_counter >= 3 and decision.get("mcp_tool") in ("explore", "move_to", "take_action") and decision.get("mcp_tool") not in combat_tools:
-                        _record_failure_critique(
-                            lockstep_state, tick=tick, tool=decision.get("mcp_tool", "unknown"),
-                            params=decision.get("mcp_params", {}),
-                            reason=f"Decision loop: {diversity_counter} repeated {decision.get('mcp_tool')} calls. Must change strategy.",
-                        )
-                        decision["mcp_tool"] = "explore"
-                        decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": False, "ignore_object_ids": [], "turn_before": 90.0}
-                        decision["reasoning_summary"] = (
-                            f"OVERRIDE: Decision loop detected ({diversity_counter} repeated decisions). "
-                            f"Your original plan: {decision.get('reasoning_summary', '?')}. "
-                            f"Guard forced diverse exploration with 90° turn to break cycle."
-                        )
-                        decision["_decision_source"] = "guard_diversity"
+                    apply_guards(decision, lockstep_state, tick, guard_enabled)
 
                     if (
                         decision.get("mcp_tool") in COMPOUND_TELEMETRY_TOOLS
@@ -673,7 +631,6 @@ async def agent_run_task(run_id: UUID) -> None:
                         llm_input,
                         decision,
                         mcp_call,
-                        agent_decision_id=decision_row.id,
                     )
                     _record_event_in_history(
                         lockstep_state,
@@ -824,135 +781,21 @@ async def agent_run_task(run_id: UUID) -> None:
                 await RunRepository(db).update(run_orm, status="failed", outcome=outcome, error_message=str(exc), **failure_fields)
                 await db.commit()
     finally:
-        if mcp_client is not None:
-            await mcp_client.stop_game()
-        outcome = _normalize_run_outcome(outcome)
-        recording_path = recorder.finalize()
-        recording_metadata = recorder.validate(recording_path, outcome=outcome)
-        progress_metrics = _lockstep_progress_metrics(lockstep_state)
-        agent_quality_flags = _lockstep_quality_flags(lockstep_state, recording_metadata)
-        completed_at = datetime.now(UTC)
-        final_fields: dict[str, Any] = {
-            "outcome": outcome,
-            "completed_at": completed_at,
-            "total_actions_taken": total_actions,
-            "total_llm_calls": total_llm_calls,
-            "recording_metadata": _json_safe(recording_metadata),
-            "progress_metrics": _json_safe(progress_metrics),
-            "agent_quality_flags": _json_safe(agent_quality_flags),
-        }
-        final_fields.update(failure_fields)
-        if recording_path:
-            final_fields["recording_mp4_path"] = str(recording_path)
-        elif recorder.path.exists():
-            final_fields["recording_mp4_path"] = str(recorder.path)
-        if latest_event is not None:
-            final_fields.update(
-                {
-                    "final_hp": latest_event.health,
-                    "final_armor": latest_event.armor,
-                    "total_kills": latest_event.kill_count,
-                    "secrets_found": latest_event.secret_count,
-                    "total_items_collected": (latest_event.item_count or 0) + sum(
-                        1
-                        for value in (lockstep_state.get("completed_object_ids") or {}).values()
-                        if isinstance(value, dict) and value.get("target_type") == "weapon"
-                    ),
-                }
-            )
-
-        async with SessionLocal() as db:
-            run_orm = await db.get(TestRun, run_id_val)
-            if run_orm is None:
-                RUN_TASKS.pop(run_id_val, None)
-                return
-            run_repo = RunRepository(db)
-            run_started_at = run_orm.started_at
-            if run_orm.status not in {"failed", "cancelled"}:
-                final_fields["status"] = "completed"
-            if run_started_at:
-                final_fields["duration_seconds"] = int((completed_at - run_started_at).total_seconds())
-            await run_repo.update(run_orm, **final_fields)
-            await db.commit()
-            await websocket_service.broadcast(
-                run_id_val,
-                {"type": "recording_status", "metadata": _json_safe(recording_metadata)},
-            )
-            await websocket_service.broadcast(
-                run_id_val,
-                {
-                    "type": "quality_summary",
-                    "progress_metrics": _json_safe(progress_metrics),
-                    "agent_quality_flags": _json_safe(agent_quality_flags),
-                },
-            )
-            if run_orm.status in {"completed", "cancelled", "failed"}:
-                try:
-                    await DefectService(db, gemini_service=gemini).detect_for_run(run_orm)
-                    await db.commit()
-                except Exception as exc:
-                    await db.rollback()
-                    logger.warning("Defect detection failed for run %s: %s", run_id_val, exc)
-                for defect in await DefectRepository(db).list_by_run(run_id_val):
-                    await websocket_service.broadcast(
-                        run_id_val,
-                        {
-                            "type": "defect",
-                            "defect_type": defect.defect_type,
-                            "fingerprint": defect.fingerprint,
-                            "title": defect.title,
-                            "severity": defect.severity,
-                            "detected_at_tick": defect.detected_at_tick,
-                        },
-                    )
-                try:
-                    events_result = await db.execute(select(GameEvent).where(GameEvent.run_id == run_id_val))
-                    run_events = list(events_result.scalars().all())
-                    defects_result = await db.execute(select(Defect).where(Defect.run_id == run_id_val))
-                    run_defects = list(defects_result.scalars().all())
-                    memory_svc = RunMemoryService(db)
-                    await memory_svc.persist_spatial_memory(
-                        run_id=run_id_val,
-                        wad_file_id=wad_file_id,
-                        map_name=map_name_val,
-                        events=run_events,
-                        defects=run_defects,
-                    )
-                    hyp_list = list(lockstep_state.get("hypotheses") or [])
-                    await memory_svc.persist_hypotheses(
-                        run_id=run_id_val,
-                        wad_file_id=wad_file_id,
-                        map_name=map_name_val,
-                        in_run_hypotheses=hyp_list,
-                        agent_quality_flags=agent_quality_flags,
-                    )
-                    await db.commit()
-                except Exception as exc:
-                    await db.rollback()
-                    logger.warning("Reviewer analytics persistence failed for run %s: %s", run_id_val, exc)
-                try:
-                    await websocket_service.broadcast(run_id_val, {"type": "report_status", "status": "generating"})
-                    await ReportService(db).generate(run_id_val)
-                    await db.commit()
-                    await websocket_service.broadcast(run_id_val, {"type": "report_status", "status": "complete"})
-                except Exception as exc:
-                    await db.rollback()
-                    await ReportService(db).mark_error(run_id_val, str(exc))
-                    await db.commit()
-                    await websocket_service.broadcast(
-                        run_id_val,
-                        {"type": "report_status", "status": "error", "error": str(exc)},
-                    )
-                    refreshed_run = await db.get(TestRun, run_id_val)
-                    if refreshed_run is not None:
-                        await RunRepository(db).update(
-                            refreshed_run,
-                            error_message=(refreshed_run.error_message or f"Report generation failed: {exc}"),
-                        )
-                        await db.commit()
-            await websocket_service.broadcast(run_id_val, {"type": "state", "status": run_orm.status, "tick": max_ticks})
-            RUN_TASKS.pop(run_id_val, None)
-            await websocket_service.cleanup_run(run_id_val)
+        await finalize_run(
+            run_id_val,
+            outcome=outcome,
+            mcp_client=mcp_client,
+            recorder=recorder,
+            lockstep_state=lockstep_state,
+            total_actions=total_actions,
+            total_llm_calls=total_llm_calls,
+            latest_event=latest_event,
+            failure_fields=failure_fields,
+            wad_file_id=wad_file_id,
+            map_name=map_name_val,
+            max_ticks=max_ticks,
+            gemini=gemini,
+        )
 
 
 def _situation_finished(situation: dict[str, Any]) -> bool:
@@ -966,19 +809,9 @@ def _situation_finished(situation: dict[str, Any]) -> bool:
 
 
 def _normalize_run_outcome(outcome: str | None) -> str:
-    value = str(outcome or "timeout").strip().lower()
-    aliases = {
-        "completed": "qa_completed",
-        "complete": "qa_completed",
-        "qa_complete": "qa_completed",
-        "agent_died": "player_died",
-        "death": "player_died",
-        "died": "player_died",
-        "softlock": "inconclusive_agent_stall",
-        "stuck": "inconclusive_agent_stall",
-        "agent_stall": "inconclusive_agent_stall",
-    }
-    return aliases.get(value, value)
+    """Thin wrapper delegating to run_utils for backward compatibility."""
+    from app.services.run_utils import _normalize_run_outcome as _impl
+    return _impl(outcome)
 
 
 async def _safe_context_tool(mcp: McpDoomClient, tool_name: str) -> dict[str, Any]:
@@ -1101,13 +934,6 @@ def _validate_tool_request(
 
 
 def _estimate_total_map_cells(analysis: Any) -> int | None:
-    width = getattr(analysis, "map_width_units", None)
-    height = getattr(analysis, "map_height_units", None)
-    try:
-        parsed_width = float(width)
-        parsed_height = float(height)
-    except (TypeError, ValueError):
-        return None
-    if parsed_width <= 0 or parsed_height <= 0:
-        return None
-    return max(1, math.ceil(parsed_width / CELL_SIZE) * math.ceil(parsed_height / CELL_SIZE))
+    """Thin wrapper delegating to run_utils for backward compatibility."""
+    from app.services.run_utils import _estimate_total_map_cells as _impl
+    return _impl(analysis)

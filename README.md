@@ -236,7 +236,7 @@ POSTGRES_PASSWORD=your_secret_here
 DATABASE_URL=
 
 GEMINI_API_KEY=your_key_here
-LLM_MODEL=gemini-2.5-flash-lite
+LLM_MODEL=gemini-3.1-flash-lite
 MCP_DOOM_SSE_URL=http://localhost:8001/sse
 LLM_THROTTLE_SECONDS=2
 GEMINI_RATE_LIMIT_CALLS_PER_MINUTE=15
@@ -385,7 +385,7 @@ Important settings:
 | Setting | Purpose |
 | --- | --- |
 | `GEMINI_API_KEY` | Required for real model decisions. Without it, deterministic fallbacks are used where implemented. |
-| `LLM_MODEL` | Model name stored on each run. Current default is `gemini-2.5-flash-lite`. |
+| `LLM_MODEL` | Model name stored on each run. Current default is `gemini-3.1-flash-lite`. |
 | `LLM_THROTTLE_SECONDS` | Cap on sleep between LLM decisions. Use `0` for no local sleep when paid limits allow it. |
 | `GEMINI_RATE_LIMIT_CALLS_PER_MINUTE` | Local Gemini request limiter. Use `0` to disable local limiting. |
 | `LLM_INPUT_COST_PER_MILLION` | Cost estimate input rate. |

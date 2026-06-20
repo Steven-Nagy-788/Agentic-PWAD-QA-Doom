@@ -128,20 +128,6 @@ def test_pdf_html_does_not_render_blank_objective_labels() -> None:
     assert "Recording And Agent Quality" in html
 
 
-def test_report_voice_sanitizer_avoids_agent_blame() -> None:
-    sanitized = ReportService._sanitize_report_voice(
-        {
-            "summary": "The agent failed to engage enemies. The agent was unable to reach the exit.",
-            "items": ["agent could not open the door", "agentic QA remains valid"],
-        }
-    )
-
-    assert "agent failed" not in sanitized["summary"].lower()
-    assert "agent was unable" not in sanitized["summary"].lower()
-    assert "automated playthrough did not engage enemies" in sanitized["summary"]
-    assert sanitized["items"][1] == "agentic QA remains valid"
-
-
 def test_evidence_model_classifies_low_confidence_as_harness_limited() -> None:
     run = SimpleNamespace(
         map_name="MAP01",
@@ -220,27 +206,32 @@ def test_evidence_model_classifies_static_resource_defect_as_map_side() -> None:
     assert finding["confidence"] == "HIGH"
 
 
-def test_report_merge_keeps_factual_environment_fields() -> None:
+def test_report_merge_llm_primary_over_deterministic() -> None:
     defaults = {
         "test_environment_summary": "Measured summary",
         "hardware_spec": {"cpu": "measured"},
         "software_spec": {"vizdoom": "1.3.0"},
-        "pass_fail_summary": {"overall_verdict": "PASS"},
+        "pass_fail_summary": {"overall_verdict": "PASS", "navigation_rationale": "default nav"},
     }
     generated = {
-        "test_environment_summary": "Invented summary",
-        "hardware_spec": {"cpu": "invented"},
-        "software_spec": {"vizdoom": "0.0.0"},
-        "pass_fail_summary": {"overall_verdict": "FAIL"},
+        "test_environment_summary": "LLM generated summary",
+        "hardware_spec": {"cpu": "LLM reported"},
+        "software_spec": {"vizdoom": "LLM reported"},
+        "pass_fail_summary": {"overall_verdict": "FAIL", "combat_rationale": "no kills"},
         "report_purpose": "Useful narrative",
     }
 
     merged = ReportService._merge_report_defaults(defaults, generated)
 
-    assert merged["test_environment_summary"] == "Measured summary"
-    assert merged["hardware_spec"] == {"cpu": "measured"}
-    assert merged["software_spec"] == {"vizdoom": "1.3.0"}
-    assert merged["pass_fail_summary"] == {"overall_verdict": "PASS"}
+    # LLM fields pass through — deterministic does NOT override
+    assert merged["test_environment_summary"] == "LLM generated summary"
+    assert merged["hardware_spec"] == {"cpu": "LLM reported"}
+    assert merged["software_spec"] == {"vizdoom": "LLM reported"}
+    # LLM pass_fail_summary is primary
+    assert merged["pass_fail_summary"]["overall_verdict"] == "FAIL"
+    assert merged["pass_fail_summary"]["combat_rationale"] == "no kills"
+    # Missing rationale stays empty — deterministic does NOT fill it
+    assert "navigation_rationale" not in merged["pass_fail_summary"]
     assert merged["report_purpose"] == "Useful narrative"
 
 

@@ -17,7 +17,10 @@ if TYPE_CHECKING:
 
 class NotableEventScreenshot(Base):
     __tablename__ = "notable_event_screenshots"
-    __table_args__ = (Index("idx_screenshots_run_id", "run_id"),)
+    __table_args__ = (
+        Index("idx_screenshots_run_id", "run_id"),
+        Index("idx_screenshots_game_event_id", "game_event_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

@@ -388,6 +388,87 @@ def _determine_agent_phase(
     return "exploring"
 
 
+def _build_action_recommendations(
+    state: dict[str, Any],
+    threat_assessment: dict[str, Any],
+    navigation_info: dict[str, Any],
+    lockstep_state: LockstepState,
+    cross_run_context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Pre-filter: suggest 2-3 recommended actions based on game state rules."""
+    recommendations: list[dict[str, Any]] = []
+    variables = normalize_variables(state)
+    health = int(float(variables.get("health") or 100))
+    visible_threats = [
+        t for t in (threat_assessment.get("threats") or [])
+        if isinstance(t, dict) and t.get("is_visible") is not False
+    ]
+    coverage_percent = lockstep_state.get("coverage_percent", 0)
+    stuck_counter = int(lockstep_state.get("position_stuck_counter") or 0)
+
+    # Rule 1: Critical health → find health
+    if health < 25:
+        nearby_health = [
+            o for o in (state.get("objects") or [])
+            if o.get("type") == "health" and o.get("distance", 9999) < 800
+        ]
+        if nearby_health:
+            closest = min(nearby_health, key=lambda o: o.get("distance", 9999))
+            recommendations.append({
+                "tool": "move_to",
+                "reason": f"Critical health ({health}HP) — move to {closest.get('name')} at {closest.get('distance')}u",
+                "params": {"object_id": closest.get("id"), "max_tics": 100},
+            })
+        else:
+            recommendations.append({
+                "tool": "explore",
+                "reason": f"Critical health ({health}HP) — search for health pickups",
+                "params": {"max_tics": 100, "stop_on_enemy": False, "stop_on_item": True},
+            })
+
+    # Rule 2: Visible enemy at combat range → engage
+    elif visible_threats:
+        closest_threat = min(visible_threats, key=lambda t: t.get("distance", 9999))
+        dist = closest_threat.get("distance", 9999)
+        if dist < 500:
+            recommendations.append({
+                "tool": "strafe_and_shoot",
+                "reason": f"Enemy {closest_threat.get('name')} at {dist}u — in range",
+                "params": {
+                    "object_id": closest_threat.get("id"),
+                    "direction": "auto",
+                    "shots": 5,
+                },
+            })
+
+    # Rule 3: Stuck → break loop
+    if stuck_counter >= 2:
+        recommendations.append({
+            "tool": "explore",
+            "reason": f"Stuck for {stuck_counter} decisions — break fixation",
+            "params": {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": True, "turn_before": 180.0},
+        })
+
+    # Rule 4: Low coverage + no threats → explore aggressively
+    elif coverage_percent < 30 and not visible_threats:
+        recommendations.append({
+            "tool": "explore",
+            "reason": f"Coverage {coverage_percent}% — explore new areas",
+            "params": {"max_tics": 200, "stop_on_enemy": True, "stop_on_item": True},
+        })
+
+    # Rule 5: Danger zone ahead → cautious approach
+    danger_zones = (cross_run_context or {}).get("danger_zones", [])
+    if danger_zones and not recommendations:
+        recommendations.append({
+            "tool": "explore",
+            "reason": f"Danger zone {danger_zones[0].get('distance_cells', '?')} cells ahead — proceed cautiously",
+            "params": {"max_tics": 60, "stop_on_enemy": True, "stop_on_item": False},
+        })
+
+    return recommendations[:3]
+
+
 def _build_llm_input(
     state: dict[str, Any],
     threat_assessment: dict[str, Any],
@@ -398,6 +479,7 @@ def _build_llm_input(
     ticks_remaining: int,
     total_cells: int,
     coverage_warning: str | None,
+    cross_run_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     variables = normalize_variables(state)
     objects = _compact_state_for_llm(state).get("objects") or []
@@ -492,6 +574,9 @@ def _build_llm_input(
                 "recent_stuck_events": int(lockstep_state.get("position_stuck_counter") or 0),
                 "consecutive_same_tool": int(lockstep_state.get("consecutive_get_state") or 0),
                 "frontier_cells": _compute_frontier_cells(lockstep_state, variables),
+                "danger_zones_ahead": (cross_run_context or {}).get("danger_zones", []),
+                "previous_run_hypotheses": (cross_run_context or {}).get("hypotheses", []),
+                "previous_run_outcomes": (cross_run_context or {}).get("run_summaries", []),
             },
             "distance_context": distance_context,
             "agent_phase": _determine_agent_phase(
@@ -501,6 +586,9 @@ def _build_llm_input(
                 variables, objects, navigation_info, lockstep_state
             ),
             "same_run_memory": _build_same_run_memory(lockstep_state),
+            "action_recommendations": _build_action_recommendations(
+                state, threat_assessment, navigation_info, lockstep_state, cross_run_context
+            ),
         }
     )
 
@@ -1229,6 +1317,22 @@ def _state_report_call(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_run_outcome(outcome: str | None) -> str:
+    value = str(outcome or "timeout").strip().lower()
+    aliases = {
+        "completed": "qa_completed",
+        "complete": "qa_completed",
+        "qa_complete": "qa_completed",
+        "agent_died": "player_died",
+        "death": "player_died",
+        "died": "player_died",
+        "softlock": "inconclusive_agent_stall",
+        "stuck": "inconclusive_agent_stall",
+        "agent_stall": "inconclusive_agent_stall",
+    }
+    return aliases.get(value, value)
+
+
 def _pwad_crash_fields(exc: Exception, stage: str) -> dict[str, Any]:
     raw_error = str(exc)
     summary = "PWAD crashed or failed to initialize under the configured ViZDoom/Freedoom test environment."
@@ -1461,3 +1565,16 @@ def generate_map_layout_png(
         return buffer.getvalue()
     except Exception:
         return None
+
+
+def _estimate_total_map_cells(analysis: Any) -> int | None:
+    width = getattr(analysis, "map_width_units", None)
+    height = getattr(analysis, "map_height_units", None)
+    try:
+        parsed_width = float(width)
+        parsed_height = float(height)
+    except (TypeError, ValueError):
+        return None
+    if parsed_width <= 0 or parsed_height <= 0:
+        return None
+    return max(1, math.ceil(parsed_width / CELL_SIZE) * math.ceil(parsed_height / CELL_SIZE))

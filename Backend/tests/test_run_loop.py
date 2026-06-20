@@ -19,7 +19,7 @@ def _mock_run():
     run.map_name = "MAP01"
     run.difficulty_level = 3
     run.iwad_used = "freedoom2"
-    run.llm_model = "gemini-2.5-flash-lite"
+    run.llm_model = "gemini-3.1-flash-lite"
     run.max_ticks = 5000
     run.status = "pending"
     run.behavior_profile = "thorough"
@@ -282,6 +282,7 @@ async def test_normal_completion():
         patch("app.services.run_loop._finalize_lockstep_decision"),
         patch("app.services.run_loop._lockstep_progress_metrics", return_value={"progress_score": 0}),
         patch("app.services.run_loop._lockstep_quality_flags", return_value={"quality_status": "unknown"}),
+        patch("app.services.run_loop.finalize_run", new_callable=AsyncMock),
     ):
         db = _make_db()
         db.get.side_effect = lambda cls, id: {TestRun: run, StaticAnalysisResult: analysis}.get(cls)
@@ -319,8 +320,6 @@ async def test_normal_completion():
         await agent_run_task(run.id)
 
         mock_wad_repo.get_by_id.assert_awaited_once_with(run.wad_file_id)
-        mock_defect_svc.detect_for_run.assert_awaited_once()
-        mock_report_svc.generate.assert_awaited_once()
         assert db.commit.called
 
 
@@ -343,6 +342,7 @@ async def test_pwad_crash():
         patch("app.services.run_loop.get_behavior_profile") as mock_get_profile,
         patch("app.services.run_loop.render_agent_prompt") as mock_render_prompt,
         patch("app.services.run_loop.RUN_TASKS", {}),
+        patch("app.services.run_loop.finalize_run", new_callable=AsyncMock),
     ):
         db = _make_db()
         db.get.side_effect = lambda cls, id: {TestRun: run, StaticAnalysisResult: analysis}.get(cls)
@@ -403,7 +403,6 @@ async def test_pwad_crash():
                 "user_facing_outcome": "infrastructure_error",
             },
         )
-        rec.finalize.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -425,6 +424,7 @@ async def test_cancelled():
         patch("app.services.run_loop.RecordingService") as mock_rec_cls,
         patch("app.services.run_loop.websocket_service") as mock_ws,
         patch("app.services.run_loop.RUN_TASKS", {}),
+        patch("app.services.run_loop.finalize_run", new_callable=AsyncMock),
     ):
         db = _make_db()
         db.get.side_effect = lambda cls, id: {TestRun: run, StaticAnalysisResult: analysis}.get(cls)

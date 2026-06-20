@@ -30,6 +30,8 @@ class TestRun(Base):
         Index("idx_test_runs_status", "status"),
         Index("idx_test_runs_created_at", text("created_at DESC")),
         Index("idx_test_runs_wad_map_created_at", "wad_file_id", "map_name", text("created_at DESC")),
+        Index("idx_test_runs_outcome", "outcome"),
+        Index("idx_test_runs_llm_model", "llm_model"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -52,7 +54,7 @@ class TestRun(Base):
     llm_model: Mapped[str] = mapped_column(
         String(128),
         nullable=False,
-        server_default=text("'gemini-2.5-flash'"),
+        server_default=text("'gemini-3.1-flash-lite'"),
     )
     behavior_profile: Mapped[str | None] = mapped_column(String(32), default="thorough", server_default=text("'thorough'"))
     max_ticks: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("3000"))
@@ -82,6 +84,8 @@ class TestRun(Base):
     agent_quality_flags: Mapped[dict | None] = mapped_column(JSONB)
     environment_metadata: Mapped[dict | None] = mapped_column(JSONB)
     report_pdf_path: Mapped[str | None] = mapped_column(Text)
+    system_prompt_hash: Mapped[str | None] = mapped_column(String(64))
+    system_prompt_text: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     wad_file: Mapped[WadFile] = relationship("WadFile", back_populates="test_runs")

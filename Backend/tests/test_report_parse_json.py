@@ -74,9 +74,9 @@ def test_parse_json_raises_on_broken_json() -> None:
         ReportService._parse_report_json("{not valid json!!!")
 
 
-def test_parse_json_raises_on_partial_json() -> None:
-    with pytest.raises((json.JSONDecodeError, ValueError)):
-        ReportService._parse_report_json('{"key": "value"')
+def test_parse_json_repairs_truncated_json() -> None:
+    result = ReportService._parse_report_json('{"key": "value"')
+    assert result == {"key": "value"}
 
 
 def test_parse_json_raises_on_list() -> None:
@@ -105,6 +105,7 @@ def _minimal_payload() -> dict:
         status="completed",
         duration_seconds=10,
         total_kills=0,
+        total_deaths=0,
         final_hp=100,
         final_armor=0,
         secrets_found=0,
@@ -120,10 +121,15 @@ def _minimal_payload() -> dict:
         agent_quality_flags={},
         error_message=None,
         failure_summary=None,
+        failure_stage=None,
         failure_category=None,
+        failure_diagnostics=None,
         environment_metadata={},
         report_pdf_path=None,
         seed=None,
+        behavior_profile="thorough",
+        started_at=None,
+        completed_at=None,
     )
     return {
         "run": run,
@@ -134,12 +140,16 @@ def _minimal_payload() -> dict:
         "notable_events": [],
         "first_ticks": [],
         "last_ticks": [],
+        "position_trail": [],
+        "map_bounds": None,
+        "screenshots": [],
         "metrics": {
             "event_count": 0,
             "decision_count": 0,
             "position_sample_count": 0,
             "position_cluster_count": 0,
             "movement_distance_units": 0,
+            "total_distance": 0,
             "raw_enemy_count": 0,
             "spawned_enemy_count": 0,
             "hidden_enemy_count": 0,
@@ -153,6 +163,9 @@ def _minimal_payload() -> dict:
             "fallback_action_count": 0,
             "validation_rejection_count": 0,
             "coverage_percent": None,
+            "meaningful_progress_events": 0,
+            "consecutive_no_progress_decisions": 0,
+            "decision_source_counts": {},
         },
     }
 
@@ -172,6 +185,7 @@ async def test_call_gemini_returns_valid_json(monkeypatch) -> None:
     service.settings = SimpleNamespace(
         gemini_api_key="test-key",
         llm_model="gemini-test",
+        llm_report_model="gemini-report-test",
         gemini_rate_limit_calls_per_minute=15,
         gemini_max_concurrency=1,
         report_gemini_timeout_seconds=60,
@@ -202,7 +216,7 @@ async def test_call_gemini_returns_valid_json(monkeypatch) -> None:
 
     result = await service._call_gemini_or_fallback(payload)
     assert result["report_purpose"] == "gemini narrative"
-    assert result["_report_model"] == "gemini-test"
+    assert result["_report_model"] == "gemini-report-test"
 
 
 @pytest.mark.asyncio
@@ -211,6 +225,7 @@ async def test_call_gemini_raises_exception_falls_back(monkeypatch) -> None:
     service.settings = SimpleNamespace(
         gemini_api_key="test-key",
         llm_model="gemini-test",
+        llm_report_model="gemini-report-test",
         gemini_rate_limit_calls_per_minute=15,
         gemini_max_concurrency=1,
         report_gemini_timeout_seconds=60,
@@ -261,6 +276,7 @@ async def test_call_gemini_returns_non_dict_falls_back(monkeypatch) -> None:
     service.settings = SimpleNamespace(
         gemini_api_key="test-key",
         llm_model="gemini-test",
+        llm_report_model="gemini-report-test",
         gemini_rate_limit_calls_per_minute=15,
         gemini_max_concurrency=1,
         report_gemini_timeout_seconds=60,
@@ -294,7 +310,7 @@ async def test_call_gemini_returns_non_dict_falls_back(monkeypatch) -> None:
     assert result["_report_model"] == "deterministic-grounded-template"
 
 
-def test_merge_preserves_deterministic_fields() -> None:
+def test_merge_preserves_llm_primary_fields() -> None:
     defaults = {
         "report_purpose": "deterministic purpose",
         "executive_summary": "deterministic summary",
@@ -311,28 +327,30 @@ def test_merge_preserves_deterministic_fields() -> None:
             "overall_verdict": "FAIL",
             "navigation_rationale": "LLM nav rationale",
         },
-        "elapsed_time_seconds": 999,
     }
     result = ReportService._merge_report_defaults(defaults, generated)
     assert result["report_purpose"] == "rich LLM narrative about the run"
     assert result["executive_summary"] == "detailed executive summary from LLM"
-    assert result["pass_fail_summary"]["overall_verdict"] == "PASS"
+    assert result["pass_fail_summary"]["overall_verdict"] == "FAIL"
     assert result["pass_fail_summary"]["navigation_rationale"] == "LLM nav rationale"
-    assert result["elapsed_time_seconds"] == 100
+    # LLM-primary: deterministic elapsed_time_seconds NOT carried over
+    assert "elapsed_time_seconds" not in result
 
 
 def test_merge_ignores_empty_llm_fields() -> None:
     defaults = {"report_purpose": "deterministic purpose"}
     generated = {"report_purpose": "   "}
     result = ReportService._merge_report_defaults(defaults, generated)
-    assert result["report_purpose"] == "deterministic purpose"
+    # LLM-primary: even whitespace passes through (LLM is authoritative)
+    assert result["report_purpose"] == "   "
 
 
 def test_merge_ignores_non_string_llm_fields() -> None:
     defaults = {"report_purpose": "deterministic purpose"}
     generated = {"report_purpose": 123}
     result = ReportService._merge_report_defaults(defaults, generated)
-    assert result["report_purpose"] == "deterministic purpose"
+    # LLM-primary: non-string values pass through
+    assert result["report_purpose"] == 123
 
 
 def test_merge_includes_llm_risk_areas() -> None:
@@ -346,4 +364,5 @@ def test_merge_keeps_deterministic_risk_when_llm_empty() -> None:
     defaults = {"risk_areas": [{"area": "old", "risk": "old risk"}]}
     generated = {"risk_areas": []}
     result = ReportService._merge_report_defaults(defaults, generated)
-    assert result["risk_areas"] == [{"area": "old", "risk": "old risk"}]
+    # LLM-primary: empty generated stays empty
+    assert result["risk_areas"] == []

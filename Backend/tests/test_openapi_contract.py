@@ -23,7 +23,7 @@ def test_openapi_exposes_map_metadata_and_trace_fields() -> None:
         assert prop in _props(schemas, "StaticAnalysisOut"), f"Missing {prop} in StaticAnalysisOut"
     for prop in ("map_title", "map_display_name", "spawn_summary_by_skill", "map_min_x", "map_max_x", "map_min_y", "map_max_y"):
         assert prop in _props(schemas, "WadMapOut"), f"Missing {prop} in WadMapOut"
-    for prop in ("agent_decision_id", "mcp_tool", "mcp_executed_tool", "mcp_params", "mcp_action_summary", "mcp_stop_reason"):
+    for prop in ("mcp_tool", "mcp_executed_tool", "mcp_params", "mcp_action_summary", "mcp_stop_reason"):
         assert prop in _props(schemas, "TraceEntryOut"), f"Missing {prop} in TraceEntryOut"
     for prop in ("failure_category", "failure_stage", "failure_summary", "failure_diagnostics", "recording_mp4_url", "report_pdf_url", "environment_metadata"):
         assert prop in RunOut.model_fields, f"Missing {prop} in RunOut"

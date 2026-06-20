@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS test_runs (
     map_name                VARCHAR(16)     NOT NULL,
     difficulty_level        SMALLINT        NOT NULL DEFAULT 3 CHECK (difficulty_level BETWEEN 1 AND 5),
     iwad_used               VARCHAR(64)     NOT NULL DEFAULT 'freedoom2',
-    llm_model               VARCHAR(128)    NOT NULL DEFAULT 'gemini-2.5-flash-lite',
+    llm_model               VARCHAR(128)    NOT NULL DEFAULT 'gemini-3.1-flash-lite',
     behavior_profile        VARCHAR(32)     DEFAULT 'thorough',
     max_ticks               INTEGER         NOT NULL DEFAULT 3000,
     seed                    INTEGER,

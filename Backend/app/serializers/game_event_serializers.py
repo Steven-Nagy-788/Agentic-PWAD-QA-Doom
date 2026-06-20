@@ -27,7 +27,6 @@ class TraceEntryOut(BaseModel):
     item_count: int
     secret_count: int
     weapon_selected: int
-    agent_decision_id: UUID | None = None
     event_type: str
     action_taken: dict[str, Any] | None = None
     llm_reasoning: str | None = None

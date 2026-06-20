@@ -60,7 +60,7 @@ Simple liveness check.
 Probes the configured Gemini model via `GeminiService.probe_model()`.
 
 ```json
-{ "status": "ok", "model": "gemini-2.5-flash-lite", "response": "..." }
+{ "status": "ok", "model": "gemini-3.1-flash-lite", "response": "..." }
 ```
 
 ### `GET /health/mcp`

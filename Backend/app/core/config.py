@@ -36,7 +36,8 @@ class Settings(BaseSettings):
     analysis_storage_dir: Path | None = None
 
     iwad_used: str = "freedoom2"
-    llm_model: str = "gemini-2.5-flash-lite"
+    llm_model: str = "gemini-3.1-flash-lite"
+    llm_report_model: str = "gemini-3.5-flash"
     gemini_api_key: str = ""
     llm_throttle_seconds: float = 2.0
     gemini_retry_max_delay_seconds: float = 20.0
