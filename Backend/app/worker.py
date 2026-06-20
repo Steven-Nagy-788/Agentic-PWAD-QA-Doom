@@ -3,18 +3,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-import time
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models import TestRun
 from app.repositories.run_repository import RunRepository
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger("doom_worker")
 
 POLL_INTERVAL_SECONDS = 5
@@ -44,7 +44,7 @@ async def worker_loop() -> None:
 
 async def poll_and_process() -> None:
     async with SessionLocal() as db:
-        settings = get_settings()
+        get_settings()
         repo = RunRepository(db)
 
         result = await db.execute(
@@ -58,10 +58,14 @@ async def poll_and_process() -> None:
         if run is None:
             return
 
-        if run.created_at and run.created_at.replace(tzinfo=UTC) < datetime.now(UTC) - timedelta(
-            minutes=STALE_RUN_TIMEOUT_MINUTES
-        ):
-            logger.warning("Run %s is stale (created %s), marking as failed", run.id, run.created_at)
+        if run.created_at and run.created_at.replace(tzinfo=UTC) < datetime.now(
+            UTC
+        ) - timedelta(minutes=STALE_RUN_TIMEOUT_MINUTES):
+            logger.warning(
+                "Run %s is stale (created %s), marking as failed",
+                run.id,
+                run.created_at,
+            )
             await repo.update(
                 run,
                 status="failed",
@@ -106,13 +110,17 @@ async def poll_and_process() -> None:
 async def fail_orphaned_queued_runs() -> int:
     async with SessionLocal() as db:
         result = await db.execute(
-            select(TestRun).where(TestRun.status.in_(("running",))).order_by(TestRun.created_at)
+            select(TestRun)
+            .where(TestRun.status.in_(("running",)))
+            .order_by(TestRun.created_at)
         )
         now = datetime.now(UTC)
         failed = 0
         for run in result.scalars().all():
             started = run.started_at or run.created_at
-            if started and started.replace(tzinfo=UTC) < now - timedelta(minutes=STALE_RUN_TIMEOUT_MINUTES):
+            if started and started.replace(tzinfo=UTC) < now - timedelta(
+                minutes=STALE_RUN_TIMEOUT_MINUTES
+            ):
                 await RunRepository(db).update(
                     run,
                     status="failed",

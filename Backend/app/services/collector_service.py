@@ -37,7 +37,9 @@ class CollectorService:
         if detected_event_type == "normal" and decision.get("event_type_override"):
             event_type = str(decision["event_type_override"])
         mcp_output = mcp_call.get("output")
-        action_summary = mcp_output.get("action_summary") if isinstance(mcp_output, dict) else None
+        action_summary = (
+            mcp_output.get("action_summary") if isinstance(mcp_output, dict) else None
+        )
         action_taken = {
             "mcp_tool": decision.get("mcp_tool"),
             "mcp_executed_tool": mcp_call.get("tool") or decision.get("mcp_tool"),
@@ -58,7 +60,9 @@ class CollectorService:
             if action_summary.get("stop_reason") is not None:
                 action_taken["mcp_stop_reason"] = str(action_summary["stop_reason"])
         if decision.get("recording_fidelity_warning"):
-            action_taken["recording_fidelity_warning"] = decision["recording_fidelity_warning"]
+            action_taken["recording_fidelity_warning"] = decision[
+                "recording_fidelity_warning"
+            ]
         if decision.get("tool_param_warning"):
             action_taken["tool_param_warning"] = decision["tool_param_warning"]
         event = GameEvent(
@@ -105,15 +109,26 @@ class CollectorService:
                 for defect in existing:
                     if defect.defect_type != defect_type:
                         continue
-                    if defect.detected_at_tick is not None and abs(defect.detected_at_tick - tick) < 500:
-                        if defect.position_x is not None and defect.position_y is not None:
-                            dist = ((defect.position_x - event.player_x) ** 2 + (defect.position_y - event.player_y) ** 2) ** 0.5
+                    if (
+                        defect.detected_at_tick is not None
+                        and abs(defect.detected_at_tick - tick) < 500
+                    ):
+                        if (
+                            defect.position_x is not None
+                            and defect.position_y is not None
+                        ):
+                            dist = (
+                                (defect.position_x - event.player_x) ** 2
+                                + (defect.position_y - event.player_y) ** 2
+                            ) ** 0.5
                             if dist < 100:
                                 is_duplicate = True
                                 break
                 if not is_duplicate:
                     issue_description = (
-                        issue.get("description") if isinstance(issue, dict) else str(issue)
+                        issue.get("description")
+                        if isinstance(issue, dict)
+                        else str(issue)
                     )
                     await defect_repo.create(
                         Defect(
@@ -132,7 +147,9 @@ class CollectorService:
         self._previous = variables
         return event
 
-    async def collect_position(self, run_id: UUID, tick_number: int, state: dict[str, Any]) -> None:
+    async def collect_position(
+        self, run_id: UUID, tick_number: int, state: dict[str, Any]
+    ) -> None:
         variables = normalize_variables(state)
         await self.repo.create_position(
             AgentPositionTrail(
@@ -145,9 +162,13 @@ class CollectorService:
             )
         )
 
-    async def attach_screenshot(self, run_id: UUID, event: GameEvent, screenshot_path: str) -> None:
+    async def attach_screenshot(
+        self, run_id: UUID, event: GameEvent, screenshot_path: str
+    ) -> None:
         await self.repo.create_screenshot(
-            NotableEventScreenshot(run_id=run_id, game_event_id=event.id, screenshot_path=screenshot_path)
+            NotableEventScreenshot(
+                run_id=run_id, game_event_id=event.id, screenshot_path=screenshot_path
+            )
         )
 
     def detect_event(self, current: dict[str, Any]) -> str:
@@ -170,7 +191,10 @@ class CollectorService:
         if _changed_resources_or_score(current, previous):
             self._stuck_count = 0
             return "normal"
-        if abs(current["x"] - previous["x"]) < 1 and abs(current["y"] - previous["y"]) < 1:
+        if (
+            abs(current["x"] - previous["x"]) < 1
+            and abs(current["y"] - previous["y"]) < 1
+        ):
             self._stuck_count += 1
             if self._stuck_count >= STUCK_DECISION_THRESHOLD:
                 return "stuck"
@@ -181,7 +205,9 @@ class CollectorService:
 
 def normalize_variables(state: dict[str, Any]) -> dict[str, Any]:
     variables = state.get("game_variables") or state.get("variables") or state
-    weapon_state = state.get("weapon_state") if isinstance(state.get("weapon_state"), dict) else {}
+    weapon_state = (
+        state.get("weapon_state") if isinstance(state.get("weapon_state"), dict) else {}
+    )
 
     def num(*keys: str, default: float = 0) -> float:
         for key in keys:
@@ -195,7 +221,9 @@ def normalize_variables(state: dict[str, Any]) -> dict[str, Any]:
     usable_attack_ammo = weapon_state.get("usable_attack_ammo")
     if usable_attack_ammo is None:
         if has_raw_ammo_slots:
-            usable_attack_ammo = max(float(value or 0) for value in raw_ammo_slots.values())
+            usable_attack_ammo = max(
+                float(value or 0) for value in raw_ammo_slots.values()
+            )
         elif "ammo_total" in variables:
             usable_attack_ammo = num("ammo_total")
         else:
@@ -236,13 +264,17 @@ def normalize_variables(state: dict[str, Any]) -> dict[str, Any]:
         "secret_count": num("SECRETCOUNT", "secret_count", "secrets"),
         "weapon_selected": num("SELECTED_WEAPON", "weapon_selected"),
     }
-    normalized["level_completed"] = bool(state.get("level_completed") or state.get("next_map"))
+    normalized["level_completed"] = bool(
+        state.get("level_completed") or state.get("next_map")
+    )
     normalized["map_exit"] = bool(state.get("map_exit"))
     normalized["ammo_total"] = usable_attack_ammo
     return normalized
 
 
-def _changed_resources_or_score(current: dict[str, Any], previous: dict[str, Any]) -> bool:
+def _changed_resources_or_score(
+    current: dict[str, Any], previous: dict[str, Any]
+) -> bool:
     watched_keys = (
         "ammo_total",
         "armor",
@@ -254,20 +286,27 @@ def _changed_resources_or_score(current: dict[str, Any], previous: dict[str, Any
     return any(current.get(key) != previous.get(key) for key in watched_keys)
 
 
-_KNOWN_DEFECT_CATEGORIES = {"geometry", "resource_balance", "progression", "encounter_design", "balance", "combat", "pwad_crash"}
+_KNOWN_DEFECT_CATEGORIES = {
+    "geometry",
+    "resource_balance",
+    "progression",
+    "encounter_design",
+    "balance",
+    "combat",
+    "pwad_crash",
+}
 
 
 def normalize_observed_issue(issue: Any) -> tuple[str, str]:
     if isinstance(issue, dict):
         raw = str(issue.get("category") or "").strip().lower()
-        description = issue.get("description") or ""
+        issue.get("description") or ""
     elif isinstance(issue, str):
         match = re.match(r"\s*\[([^\]]+)\]", issue)
         raw = (match.group(1) if match else "").strip().lower()
-        description = issue
     else:
         raw = ""
-        description = str(issue)
+        str(issue)
 
     slug = re.sub(r"[^a-z0-9]+", "_", raw).strip("_") or "issue"
     normalized_category = slug if slug in _KNOWN_DEFECT_CATEGORIES else slug
@@ -276,7 +315,9 @@ def normalize_observed_issue(issue: Any) -> tuple[str, str]:
     return defect_type, title[:255]
 
 
-def _compact_llm_event_summary(tick: int, event_type: str, variables: dict[str, Any]) -> str:
+def _compact_llm_event_summary(
+    tick: int, event_type: str, variables: dict[str, Any]
+) -> str:
     summary = {
         "tick": tick,
         "event_type": event_type,

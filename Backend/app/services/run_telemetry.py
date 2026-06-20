@@ -9,7 +9,11 @@ from uuid import UUID
 
 from app.core.config import get_settings
 from app.services.collector_service import CollectorService
-from app.services.recording_service import RecordingService, jpeg_b64, png_bytes_to_frame
+from app.services.recording_service import (
+    RecordingService,
+    jpeg_b64,
+    png_bytes_to_frame,
+)
 from app.services.websocket_service import websocket_service
 
 _last_telemetry_frame_at: dict[str, float] = {}
@@ -45,7 +49,9 @@ async def _record_telemetry_frames(
     for index, sample in enumerate(telemetry_frames):
         sample_tick = _telemetry_sample_tick(sample, fallback=tick + index + 1)
         sample_state = {
-            "game_variables": sample.get("game_variables") or sample.get("variables") or sample,
+            "game_variables": sample.get("game_variables")
+            or sample.get("variables")
+            or sample,
             "level_completed": sample.get("level_completed"),
             "map_exit": sample.get("map_exit"),
             "next_map": sample.get("next_map"),
@@ -69,7 +75,12 @@ async def _record_telemetry_frames(
             if encoded:
                 await websocket_service.broadcast(
                     run_id,
-                    {"type": "frame", "tick": sample_tick, "mime_type": "image/jpeg", "frame_b64": encoded},
+                    {
+                        "type": "frame",
+                        "tick": sample_tick,
+                        "mime_type": "image/jpeg",
+                        "frame_b64": encoded,
+                    },
                 )
             _last_telemetry_frame_at[run_key] = now
 
@@ -97,10 +108,17 @@ async def _broadcast_state(
                 "rockets": event.ammo_rockets,
                 "cells": event.ammo_cells,
             },
-            "position": {"x": event.player_x, "y": event.player_y, "angle": event.player_angle},
+            "position": {
+                "x": event.player_x,
+                "y": event.player_y,
+                "angle": event.player_angle,
+            },
             "event_type": event.event_type,
             "llm_reasoning": event.llm_reasoning,
-            "action": {"mcp_tool": decision.get("mcp_tool"), "mcp_params": decision.get("mcp_params") or {}},
+            "action": {
+                "mcp_tool": decision.get("mcp_tool"),
+                "mcp_params": decision.get("mcp_params") or {},
+            },
             "screenshot_b64": screenshot_b64,
         },
     )

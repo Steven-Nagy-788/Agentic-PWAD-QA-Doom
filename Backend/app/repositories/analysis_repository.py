@@ -12,7 +12,9 @@ class AnalysisRepository:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def get_by_wad_and_map(self, wad_id: UUID, map_name: str) -> StaticAnalysisResult | None:
+    async def get_by_wad_and_map(
+        self, wad_id: UUID, map_name: str
+    ) -> StaticAnalysisResult | None:
         result = await self.db.execute(
             select(StaticAnalysisResult).where(
                 StaticAnalysisResult.wad_file_id == wad_id,
@@ -30,7 +32,9 @@ class AnalysisRepository:
         return list(result.scalars().all())
 
     async def upsert(self, analysis: StaticAnalysisResult) -> StaticAnalysisResult:
-        existing = await self.get_by_wad_and_map(analysis.wad_file_id, analysis.map_name)
+        existing = await self.get_by_wad_and_map(
+            analysis.wad_file_id, analysis.map_name
+        )
         if existing is None:
             self.db.add(analysis)
             await self.db.flush()

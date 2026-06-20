@@ -11,7 +11,17 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, REGISTRY
 
 from app.core.config import get_settings
 from app.core.database import Base, SessionLocal, engine
-from app.routers import admin_storage, analysis, memory, patterns, reports, runs, settings as settings_router, wads, ws
+from app.routers import (
+    admin_storage,
+    analysis,
+    memory,
+    patterns,
+    reports,
+    runs,
+    settings as settings_router,
+    wads,
+    ws,
+)
 from app.services.gemini_service import GeminiService
 import app.core.metrics
 from app.services.mcp_client_service import probe_mcp_sse_url
@@ -48,7 +58,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.analysis_storage_dir,
     ]:
         path.mkdir(parents=True, exist_ok=True)
-    import app.models
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with SessionLocal() as db:
@@ -56,6 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await db.commit()
     try:
         import sentry_sdk
+
         has_sentry = True
     except ImportError:
         has_sentry = False
@@ -108,9 +118,16 @@ def health_check() -> dict[str, str]:
 async def gemini_health_check() -> dict[str, Any]:
     model, source = await _effective_llm_model()
     if not settings.gemini_api_key:
-        return {"status": "error", "configured": False, "model": model, "model_source": source}
+        return {
+            "status": "error",
+            "configured": False,
+            "model": model,
+            "model_source": source,
+        }
     return {
-        "status": _gemini_probe_cache.get("status", "configured") if _gemini_probe_cache else "configured",
+        "status": _gemini_probe_cache.get("status", "configured")
+        if _gemini_probe_cache
+        else "configured",
         "configured": True,
         "model": model,
         "model_source": source,
@@ -153,7 +170,11 @@ async def mcp_health_check() -> dict[str, object]:
 async def smoke_health_check():
     if RUN_TASKS:
         return JSONResponse(
-            content={"overall": "skip", "stages": [], "reason": "Active run in progress — smoke check would conflict."},
+            content={
+                "overall": "skip",
+                "stages": [],
+                "reason": "Active run in progress — smoke check would conflict.",
+            },
             status_code=503,
         )
     model, source = await _effective_llm_model()
@@ -196,20 +217,30 @@ async def detailed_health_check():
         storage_statuses[str(path.relative_to(settings.storage_dir.parent))] = (
             "ok" if path.is_dir() and os.access(path, os.W_OK) else "error"
         )
-    deps["storage"] = {"status": "ok" if all(v == "ok" for v in storage_statuses.values()) else "error", "dirs": storage_statuses}
+    deps["storage"] = {
+        "status": "ok"
+        if all(v == "ok" for v in storage_statuses.values())
+        else "error",
+        "dirs": storage_statuses,
+    }
 
     try:
         async with SessionLocal() as db:
             result = await db.execute(
-                select(func.count()).where(TestRun.status.in_(("pending", "analyzing", "running")))
+                select(func.count()).where(
+                    TestRun.status.in_(("pending", "analyzing", "running"))
+                )
             )
             active_count = result.scalar()
         deps["run_status"] = {"status": "ok", "active_runs": active_count}
     except Exception as exc:
         deps["run_status"] = {"status": "error", "error": str(exc)}
 
-    overall = "ok" if all(
-        dep.get("status") == "ok" for dep in deps.values()
-        if isinstance(dep, dict)
-    ) else "degraded"
+    overall = (
+        "ok"
+        if all(
+            dep.get("status") == "ok" for dep in deps.values() if isinstance(dep, dict)
+        )
+        else "degraded"
+    )
     return {"status": overall, "dependencies": deps}

@@ -19,7 +19,9 @@ class ConfigRepository:
         return {row.key: row.value for row in entries}
 
     async def get(self, key: str) -> Any:
-        result = await self.db.execute(select(ConfigEntry).where(ConfigEntry.key == key))
+        result = await self.db.execute(
+            select(ConfigEntry).where(ConfigEntry.key == key)
+        )
         entry = result.scalar_one_or_none()
         return entry.value if entry else None
 

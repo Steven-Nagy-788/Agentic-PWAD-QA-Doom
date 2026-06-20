@@ -8,10 +8,8 @@ in the same process (pytest fixture lifecycle). The unit tests
 (TestNavigationMemoryFixes) run fine without xvfb.
 """
 
-import math
 import os
 import sys
-import time
 
 import pytest
 
@@ -253,11 +251,11 @@ class TestE2EMap02:
         """Run a short gameplay loop on MAP02: explore -> get nav info -> explore more."""
         _start_game(gm, MAP02_WAD, "MAP02")
         # First exploration
-        r1 = gm.explore(max_tics=40, stop_on_enemy=False, stop_on_item=False)
+        gm.explore(max_tics=40, stop_on_enemy=False, stop_on_item=False)
         nav1 = gm.get_navigation_info()
         cells_after_first = nav1["cells_explored"]
         # Second exploration (should explore new area)
-        r2 = gm.explore(max_tics=40, stop_on_enemy=True, stop_on_item=False)
+        gm.explore(max_tics=40, stop_on_enemy=True, stop_on_item=False)
         nav2 = gm.get_navigation_info()
         cells_after_second = nav2["cells_explored"]
         # Should have explored at least as many cells

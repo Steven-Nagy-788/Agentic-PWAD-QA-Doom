@@ -52,28 +52,36 @@ async def _build_cross_run_memory_context(
 
     # High-confidence hypotheses from previous runs
     hyp_result = await db.execute(
-        select(WadHypothesis).where(
+        select(WadHypothesis)
+        .where(
             WadHypothesis.wad_file_id == wad_file_id,
             WadHypothesis.map_name == map_name.upper(),
             WadHypothesis.confidence >= 0.5,
             WadHypothesis.refuted_at.is_(None),
-        ).order_by(WadHypothesis.confidence.desc()).limit(10)
+        )
+        .order_by(WadHypothesis.confidence.desc())
+        .limit(10)
     )
     hypotheses = list(hyp_result.scalars().all())
     if hypotheses:
         hyp_lines = []
         for h in hypotheses:
-            hyp_lines.append(f"- [{h.tag}] {h.content} (confidence: {h.confidence:.1f})")
+            hyp_lines.append(
+                f"- [{h.tag}] {h.content} (confidence: {h.confidence:.1f})"
+            )
         parts.append("CROSS-RUN HYPOTHESES:\n" + "\n".join(hyp_lines))
 
     # Spatial memory: high-death or high-stuck cells
     spatial_result = await db.execute(
-        select(WadSpatialMemory).where(
+        select(WadSpatialMemory)
+        .where(
             WadSpatialMemory.wad_file_id == wad_file_id,
             WadSpatialMemory.map_name == map_name.upper(),
             WadSpatialMemory.event_type.in_(["death", "stuck"]),
             WadSpatialMemory.occurrence_count >= 3,
-        ).order_by(WadSpatialMemory.occurrence_count.desc()).limit(10)
+        )
+        .order_by(WadSpatialMemory.occurrence_count.desc())
+        .limit(10)
     )
     spatial = list(spatial_result.scalars().all())
     if spatial:
@@ -103,21 +111,23 @@ async def _build_per_decision_cross_run_context(
 ) -> dict[str, Any]:
     """Build per-decision cross-run context with danger zones near player."""
     from app.models import WadHypothesis, WadSpatialMemory, TestRun
-    from sqlalchemy import func
 
     cx = round(player_x / cell_size)
     cy = round(player_y / cell_size)
 
     # Danger zones within 5-cell radius
     spatial_result = await db.execute(
-        select(WadSpatialMemory).where(
+        select(WadSpatialMemory)
+        .where(
             WadSpatialMemory.wad_file_id == wad_file_id,
             WadSpatialMemory.map_name == map_name.upper(),
             WadSpatialMemory.event_type.in_(["death", "stuck"]),
             WadSpatialMemory.occurrence_count >= 1,
             WadSpatialMemory.cell_x.between(cx - 5, cx + 5),
             WadSpatialMemory.cell_y.between(cy - 5, cy + 5),
-        ).order_by(WadSpatialMemory.occurrence_count.desc()).limit(10)
+        )
+        .order_by(WadSpatialMemory.occurrence_count.desc())
+        .limit(10)
     )
     danger_zones = [
         {
@@ -132,12 +142,15 @@ async def _build_per_decision_cross_run_context(
 
     # High-confidence hypotheses
     hyp_result = await db.execute(
-        select(WadHypothesis).where(
+        select(WadHypothesis)
+        .where(
             WadHypothesis.wad_file_id == wad_file_id,
             WadHypothesis.map_name == map_name.upper(),
             WadHypothesis.confidence >= 0.4,
             WadHypothesis.refuted_at.is_(None),
-        ).order_by(WadHypothesis.confidence.desc()).limit(5)
+        )
+        .order_by(WadHypothesis.confidence.desc())
+        .limit(5)
     )
     hypotheses = [
         {"tag": h.tag, "content": h.content, "confidence": h.confidence}
@@ -146,20 +159,25 @@ async def _build_per_decision_cross_run_context(
 
     # Last 3 run summaries for same map
     runs_result = await db.execute(
-        select(TestRun).where(
+        select(TestRun)
+        .where(
             TestRun.wad_file_id == wad_file_id,
             TestRun.map_name == map_name.upper(),
             TestRun.status == "completed",
-        ).order_by(TestRun.created_at.desc()).limit(3)
+        )
+        .order_by(TestRun.created_at.desc())
+        .limit(3)
     )
     run_summaries = []
     for run in runs_result.scalars().all():
-        run_summaries.append({
-            "outcome": run.outcome,
-            "total_kills": run.total_kills,
-            "final_hp": run.final_hp,
-            "duration_seconds": run.duration_seconds,
-        })
+        run_summaries.append(
+            {
+                "outcome": run.outcome,
+                "total_kills": run.total_kills,
+                "final_hp": run.final_hp,
+                "duration_seconds": run.duration_seconds,
+            }
+        )
 
     return {
         "danger_zones": danger_zones,
@@ -218,7 +236,11 @@ async def load_run_init_context(run_id: UUID) -> RunInitContext | None:
             return None
 
         wad = await WadRepository(db).get_by_id(run_orm.wad_file_id)
-        analysis = await db.get(StaticAnalysisResult, run_orm.static_analysis_id) if run_orm.static_analysis_id else None
+        analysis = (
+            await db.get(StaticAnalysisResult, run_orm.static_analysis_id)
+            if run_orm.static_analysis_id
+            else None
+        )
 
         if wad is None or analysis is None:
             await RunRepository(db).update(
@@ -238,10 +260,16 @@ async def load_run_init_context(run_id: UUID) -> RunInitContext | None:
 
         profile = get_behavior_profile(run_orm)
         total_map_cells_estimate = _estimate_total_map_cells(analysis)
-        prompt = render_agent_prompt(wad, analysis, run_orm) + "\n\n" + profile.system_prompt_addendum
+        prompt = (
+            render_agent_prompt(wad, analysis, run_orm)
+            + "\n\n"
+            + profile.system_prompt_addendum
+        )
 
         # Conditionally inject cross-run memory
-        cross_run_enabled = runtime_value("cross_run_memory_enabled", settings.cross_run_memory_enabled)
+        cross_run_enabled = runtime_value(
+            "cross_run_memory_enabled", settings.cross_run_memory_enabled
+        )
         if cross_run_enabled:
             cross_run_context = await _build_cross_run_memory_context(
                 db, run_orm.wad_file_id, run_orm.map_name
@@ -250,7 +278,13 @@ async def load_run_init_context(run_id: UUID) -> RunInitContext | None:
                 prompt += f"\n\n{cross_run_context}"
 
         # Extract primitive values before session closes
-        map_bounds_raw = (analysis.spawn_summary_by_skill or {}).get("_map_features", {}).get("bounds") if analysis else None
+        map_bounds_raw = (
+            (analysis.spawn_summary_by_skill or {})
+            .get("_map_features", {})
+            .get("bounds")
+            if analysis
+            else None
+        )
         map_bounds_for_layout = None
         if isinstance(map_bounds_raw, dict):
             try:
@@ -276,25 +310,46 @@ async def load_run_init_context(run_id: UUID) -> RunInitContext | None:
             wad_stored_path=wad.stored_path,
             map_overview_png_path=getattr(analysis, "map_overview_png_path", None),
             map_bounds_for_layout=map_bounds_for_layout,
-            recording_fps=max(15.0, _bounded_float(runtime_value("recording_fps", settings.recording_fps), settings.recording_fps)),
-            live_frame_fps=max(0.1, _bounded_float(runtime_value("live_frame_fps", settings.live_frame_fps), settings.live_frame_fps)),
+            recording_fps=max(
+                15.0,
+                _bounded_float(
+                    runtime_value("recording_fps", settings.recording_fps),
+                    settings.recording_fps,
+                ),
+            ),
+            live_frame_fps=max(
+                0.1,
+                _bounded_float(
+                    runtime_value("live_frame_fps", settings.live_frame_fps),
+                    settings.live_frame_fps,
+                ),
+            ),
             recording_telemetry_stride=_bounded_int(
-                runtime_value("recording_telemetry_stride", settings.recording_telemetry_stride),
+                runtime_value(
+                    "recording_telemetry_stride", settings.recording_telemetry_stride
+                ),
                 settings.recording_telemetry_stride,
                 lower=1,
                 upper=10,
             ),
             gemini_rate_limit=_bounded_int(
-                runtime_value("gemini_rate_limit_calls_per_minute", settings.gemini_rate_limit_calls_per_minute),
+                runtime_value(
+                    "gemini_rate_limit_calls_per_minute",
+                    settings.gemini_rate_limit_calls_per_minute,
+                ),
                 settings.gemini_rate_limit_calls_per_minute,
                 lower=0,
             ),
             llm_input_cost_per_million=_bounded_float(
-                runtime_value("llm_input_cost_per_million", settings.llm_input_cost_per_million),
+                runtime_value(
+                    "llm_input_cost_per_million", settings.llm_input_cost_per_million
+                ),
                 settings.llm_input_cost_per_million,
             ),
             llm_output_cost_per_million=_bounded_float(
-                runtime_value("llm_output_cost_per_million", settings.llm_output_cost_per_million),
+                runtime_value(
+                    "llm_output_cost_per_million", settings.llm_output_cost_per_million
+                ),
                 settings.llm_output_cost_per_million,
             ),
             llm_throttle_cap_seconds=_bounded_float(
@@ -327,7 +382,7 @@ def init_gemini(ctx: RunInitContext) -> GeminiService:
 
 
 async def start_game_and_mark_running(
-    mcp: McpDoomClient,
+    mcp: McpDoomClient,  # noqa: F821
     ctx: RunInitContext,
 ) -> dict[str, Any]:
     """Phase 2: Start MCP game, collect environment metadata, mark run as running.

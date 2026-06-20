@@ -18,10 +18,10 @@ def _suppress_fastmcp_authlib_warning() -> None:
 
 _suppress_fastmcp_authlib_warning()
 
-from fastmcp import FastMCP
-from fastmcp.utilities.types import Image
+from fastmcp import FastMCP  # noqa: E402
+from fastmcp.utilities.types import Image  # noqa: E402
 
-from doom_mcp.game_manager import GameManager
+from doom_mcp.game_manager import GameManager  # noqa: E402
 
 mcp = FastMCP("doom")
 manager = GameManager()
@@ -178,7 +178,8 @@ def take_action(
     Returns screenshot + full state (same format as get_state).
     """
     result = manager.take_action(
-        actions, tics,
+        actions,
+        tics,
         include_sectors=include_sectors,
         include_depth=include_depth,
         capture_telemetry=capture_telemetry,
@@ -417,7 +418,7 @@ def finish(
 
     Returns a confirmation that the run is ending.
     """
-    game = manager._require_running()
+    manager._require_running()
     return {
         "status": "finishing",
         "summary": summary,

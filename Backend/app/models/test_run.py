@@ -4,7 +4,18 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, SmallInteger, String, Text, func, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    SmallInteger,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -29,7 +40,12 @@ class TestRun(Base):
         Index("idx_test_runs_wad_file_id", "wad_file_id"),
         Index("idx_test_runs_status", "status"),
         Index("idx_test_runs_created_at", text("created_at DESC")),
-        Index("idx_test_runs_wad_map_created_at", "wad_file_id", "map_name", text("created_at DESC")),
+        Index(
+            "idx_test_runs_wad_map_created_at",
+            "wad_file_id",
+            "map_name",
+            text("created_at DESC"),
+        ),
         Index("idx_test_runs_outcome", "outcome"),
         Index("idx_test_runs_llm_model", "llm_model"),
     )
@@ -49,18 +65,28 @@ class TestRun(Base):
         ForeignKey("static_analysis_results.id", ondelete="SET NULL"),
     )
     map_name: Mapped[str] = mapped_column(String(16), nullable=False)
-    difficulty_level: Mapped[int] = mapped_column(SmallInteger, nullable=False, server_default=text("3"))
-    iwad_used: Mapped[str] = mapped_column(String(64), nullable=False, server_default=text("'freedoom2'"))
+    difficulty_level: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, server_default=text("3")
+    )
+    iwad_used: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default=text("'freedoom2'")
+    )
     llm_model: Mapped[str] = mapped_column(
         String(128),
         nullable=False,
         server_default=text("'gemini-3.1-flash-lite'"),
     )
-    behavior_profile: Mapped[str | None] = mapped_column(String(32), default="thorough", server_default=text("'thorough'"))
-    max_ticks: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("3000"))
+    behavior_profile: Mapped[str | None] = mapped_column(
+        String(32), default="thorough", server_default=text("'thorough'")
+    )
+    max_ticks: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("3000")
+    )
     seed: Mapped[int | None] = mapped_column(Integer)
     start_normalization: Mapped[dict | None] = mapped_column(JSONB)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'pending'"))
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'pending'")
+    )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     duration_seconds: Mapped[int | None] = mapped_column(Integer)
@@ -86,7 +112,9 @@ class TestRun(Base):
     report_pdf_path: Mapped[str | None] = mapped_column(Text)
     system_prompt_hash: Mapped[str | None] = mapped_column(String(64))
     system_prompt_text: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     wad_file: Mapped[WadFile] = relationship("WadFile", back_populates="test_runs")
     static_analysis: Mapped[StaticAnalysisResult | None] = relationship(

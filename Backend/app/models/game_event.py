@@ -4,7 +4,19 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, REAL, SmallInteger, String, Text, func, text
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    REAL,
+    SmallInteger,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -35,7 +47,9 @@ class GameEvent(Base):
         nullable=False,
     )
     tick_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
     player_x: Mapped[float] = mapped_column(REAL, nullable=False)
     player_y: Mapped[float] = mapped_column(REAL, nullable=False)
     player_angle: Mapped[int] = mapped_column(SmallInteger, nullable=False)
@@ -52,7 +66,9 @@ class GameEvent(Base):
     action_taken: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     llm_reasoning: Mapped[str | None] = mapped_column(Text)
     llm_input_summary: Mapped[str | None] = mapped_column(Text)
-    event_type: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'normal'"))
+    event_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("'normal'")
+    )
     killed_enemy_type: Mapped[str | None] = mapped_column(String(64))
     damage_received: Mapped[int | None] = mapped_column(SmallInteger)
 

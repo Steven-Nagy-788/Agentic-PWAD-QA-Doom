@@ -17,7 +17,6 @@ from app.core.behavior_profiles import PROFILES
 from app.models import GameEvent, TestRun
 from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.config_repository import ConfigRepository
-from app.repositories.defect_repository import DefectRepository
 from app.repositories.run_repository import RunRepository
 from app.repositories.wad_repository import WadRepository
 from app.serializers.run_serializers import RunCreate
@@ -50,16 +49,26 @@ class RunService:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "WAD not found")
         map_name = data.map_name.upper()
         if map_name not in (wad.detected_maps or []):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "map_name is not in wad_files.detected_maps")
-        start_counts = await asyncio.to_thread(player_start_counts, wad.stored_path, map_name)
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "map_name is not in wad_files.detected_maps",
+            )
+        start_counts = await asyncio.to_thread(
+            player_start_counts, wad.stored_path, map_name
+        )
         if start_counts["player_one"] == 0 and start_counts["deathmatch"] == 0:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 f"Map {map_name} has no Player 1 or deathmatch start. "
                 "QA runs need a start position that can be normalized for single-player.",
             )
-        uses_deathmatch_normalization = start_counts["player_one"] == 0 and start_counts["deathmatch"] > 0
-        if uses_deathmatch_normalization and not data.allow_deathmatch_start_normalization:
+        uses_deathmatch_normalization = (
+            start_counts["player_one"] == 0 and start_counts["deathmatch"] > 0
+        )
+        if (
+            uses_deathmatch_normalization
+            and not data.allow_deathmatch_start_normalization
+        ):
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 f"Map {map_name} has no Player 1 start. It can only run by converting one deathmatch start "
@@ -67,7 +76,9 @@ class RunService:
             )
 
         async with SessionLocal() as analysis_db:
-            analysis = await AnalysisRepository(analysis_db).get_by_wad_and_map(wad.id, map_name)
+            analysis = await AnalysisRepository(analysis_db).get_by_wad_and_map(
+                wad.id, map_name
+            )
             if analysis is None:
                 analysis = await AnalysisService(analysis_db).analyze_map(wad, map_name)
 
@@ -76,8 +87,16 @@ class RunService:
         def runtime_value(key: str, fallback: Any = None) -> Any:
             return runtime_overrides.get(key, getattr(self.settings, key, fallback))
 
-        default_run_ticks = _bounded_int(runtime_value("default_run_ticks", self.settings.default_run_ticks), self.settings.default_run_ticks, lower=1)
-        max_run_ticks = _bounded_int(runtime_value("max_run_ticks", self.settings.max_run_ticks), self.settings.max_run_ticks, lower=1)
+        default_run_ticks = _bounded_int(
+            runtime_value("default_run_ticks", self.settings.default_run_ticks),
+            self.settings.default_run_ticks,
+            lower=1,
+        )
+        max_run_ticks = _bounded_int(
+            runtime_value("max_run_ticks", self.settings.max_run_ticks),
+            self.settings.max_run_ticks,
+            lower=1,
+        )
         max_ticks = max(1, min(data.max_ticks or default_run_ticks, max_run_ticks))
         mcp_health = await probe_mcp_sse_url()
         if not mcp_health.get("reachable"):
@@ -90,7 +109,10 @@ class RunService:
                 },
             )
 
-        await self.db.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": _ACTIVE_RUN_LOCK_ID})
+        await self.db.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_id)"),
+            {"lock_id": _ACTIVE_RUN_LOCK_ID},
+        )
         await self._fail_orphaned_active_runs()
         active_run = await self.repo.get_active()
         if active_run is not None:
@@ -100,15 +122,26 @@ class RunService:
             )
 
         behavior_profile = data.behavior_profile or str(
-            runtime_value("default_agent_behavior", self.settings.default_agent_behavior)
+            runtime_value(
+                "default_agent_behavior", self.settings.default_agent_behavior
+            )
         )
         if behavior_profile not in PROFILES:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unknown behavior profile")
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "Unknown behavior profile"
+            )
         if (analysis.thing_count_enemies or 0) == 0 and behavior_profile == "thorough":
             behavior_profile = "fast"
-            logger.info("Map %s has 0 enemies; using 'fast' behavior profile instead of 'thorough'", map_name)
+            logger.info(
+                "Map %s has 0 enemies; using 'fast' behavior profile instead of 'thorough'",
+                map_name,
+            )
         queue_mode = runtime_value("run_worker_mode", self.settings.run_worker_mode)
-        seed = data.seed if data.seed is not None else random.SystemRandom().randint(0, 2_147_483_647)
+        seed = (
+            data.seed
+            if data.seed is not None
+            else random.SystemRandom().randint(0, 2_147_483_647)
+        )
         run = await self.repo.create(
             TestRun(
                 wad_file_id=wad.id,
@@ -159,7 +192,11 @@ class RunService:
             if run.completed_at is not None and run.report_pdf_path:
                 return run
         else:
-            if run.status in {"completed", "failed", "cancelled"} and run.completed_at is not None and run.report_pdf_path:
+            if (
+                run.status in {"completed", "failed", "cancelled"}
+                and run.completed_at is not None
+                and run.report_pdf_path
+            ):
                 return run
             await self.force_stop_external_game()
 
@@ -181,10 +218,14 @@ class RunService:
         task = RUN_TASKS.get(active.id)
         if task is not None and not task.done():
             return
-        await _mark_run_orphaned(self.repo, active, "Orphaned by missing in-process run task.")
+        await _mark_run_orphaned(
+            self.repo, active, "Orphaned by missing in-process run task."
+        )
 
 
-async def fail_orphaned_active_runs(db: AsyncSession, reason: str = "Orphaned by server restart") -> int:
+async def fail_orphaned_active_runs(
+    db: AsyncSession, reason: str = "Orphaned by server restart"
+) -> int:
     repo = RunRepository(db)
     result = await db.execute(
         select(TestRun)
@@ -228,7 +269,10 @@ async def finalize_stopped_run(db: AsyncSession, run_id: UUID, outcome: str) -> 
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
     run_repo = RunRepository(db)
     result = await db.execute(
-        select(GameEvent).where(GameEvent.run_id == run_id).order_by(GameEvent.tick_number.desc()).limit(1)
+        select(GameEvent)
+        .where(GameEvent.run_id == run_id)
+        .order_by(GameEvent.tick_number.desc())
+        .limit(1)
     )
     latest_event = result.scalar_one_or_none()
     if latest_event is not None:
@@ -252,7 +296,9 @@ async def finalize_stopped_run(db: AsyncSession, run_id: UUID, outcome: str) -> 
         "completed_at": completed_at,
     }
     if run.started_at:
-        fields["duration_seconds"] = int((completed_at - run.started_at).total_seconds())
+        fields["duration_seconds"] = int(
+            (completed_at - run.started_at).total_seconds()
+        )
     await run_repo.update(run, **fields)
     await db.commit()
     await DefectService(db).detect_for_run(run)
@@ -268,7 +314,9 @@ async def finalize_stopped_run(db: AsyncSession, run_id: UUID, outcome: str) -> 
         if refreshed_run is not None:
             await run_repo.update(
                 refreshed_run,
-                error_message=(refreshed_run.error_message or f"Report generation failed: {exc}"),
+                error_message=(
+                    refreshed_run.error_message or f"Report generation failed: {exc}"
+                ),
             )
             await db.commit()
     await db.refresh(run)

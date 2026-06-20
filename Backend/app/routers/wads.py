@@ -15,7 +15,9 @@ router = APIRouter(prefix="/wads", tags=["WADs"])
 
 
 @router.post("/upload", response_model=WadFileOut)
-async def upload_wad(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)) -> WadFileOut:
+async def upload_wad(
+    file: UploadFile = File(...), db: AsyncSession = Depends(get_db)
+) -> WadFileOut:
     return await WadService(db).upload(file)
 
 
@@ -35,7 +37,9 @@ async def get_all_wad_maps(
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> list[WadMapOut]:
-    return await WadService(db).all_maps(wad_file_id=wad_file_id, limit=limit, offset=offset)
+    return await WadService(db).all_maps(
+        wad_file_id=wad_file_id, limit=limit, offset=offset
+    )
 
 
 @router.get("/{wad_id}", response_model=WadFileOut)
@@ -49,13 +53,19 @@ async def delete_wad(wad_id: UUID, db: AsyncSession = Depends(get_db)) -> Respon
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/{wad_id}/reanalyze", response_model=WadFileOut, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/{wad_id}/reanalyze",
+    response_model=WadFileOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def reanalyze_wad(wad_id: UUID, db: AsyncSession = Depends(get_db)) -> WadFileOut:
     return await WadService(db).schedule_reanalysis(wad_id)
 
 
 @router.get("/{wad_id}/maps", response_model=list[WadMapOut])
-async def get_wad_maps(wad_id: UUID, db: AsyncSession = Depends(get_db)) -> list[WadMapOut]:
+async def get_wad_maps(
+    wad_id: UUID, db: AsyncSession = Depends(get_db)
+) -> list[WadMapOut]:
     return await WadService(db).maps(wad_id)
 
 
@@ -72,6 +82,7 @@ async def get_map_png(
     path = await WadService(db).map_png_path(wad_id, map_name)
     from app.core.config import get_settings
     from fastapi import HTTPException as _HE
+
     try:
         resolved = resolve_path_within(path, get_settings().analysis_storage_dir)
     except ValueError:

@@ -51,19 +51,29 @@ def _merge_settings(env: Any, overrides: dict[str, Any]) -> dict[str, Any]:
         "app_name": env.app_name,
         "app_env": env.app_env,
         "llm_model": overrides.get("llm_model", env.llm_model),
-        "llm_throttle_seconds": overrides.get("llm_throttle_seconds", env.llm_throttle_seconds),
+        "llm_throttle_seconds": overrides.get(
+            "llm_throttle_seconds", env.llm_throttle_seconds
+        ),
         "gemini_rate_limit_calls_per_minute": overrides.get(
             "gemini_rate_limit_calls_per_minute",
             env.gemini_rate_limit_calls_per_minute,
         ),
-        "llm_input_cost_per_million": overrides.get("llm_input_cost_per_million", env.llm_input_cost_per_million),
-        "llm_output_cost_per_million": overrides.get("llm_output_cost_per_million", env.llm_output_cost_per_million),
+        "llm_input_cost_per_million": overrides.get(
+            "llm_input_cost_per_million", env.llm_input_cost_per_million
+        ),
+        "llm_output_cost_per_million": overrides.get(
+            "llm_output_cost_per_million", env.llm_output_cost_per_million
+        ),
         "max_run_ticks": overrides.get("max_run_ticks", env.max_run_ticks),
         "default_run_ticks": overrides.get("default_run_ticks", env.default_run_ticks),
         "live_frame_fps": overrides.get("live_frame_fps", env.live_frame_fps),
         "recording_fps": overrides.get("recording_fps", env.recording_fps),
-        "recording_telemetry_stride": overrides.get("recording_telemetry_stride", env.recording_telemetry_stride),
-        "same_run_ledger_max_chars": overrides.get("same_run_ledger_max_chars", env.same_run_ledger_max_chars),
+        "recording_telemetry_stride": overrides.get(
+            "recording_telemetry_stride", env.recording_telemetry_stride
+        ),
+        "same_run_ledger_max_chars": overrides.get(
+            "same_run_ledger_max_chars", env.same_run_ledger_max_chars
+        ),
         "same_run_ledger_recent_actions": overrides.get(
             "same_run_ledger_recent_actions",
             env.same_run_ledger_recent_actions,
@@ -72,9 +82,13 @@ def _merge_settings(env: Any, overrides: dict[str, Any]) -> dict[str, Any]:
             "no_progress_decision_abort_threshold",
             env.no_progress_decision_abort_threshold,
         ),
-        "default_agent_behavior": overrides.get("default_agent_behavior", env.default_agent_behavior),
+        "default_agent_behavior": overrides.get(
+            "default_agent_behavior", env.default_agent_behavior
+        ),
         "iwad_used": overrides.get("iwad_used", env.iwad_used),
-        "cross_run_memory_enabled": overrides.get("cross_run_memory_enabled", env.cross_run_memory_enabled),
+        "cross_run_memory_enabled": overrides.get(
+            "cross_run_memory_enabled", env.cross_run_memory_enabled
+        ),
         "guard_enabled": overrides.get("guard_enabled", env.guard_enabled),
     }
     env_defaults = {key: getattr(env, key) for key in OVERRIDABLE_KEYS}
@@ -101,7 +115,9 @@ async def update_settings(
     clear_overrides = payload.clear_overrides
     overrides = {
         k: v
-        for k, v in payload.model_dump(exclude_none=True, exclude={"clear_overrides"}).items()
+        for k, v in payload.model_dump(
+            exclude_none=True, exclude={"clear_overrides"}
+        ).items()
     }
     for key in clear_overrides:
         await ConfigRepository(db).delete(key)

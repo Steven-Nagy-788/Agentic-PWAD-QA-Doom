@@ -19,11 +19,23 @@ from PIL import Image, ImageDraw
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal, engine
-from app.models import AgentDecision, AgentPositionTrail, Defect, GameEvent, StaticAnalysisResult, TestReport, TestRun, WadFile
+from app.models import (
+    AgentDecision,
+    AgentPositionTrail,
+    Defect,
+    GameEvent,
+    StaticAnalysisResult,
+    TestReport,
+    TestRun,
+    WadFile,
+)
 from app.repositories.defect_repository import DefectRepository
 from app.repositories.report_repository import ReportRepository
 from app.repositories.run_repository import RunRepository
-from app.services.analysis_service import map_bounds_for_wad, selected_skill_spawn_summary
+from app.services.analysis_service import (
+    map_bounds_for_wad,
+    selected_skill_spawn_summary,
+)
 from app.services.analysis_constants import CELL_SIZE
 
 
@@ -50,7 +62,9 @@ class ReportService:
     async def _generate(self, run_id: UUID) -> TestReport:
         lock_key = f"report:{run_id}"
         async with engine.connect() as raw_lock_connection:
-            lock_connection = await raw_lock_connection.execution_options(isolation_level="AUTOCOMMIT")
+            lock_connection = await raw_lock_connection.execution_options(
+                isolation_level="AUTOCOMMIT"
+            )
             acquired = await lock_connection.scalar(
                 text("SELECT pg_try_advisory_lock(hashtext(:key))"),
                 {"key": lock_key},
@@ -59,7 +73,9 @@ class ReportService:
                 existing = await self.repo.get_by_run(run_id)
                 if existing is not None and existing.pdf_path:
                     return existing
-                raise RuntimeError("Report generation is already in progress by another request")
+                raise RuntimeError(
+                    "Report generation is already in progress by another request"
+                )
             try:
                 return await self._generate_locked(run_id)
             except Exception as exc:
@@ -78,23 +94,39 @@ class ReportService:
 
     async def _generate_locked(self, run_id: UUID) -> TestReport:
         existing = await self.repo.get_by_run(run_id)
-        if existing is not None and existing.generation_status == "complete" and existing.pdf_path:
-            if Path(self.settings.report_storage_dir.parent, existing.pdf_path).exists():
+        if (
+            existing is not None
+            and existing.generation_status == "complete"
+            and existing.pdf_path
+        ):
+            if Path(
+                self.settings.report_storage_dir.parent, existing.pdf_path
+            ).exists():
                 return existing
         if existing is not None:
-            await self.repo.update(existing, generation_status="generating", generation_error=None)
+            await self.repo.update(
+                existing, generation_status="generating", generation_error=None
+            )
         else:
-            existing = await self.repo.create(TestReport(run_id=run_id, generation_status="generating"))
+            existing = await self.repo.create(
+                TestReport(run_id=run_id, generation_status="generating")
+            )
         run = await self.db.get(TestRun, run_id)
         if run is None:
             raise ValueError("Run not found")
-        analysis = await self.db.get(StaticAnalysisResult, run.static_analysis_id) if run.static_analysis_id else None
+        analysis = (
+            await self.db.get(StaticAnalysisResult, run.static_analysis_id)
+            if run.static_analysis_id
+            else None
+        )
         map_bounds = await self._map_bounds_for_report(run, analysis)
         defects = await DefectRepository(self.db).list_by_run(run_id)
         events = list(
             (
                 await self.db.execute(
-                    select(GameEvent).where(GameEvent.run_id == run_id).order_by(GameEvent.tick_number, GameEvent.id)
+                    select(GameEvent)
+                    .where(GameEvent.run_id == run_id)
+                    .order_by(GameEvent.tick_number, GameEvent.id)
                 )
             )
             .scalars()
@@ -128,12 +160,15 @@ class ReportService:
         # Load top 5 notable event screenshot paths for LLM visual context
         screenshot_paths: list[str] = []
         from app.models import NotableEventScreenshot
+
         for event in notable[:5]:
             ss_result = await self.db.execute(
-                select(NotableEventScreenshot.screenshot_path).where(
+                select(NotableEventScreenshot.screenshot_path)
+                .where(
                     NotableEventScreenshot.run_id == run_id,
                     NotableEventScreenshot.game_event_id == event.id,
-                ).limit(1)
+                )
+                .limit(1)
             )
             ss_path = ss_result.scalar_one_or_none()
             if ss_path:
@@ -206,7 +241,9 @@ class ReportService:
         if wad is None:
             return None
         try:
-            return await asyncio.to_thread(map_bounds_for_wad, wad.stored_path, run.map_name)
+            return await asyncio.to_thread(
+                map_bounds_for_wad, wad.stored_path, run.map_name
+            )
         except Exception:
             return None
 
@@ -218,18 +255,27 @@ class ReportService:
         def json_value(key: str) -> Any:
             return report_json.get(key)
 
-        pdf_path_str = str(pdf_path.relative_to(get_settings().report_storage_dir.parent)) if pdf_path.is_absolute() else str(pdf_path)
+        pdf_path_str = (
+            str(pdf_path.relative_to(get_settings().report_storage_dir.parent))
+            if pdf_path.is_absolute()
+            else str(pdf_path)
+        )
 
         return {
             "generation_status": "complete",
             "generation_error": None,
             "report_purpose": text_value("report_purpose"),
-            "intended_audience": text_value("intended_audience") or "Game developers and QA engineers",
+            "intended_audience": text_value("intended_audience")
+            or "Game developers and QA engineers",
             "problem_and_escalation": text_value("problem_and_escalation"),
             "test_items_summary": text_value("test_items_summary"),
             "test_environment_summary": text_value("test_environment_summary"),
-            "hardware_spec": ReportService._coerce_json_object(json_value("hardware_spec")),
-            "software_spec": ReportService._coerce_json_object(json_value("software_spec")),
+            "hardware_spec": ReportService._coerce_json_object(
+                json_value("hardware_spec")
+            ),
+            "software_spec": ReportService._coerce_json_object(
+                json_value("software_spec")
+            ),
             "variances_from_plan": text_value("variances_from_plan"),
             "test_procedure_variances": text_value("test_procedure_variances"),
             "test_case_variances": text_value("test_case_variances"),
@@ -249,18 +295,28 @@ class ReportService:
             "defect_patterns": text_value("defect_patterns"),
             "test_item_limitations": text_value("test_item_limitations"),
             "dropped_features": text_value("dropped_features"),
-            "pass_fail_summary": ReportService._coerce_json_object(json_value("pass_fail_summary")),
-            "risk_areas": ReportService._normalize_named_list(json_value("risk_areas"), "area", "risk"),
+            "pass_fail_summary": ReportService._coerce_json_object(
+                json_value("pass_fail_summary")
+            ),
+            "risk_areas": ReportService._normalize_named_list(
+                json_value("risk_areas"), "area", "risk"
+            ),
             "good_quality_areas": ReportService._normalize_named_list(
                 json_value("good_quality_areas"), "area", "evidence"
             ),
             "qa_sections": ReportService._coerce_json_value(json_value("qa_sections")),
-            "evidence_matrix": ReportService._coerce_json_object(json_value("evidence_matrix")),
+            "evidence_matrix": ReportService._coerce_json_object(
+                json_value("evidence_matrix")
+            ),
             "major_activities_summary": text_value("major_activities_summary"),
             "activity_variances": text_value("activity_variances"),
-            "elapsed_time_seconds": report_json.get("elapsed_time_seconds") or run.duration_seconds,
-            "total_actions_taken": report_json.get("total_actions_taken") or run.total_actions_taken,
-            "report_model": ReportService._coerce_text(report_json.get("_report_model")),
+            "elapsed_time_seconds": report_json.get("elapsed_time_seconds")
+            or run.duration_seconds,
+            "total_actions_taken": report_json.get("total_actions_taken")
+            or run.total_actions_taken,
+            "report_model": ReportService._coerce_text(
+                report_json.get("_report_model")
+            ),
             "pdf_path": pdf_path_str,
         }
 
@@ -276,7 +332,9 @@ class ReportService:
         normalized["objectives_omitted"] = ReportService._normalize_objective_list(
             normalized.get("objectives_omitted"), default_detail_key="reason"
         )
-        normalized["risk_areas"] = ReportService._normalize_named_list(normalized.get("risk_areas"), "area", "risk")
+        normalized["risk_areas"] = ReportService._normalize_named_list(
+            normalized.get("risk_areas"), "area", "risk"
+        )
         normalized["good_quality_areas"] = ReportService._normalize_named_list(
             normalized.get("good_quality_areas"), "area", "evidence"
         )
@@ -315,7 +373,9 @@ class ReportService:
         return [{"value": value}]
 
     @staticmethod
-    def _normalize_objective_list(value: Any, default_detail_key: str) -> list[dict[str, Any]] | None:
+    def _normalize_objective_list(
+        value: Any, default_detail_key: str
+    ) -> list[dict[str, Any]] | None:
         raw = ReportService._coerce_json_value(value)
         if raw in (None, {}, []):
             return None
@@ -347,7 +407,9 @@ class ReportService:
         return normalized or None
 
     @staticmethod
-    def _normalize_named_list(value: Any, label_key: str, default_detail_key: str) -> list[dict[str, Any]] | None:
+    def _normalize_named_list(
+        value: Any, label_key: str, default_detail_key: str
+    ) -> list[dict[str, Any]] | None:
         raw = ReportService._coerce_json_value(value)
         if raw in (None, {}, []):
             return None
@@ -364,7 +426,12 @@ class ReportService:
                 normalized.append(entry)
                 continue
             if isinstance(item, dict):
-                label = item.get(label_key) or item.get("area") or item.get("name") or item.get("value")
+                label = (
+                    item.get(label_key)
+                    or item.get("area")
+                    or item.get("name")
+                    or item.get("value")
+                )
                 if not label:
                     continue
                 entry = dict(item)
@@ -392,7 +459,9 @@ class ReportService:
         action_counts: dict[str, int] = {}
         decision_source_counts: dict[str, int] = {}
         for event in events:
-            event_type_counts[event.event_type] = event_type_counts.get(event.event_type, 0) + 1
+            event_type_counts[event.event_type] = (
+                event_type_counts.get(event.event_type, 0) + 1
+            )
             action = event.action_taken or {}
             tool = action.get("mcp_tool") or "unknown"
             action_counts[tool] = action_counts.get(tool, 0) + 1
@@ -403,7 +472,9 @@ class ReportService:
         for position in positions:
             clusters.add((round(position.x / CELL_SIZE), round(position.y / CELL_SIZE)))
             if previous is not None:
-                movement_distance += math.hypot(position.x - previous.x, position.y - previous.y)
+                movement_distance += math.hypot(
+                    position.x - previous.x, position.y - previous.y
+                )
             previous = position
 
         first_position = positions[0] if positions else None
@@ -418,7 +489,9 @@ class ReportService:
             source = str(decision.decision_source or "gemini")
             decision_source_counts[source] = decision_source_counts.get(source, 0) + 1
         fallback_count = decision_source_counts.get("deterministic_fallback", 0)
-        guard_count = sum(v for k, v in decision_source_counts.items() if k.startswith("guard_"))
+        guard_count = sum(
+            v for k, v in decision_source_counts.items() if k.startswith("guard_")
+        )
         return {
             "event_count": len(events),
             "decision_count": len(decisions or []),
@@ -431,7 +504,9 @@ class ReportService:
             "fallback_action_count": fallback_count + guard_count,
             "guard_override_count": guard_count,
             "validation_rejection_count": sum(
-                1 for decision in decisions or [] if decision.mcp_stop_reason == "invalid_params"
+                1
+                for decision in decisions or []
+                if decision.mcp_stop_reason == "invalid_params"
             ),
             "difficulty_level": run.difficulty_level,
             "raw_enemy_count": raw_enemy_count,
@@ -441,25 +516,48 @@ class ReportService:
             "spawned_item_count": spawned_item_count,
             "hidden_item_count": max(raw_item_count - spawned_item_count, 0),
             "selected_skill_summary": skill_summary,
-            "notable_event_count": sum(1 for event in events if event.event_type != "normal"),
+            "notable_event_count": sum(
+                1 for event in events if event.event_type != "normal"
+            ),
             "tick_start": events[0].tick_number if events else None,
             "tick_end": events[-1].tick_number if events else None,
-            "position_tick_start": first_position.tick_number if first_position else None,
+            "position_tick_start": first_position.tick_number
+            if first_position
+            else None,
             "position_tick_end": last_position.tick_number if last_position else None,
             "first_position": ReportService._position_snapshot(first_position),
             "last_position": ReportService._position_snapshot(last_position),
             "min_health": min((event.health for event in events), default=run.final_hp),
-            "max_kills": max((event.kill_count for event in events), default=run.total_kills),
-            "max_items": max((event.item_count for event in events), default=run.total_items_collected),
-            "max_secrets": max((event.secret_count for event in events), default=run.secrets_found),
+            "max_kills": max(
+                (event.kill_count for event in events), default=run.total_kills
+            ),
+            "max_items": max(
+                (event.item_count for event in events),
+                default=run.total_items_collected,
+            ),
+            "max_secrets": max(
+                (event.secret_count for event in events), default=run.secrets_found
+            ),
             "secret_sector_count": analysis.secret_sector_count if analysis else None,
-            "recording_mp4_url": f"/runs/{run.id}/recording" if (run.recording_mp4_path or (run.recording_metadata or {}).get("quality_status") == "ok") else None,
-            "report_pdf_url": f"/runs/{run.id}/report/pdf" if run.report_pdf_path else None,
+            "recording_mp4_url": f"/runs/{run.id}/recording"
+            if (
+                run.recording_mp4_path
+                or (run.recording_metadata or {}).get("quality_status") == "ok"
+            )
+            else None,
+            "report_pdf_url": f"/runs/{run.id}/report/pdf"
+            if run.report_pdf_path
+            else None,
             "recording_metadata": run.recording_metadata or {},
             "progress_metrics": progress_metrics,
             "coverage_percent": progress_metrics.get("coverage_percent"),
             "agent_quality_flags": run.agent_quality_flags or {},
-            "recording_file_size_bytes": ReportService._safe_file_size(run.recording_mp4_path) or ReportService._safe_file_size((run.recording_metadata or {}).get("path")),
+            "recording_file_size_bytes": ReportService._safe_file_size(
+                run.recording_mp4_path
+            )
+            or ReportService._safe_file_size(
+                (run.recording_metadata or {}).get("path")
+            ),
         }
 
     @staticmethod
@@ -474,16 +572,24 @@ class ReportService:
         confidence = ReportService._harness_confidence(metrics)
         static_summary = {
             "available": analysis is not None,
-            "map_name": getattr(analysis, "map_name", run.map_name) if analysis else run.map_name,
+            "map_name": getattr(analysis, "map_name", run.map_name)
+            if analysis
+            else run.map_name,
             "linedefs": getattr(analysis, "linedef_count", None) if analysis else None,
             "sectors": getattr(analysis, "sector_count", None) if analysis else None,
             "raw_enemies": metrics.get("raw_enemy_count", 0),
             "spawned_enemies": metrics.get("spawned_enemy_count", 0),
             "raw_items": metrics.get("raw_item_count", 0),
             "spawned_items": metrics.get("spawned_item_count", 0),
-            "secret_sectors": getattr(analysis, "secret_sector_count", None) if analysis else None,
-            "health_ratio": (metrics.get("selected_skill_summary") or {}).get("health_ratio"),
-            "ammo_ratio": (metrics.get("selected_skill_summary") or {}).get("ammo_ratio"),
+            "secret_sectors": getattr(analysis, "secret_sector_count", None)
+            if analysis
+            else None,
+            "health_ratio": (metrics.get("selected_skill_summary") or {}).get(
+                "health_ratio"
+            ),
+            "ammo_ratio": (metrics.get("selected_skill_summary") or {}).get(
+                "ammo_ratio"
+            ),
         }
         runtime_summary = {
             "outcome": outcome,
@@ -496,18 +602,33 @@ class ReportService:
             "kills": getattr(run, "total_kills", 0) or 0,
             "items": getattr(run, "total_items_collected", 0) or 0,
             "secrets": getattr(run, "secrets_found", 0) or 0,
-            "recording_quality": (metrics.get("recording_metadata") or {}).get("quality_status", "unknown"),
+            "recording_quality": (metrics.get("recording_metadata") or {}).get(
+                "quality_status", "unknown"
+            ),
         }
-        findings = [ReportService._finding_from_defect(defect, confidence, metrics) for defect in defects]
+        findings = [
+            ReportService._finding_from_defect(defect, confidence, metrics)
+            for defect in defects
+        ]
         if not findings:
-            findings.append(ReportService._run_outcome_finding(run, outcome, confidence, metrics, overall_verdict))
+            findings.append(
+                ReportService._run_outcome_finding(
+                    run, outcome, confidence, metrics, overall_verdict
+                )
+            )
         qa_sections = [
             {
                 "title": "Map QA Verdict",
-                "classification": "map" if overall_verdict == "PASS" else findings[0]["classification"],
-                "verdict": overall_verdict if confidence["level"] != "LOW" else "LIMITED",
+                "classification": "map"
+                if overall_verdict == "PASS"
+                else findings[0]["classification"],
+                "verdict": overall_verdict
+                if confidence["level"] != "LOW"
+                else "LIMITED",
                 "confidence": confidence["level"],
-                "summary": ReportService._map_verdict_summary(run, outcome, overall_verdict, confidence),
+                "summary": ReportService._map_verdict_summary(
+                    run, outcome, overall_verdict, confidence
+                ),
                 "evidence": [
                     f"Outcome: {outcome}",
                     f"Coverage: {runtime_summary['coverage_percent'] if runtime_summary['coverage_percent'] is not None else 'unknown'}%",
@@ -543,26 +664,39 @@ class ReportService:
         elif coverage_float < 25:
             score -= 15
             reasons.append(f"Coarse coverage was limited ({coverage_float:.1f}%).")
-        recording_status = str((metrics.get("recording_metadata") or {}).get("quality_status") or "unknown")
+        recording_status = str(
+            (metrics.get("recording_metadata") or {}).get("quality_status") or "unknown"
+        )
         if recording_status not in {"ok", "expected_missing"}:
             score -= 15
             reasons.append(f"Recording quality status was {recording_status}.")
-        warnings = list((metrics.get("agent_quality_flags") or {}).get("warnings") or [])
+        warnings = list(
+            (metrics.get("agent_quality_flags") or {}).get("warnings") or []
+        )
         if warnings:
             score -= min(30, len(warnings) * 10)
             reasons.append(f"{len(warnings)} harness warning(s) were recorded.")
         fallback_count = int(metrics.get("fallback_action_count") or 0)
         if fallback_count:
             score -= min(20, fallback_count * 5)
-            reasons.append(f"{fallback_count} deterministic fallback action(s) were used.")
+            reasons.append(
+                f"{fallback_count} deterministic fallback action(s) were used."
+            )
         rejection_count = int(metrics.get("validation_rejection_count") or 0)
         if rejection_count:
             score -= min(20, rejection_count * 5)
             reasons.append(f"{rejection_count} invalid tool decision(s) were rejected.")
-        no_progress = int((metrics.get("progress_metrics") or {}).get("consecutive_no_progress_decisions") or 0)
+        no_progress = int(
+            (metrics.get("progress_metrics") or {}).get(
+                "consecutive_no_progress_decisions"
+            )
+            or 0
+        )
         if no_progress >= 3:
             score -= min(20, no_progress * 2)
-            reasons.append(f"{no_progress} consecutive no-progress decision(s) were observed.")
+            reasons.append(
+                f"{no_progress} consecutive no-progress decision(s) were observed."
+            )
         score = max(0, min(100, score))
         level = "HIGH" if score >= 75 else "MEDIUM" if score >= 45 else "LOW"
         return {
@@ -579,12 +713,18 @@ class ReportService:
         }
 
     @staticmethod
-    def _finding_from_defect(defect: Defect, confidence: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
-        classification = ReportService._defect_classification(defect.defect_type, confidence)
+    def _finding_from_defect(
+        defect: Defect, confidence: dict[str, Any], metrics: dict[str, Any]
+    ) -> dict[str, Any]:
+        classification = ReportService._defect_classification(
+            defect.defect_type, confidence
+        )
         return {
             "title": defect.title,
             "classification": classification,
-            "confidence": "HIGH" if classification in {"map", "infrastructure"} else confidence["level"],
+            "confidence": "HIGH"
+            if classification in {"map", "infrastructure"}
+            else confidence["level"],
             "severity": defect.severity,
             "priority": defect.priority,
             "defect_type": defect.defect_type,
@@ -601,7 +741,10 @@ class ReportService:
     def _defect_classification(defect_type: str, confidence: dict[str, Any]) -> str:
         if defect_type in {"pwad_crash", "runtime_startup_failure"}:
             return "infrastructure"
-        if defect_type.startswith("static_") or defect_type in {"ammo_starvation", "health_deficit"}:
+        if defect_type.startswith("static_") or defect_type in {
+            "ammo_starvation",
+            "health_deficit",
+        }:
             return "map"
         if defect_type == "softlock_navigation":
             return "map"
@@ -610,7 +753,11 @@ class ReportService:
         if defect_type.startswith("agent_observed"):
             return "map"
         if defect_type.startswith("visual_"):
-            if defect_type in {"visual_hom", "visual_stuck_monster", "visual_geometry_glitch"}:
+            if defect_type in {
+                "visual_hom",
+                "visual_stuck_monster",
+                "visual_geometry_glitch",
+            }:
                 return "map"
             if defect_type == "visual_hud_anomaly":
                 return "infrastructure"
@@ -659,7 +806,9 @@ class ReportService:
         }
 
     @staticmethod
-    def _map_verdict_summary(run: TestRun, outcome: str, overall_verdict: str, confidence: dict[str, Any]) -> str:
+    def _map_verdict_summary(
+        run: TestRun, outcome: str, overall_verdict: str, confidence: dict[str, Any]
+    ) -> str:
         if run.outcome == "map_completed":
             return "The tested route reached the exit. Remaining recommendations focus on coverage breadth, encounter balance, and difficulty variance."
         if confidence["level"] == "LOW":
@@ -688,14 +837,19 @@ class ReportService:
             merged["_report_model"] = self.settings.llm_report_model
             return merged
         except Exception as exc:
-            logger.warning("Gemini report generation failed, using deterministic fallback: %s", exc)
+            logger.warning(
+                "Gemini report generation failed, using deterministic fallback: %s", exc
+            )
             fallback["_report_model"] = "deterministic-grounded-template"
             return fallback
 
     @staticmethod
     def _load_report_prompt() -> str:
         from pathlib import Path
-        prompt_path = Path(__file__).parent.parent / "prompts" / "report_generation_prompt.md"
+
+        prompt_path = (
+            Path(__file__).parent.parent / "prompts" / "report_generation_prompt.md"
+        )
         if prompt_path.exists():
             return prompt_path.read_text(encoding="utf-8").strip()
         return (
@@ -753,8 +907,12 @@ class ReportService:
                 "map_width_units": getattr(analysis, "map_width_units", None),
                 "map_height_units": getattr(analysis, "map_height_units", None),
                 "total_monster_hp": getattr(analysis, "total_monster_hp", None),
-                "total_health_pickup_pts": getattr(analysis, "total_health_pickup_pts", None),
-                "total_armor_pickup_pts": getattr(analysis, "total_armor_pickup_pts", None),
+                "total_health_pickup_pts": getattr(
+                    analysis, "total_health_pickup_pts", None
+                ),
+                "total_armor_pickup_pts": getattr(
+                    analysis, "total_armor_pickup_pts", None
+                ),
                 "hitscanner_percent": float(analysis.hitscanner_percent or 0),
                 "health_ratio": float(selected_skill.get("health_ratio") or 0),
                 "ammo_ratio": float(selected_skill.get("ammo_ratio") or 0),
@@ -791,68 +949,80 @@ class ReportService:
                 if d.mcp_output:
                     entry["mcp_output"] = self._truncate(d.mcp_output, 500)
                 if d.llm_input_summary:
-                    entry["llm_state_context"] = self._truncate(d.llm_input_summary, 1000)
+                    entry["llm_state_context"] = self._truncate(
+                        d.llm_input_summary, 1000
+                    )
                 decision_trace.append(entry)
 
         # Full game events — ALL events with complete fields
         game_events_log = []
         for ev in all_events:
             if isinstance(ev, GameEvent):
-                game_events_log.append({
-                    "tick": ev.tick_number,
-                    "type": ev.event_type,
-                    "player_x": ev.player_x,
-                    "player_y": ev.player_y,
-                    "player_angle": ev.player_angle,
-                    "health": ev.health,
-                    "armor": ev.armor,
-                    "ammo_bullets": ev.ammo_bullets,
-                    "ammo_shells": ev.ammo_shells,
-                    "ammo_rockets": ev.ammo_rockets,
-                    "ammo_cells": ev.ammo_cells,
-                    "kill_count": ev.kill_count,
-                    "item_count": ev.item_count,
-                    "secret_count": ev.secret_count,
-                    "weapon_selected": ev.weapon_selected,
-                    "killed_enemy_type": ev.killed_enemy_type,
-                    "damage_received": ev.damage_received,
-                    "llm_reasoning": self._truncate(ev.llm_reasoning, 500) if ev.llm_reasoning else None,
-                    "action_taken": self._truncate(ev.action_taken, 500) if ev.action_taken else None,
-                })
+                game_events_log.append(
+                    {
+                        "tick": ev.tick_number,
+                        "type": ev.event_type,
+                        "player_x": ev.player_x,
+                        "player_y": ev.player_y,
+                        "player_angle": ev.player_angle,
+                        "health": ev.health,
+                        "armor": ev.armor,
+                        "ammo_bullets": ev.ammo_bullets,
+                        "ammo_shells": ev.ammo_shells,
+                        "ammo_rockets": ev.ammo_rockets,
+                        "ammo_cells": ev.ammo_cells,
+                        "kill_count": ev.kill_count,
+                        "item_count": ev.item_count,
+                        "secret_count": ev.secret_count,
+                        "weapon_selected": ev.weapon_selected,
+                        "killed_enemy_type": ev.killed_enemy_type,
+                        "damage_received": ev.damage_received,
+                        "llm_reasoning": self._truncate(ev.llm_reasoning, 500)
+                        if ev.llm_reasoning
+                        else None,
+                        "action_taken": self._truncate(ev.action_taken, 500)
+                        if ev.action_taken
+                        else None,
+                    }
+                )
 
         # Position trail — every sampled position
         trail_log = []
         for pos in positions:
             if isinstance(pos, AgentPositionTrail):
-                trail_log.append({
-                    "tick": pos.tick_number,
-                    "x": pos.x,
-                    "y": pos.y,
-                    "angle": pos.angle,
-                    "health": pos.health,
-                })
+                trail_log.append(
+                    {
+                        "tick": pos.tick_number,
+                        "x": pos.x,
+                        "y": pos.y,
+                        "angle": pos.angle,
+                        "health": pos.health,
+                    }
+                )
 
         # Full defects
         all_defects = payload.get("defects") or []
         defect_log = []
         for defect in all_defects:
-            defect_log.append({
-                "defect_type": getattr(defect, "defect_type", None),
-                "title": getattr(defect, "title", None),
-                "description": getattr(defect, "description", None),
-                "severity": getattr(defect, "severity", None),
-                "priority": getattr(defect, "priority", None),
-                "resolution_status": getattr(defect, "resolution_status", None),
-                "detected_at_tick": getattr(defect, "detected_at_tick", None),
-                "position_x": getattr(defect, "position_x", None),
-                "position_y": getattr(defect, "position_y", None),
-                "reproduction_steps": getattr(defect, "reproduction_steps", None),
-                "recommendation": getattr(defect, "recommendation", None),
-                "first_seen_tick": getattr(defect, "first_seen_tick", None),
-                "last_seen_tick": getattr(defect, "last_seen_tick", None),
-                "occurrence_count": getattr(defect, "occurrence_count", None),
-                "fingerprint": getattr(defect, "fingerprint", None),
-            })
+            defect_log.append(
+                {
+                    "defect_type": getattr(defect, "defect_type", None),
+                    "title": getattr(defect, "title", None),
+                    "description": getattr(defect, "description", None),
+                    "severity": getattr(defect, "severity", None),
+                    "priority": getattr(defect, "priority", None),
+                    "resolution_status": getattr(defect, "resolution_status", None),
+                    "detected_at_tick": getattr(defect, "detected_at_tick", None),
+                    "position_x": getattr(defect, "position_x", None),
+                    "position_y": getattr(defect, "position_y", None),
+                    "reproduction_steps": getattr(defect, "reproduction_steps", None),
+                    "recommendation": getattr(defect, "recommendation", None),
+                    "first_seen_tick": getattr(defect, "first_seen_tick", None),
+                    "last_seen_tick": getattr(defect, "last_seen_tick", None),
+                    "occurrence_count": getattr(defect, "occurrence_count", None),
+                    "fingerprint": getattr(defect, "fingerprint", None),
+                }
+            )
 
         # Map bounds for spatial context
         bounds_info = None
@@ -877,7 +1047,9 @@ class ReportService:
                 "failure_stage": run.failure_stage,
                 "failure_summary": run.failure_summary,
                 "error_message": run.error_message,
-                "failure_diagnostics": self._truncate(run.failure_diagnostics, 2000) if run.failure_diagnostics else None,
+                "failure_diagnostics": self._truncate(run.failure_diagnostics, 2000)
+                if run.failure_diagnostics
+                else None,
             }
 
         return {
@@ -943,11 +1115,15 @@ class ReportService:
         thinking_cfg = None
         if hasattr(types, "ThinkingConfig"):
             thinking_cfg = types.ThinkingConfig(thinking_budget=0)
-        config = config_cls(
-            system_instruction=system_prompt,
-            max_output_tokens=8192,
-            thinking_config=thinking_cfg,
-        ) if config_cls is not None else None
+        config = (
+            config_cls(
+                system_instruction=system_prompt,
+                max_output_tokens=8192,
+                thinking_config=thinking_cfg,
+            )
+            if config_cls is not None
+            else None
+        )
         if config is None:
             user_content = f"{system_prompt}\n\n{user_content}"
 
@@ -969,7 +1145,9 @@ class ReportService:
         # 2. Position trail overlay PNG
         if positions and analysis:
             map_path = getattr(analysis, "map_overview_png_path", None)
-            trail_bytes = self._generate_trail_overlay_bytes(map_path, positions, events, map_bounds)
+            trail_bytes = self._generate_trail_overlay_bytes(
+                map_path, positions, events, map_bounds
+            )
             if trail_bytes:
                 image_parts.append(("trail_overlay", trail_bytes))
 
@@ -978,11 +1156,16 @@ class ReportService:
         for i, screenshot_path in enumerate(screenshots[:5]):
             img_bytes = self._load_image_bytes(screenshot_path)
             if img_bytes:
-                image_parts.append((f"screenshot_{i+1}", img_bytes))
+                image_parts.append((f"screenshot_{i + 1}", img_bytes))
 
         # Build the request — text + optional images
         has_images = len(image_parts) > 0
-        from app.services.gemini_service import _get_gemini_sem, _throttle_local_rate, _record_api_call
+        from app.services.gemini_service import (
+            _get_gemini_sem,
+            _throttle_local_rate,
+            _record_api_call,
+        )
+
         await _throttle_local_rate(self.settings.gemini_rate_limit_calls_per_minute)
         last_error = ""
         for attempt in range(3):
@@ -991,10 +1174,18 @@ class ReportService:
                     client = genai.Client(api_key=self.settings.gemini_api_key)
                     async_client = getattr(client, "aio", None)
 
-                    if has_images and async_client is not None and hasattr(async_client, "models"):
+                    if (
+                        has_images
+                        and async_client is not None
+                        and hasattr(async_client, "models")
+                    ):
                         parts = [types.Part.from_text(text=user_content)]
                         for label, img_bytes in image_parts:
-                            parts.append(types.Part.from_bytes(data=img_bytes, mime_type="image/png"))
+                            parts.append(
+                                types.Part.from_bytes(
+                                    data=img_bytes, mime_type="image/png"
+                                )
+                            )
                         kwargs: dict[str, Any] = {
                             "model": self.settings.llm_report_model,
                             "contents": types.Content(parts=parts, role="user"),
@@ -1002,7 +1193,11 @@ class ReportService:
                     elif has_images:
                         parts = [types.Part.from_text(text=user_content)]
                         for label, img_bytes in image_parts:
-                            parts.append(types.Part.from_bytes(data=img_bytes, mime_type="image/png"))
+                            parts.append(
+                                types.Part.from_bytes(
+                                    data=img_bytes, mime_type="image/png"
+                                )
+                            )
 
                         def _sync_generate():
                             return client.models.generate_content(
@@ -1010,19 +1205,33 @@ class ReportService:
                                 contents=types.Content(parts=parts, role="user"),
                                 **({"config": config} if config else {}),
                             )
+
                         kwargs = {}  # handled in sync path
                     else:
-                        kwargs = {"model": self.settings.llm_report_model, "contents": user_content}
+                        kwargs = {
+                            "model": self.settings.llm_report_model,
+                            "contents": user_content,
+                        }
 
                     if config is not None and "config" not in kwargs:
                         kwargs["config"] = config
 
-                    if has_images and async_client is not None and hasattr(async_client, "models"):
+                    if (
+                        has_images
+                        and async_client is not None
+                        and hasattr(async_client, "models")
+                    ):
                         response = await async_client.models.generate_content(**kwargs)
                     elif has_images:
                         response = await asyncio.to_thread(_sync_generate)
                     else:
-                        response = await async_client.models.generate_content(**kwargs) if async_client and hasattr(async_client, "models") else await asyncio.to_thread(lambda: client.models.generate_content(**kwargs))
+                        response = (
+                            await async_client.models.generate_content(**kwargs)
+                            if async_client and hasattr(async_client, "models")
+                            else await asyncio.to_thread(
+                                lambda: client.models.generate_content(**kwargs)
+                            )
+                        )
 
                 _record_api_call()
                 text = response.text or ""
@@ -1030,10 +1239,16 @@ class ReportService:
                     raise ValueError("Empty Gemini response")
                 usage = getattr(response, "usage_metadata", None)
                 candidates = getattr(response, "candidates", None) or []
-                finish_reason = getattr(candidates[0], "finish_reason", None) if candidates else None
+                finish_reason = (
+                    getattr(candidates[0], "finish_reason", None)
+                    if candidates
+                    else None
+                )
                 logger.info(
                     "Gemini report: %d chars, model=%s, finish=%s, tokens(in=%s, out=%s, think=%s)",
-                    len(text), self.settings.llm_report_model, finish_reason,
+                    len(text),
+                    self.settings.llm_report_model,
+                    finish_reason,
                     getattr(usage, "prompt_token_count", "?"),
                     getattr(usage, "candidates_token_count", "?"),
                     getattr(usage, "thoughts_token_count", "?") if usage else "?",
@@ -1041,7 +1256,9 @@ class ReportService:
                 return self._parse_report_json(text)
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
-                logger.warning("Gemini report attempt %d/3 failed: %s", attempt + 1, last_error)
+                logger.warning(
+                    "Gemini report attempt %d/3 failed: %s", attempt + 1, last_error
+                )
                 if attempt < 2:
                     await asyncio.sleep(5.0 if attempt == 0 else 10.0)
         raise RuntimeError(f"Gemini report failed after 3 attempts: {last_error}")
@@ -1084,20 +1301,39 @@ class ReportService:
             def project(x: float, y: float) -> tuple[int, int]:
                 width, height = image.size
                 px = int(20 + ((x - min_x) / max(max_x - min_x, 1)) * (width - 40))
-                py = int(height - 20 - ((y - min_y) / max(max_y - min_y, 1)) * (height - 40))
+                py = int(
+                    height - 20 - ((y - min_y) / max(max_y - min_y, 1)) * (height - 40)
+                )
                 return px, py
 
             trail_points = [project(position.x, position.y) for position in positions]
             if len(trail_points) > 1:
                 draw.line(trail_points, fill=(37, 99, 235, 235), width=6, joint="curve")
-                draw.line(trail_points, fill=(147, 197, 253, 210), width=2, joint="curve")
+                draw.line(
+                    trail_points, fill=(147, 197, 253, 210), width=2, joint="curve"
+                )
             for x, y in trail_points:
-                draw.ellipse((x - 4, y - 4, x + 4, y + 4), fill=(59, 130, 246, 180), outline=(255, 255, 255, 180), width=1)
+                draw.ellipse(
+                    (x - 4, y - 4, x + 4, y + 4),
+                    fill=(59, 130, 246, 180),
+                    outline=(255, 255, 255, 180),
+                    width=1,
+                )
             if trail_points:
                 start_x, start_y = trail_points[0]
                 end_x, end_y = trail_points[-1]
-                draw.ellipse((start_x - 8, start_y - 8, start_x + 8, start_y + 8), fill=(22, 163, 74, 240), outline=(255, 255, 255, 230), width=2)
-                draw.ellipse((end_x - 9, end_y - 9, end_x + 9, end_y + 9), fill=(245, 158, 11, 245), outline=(255, 255, 255, 240), width=2)
+                draw.ellipse(
+                    (start_x - 8, start_y - 8, start_x + 8, start_y + 8),
+                    fill=(22, 163, 74, 240),
+                    outline=(255, 255, 255, 230),
+                    width=2,
+                )
+                draw.ellipse(
+                    (end_x - 9, end_y - 9, end_x + 9, end_y + 9),
+                    fill=(245, 158, 11, 245),
+                    outline=(255, 255, 255, 240),
+                    width=2,
+                )
             for event in events:
                 if event.event_type == "normal":
                     continue
@@ -1112,8 +1348,14 @@ class ReportService:
                     draw.line((x - 10, y - 10, x + 10, y + 10), fill=color, width=5)
                     draw.line((x + 10, y - 10, x - 10, y + 10), fill=color, width=5)
                 else:
-                    draw.ellipse((x - 7, y - 7, x + 7, y + 7), fill=color, outline=(255, 255, 255, 230), width=2)
+                    draw.ellipse(
+                        (x - 7, y - 7, x + 7, y + 7),
+                        fill=color,
+                        outline=(255, 255, 255, 230),
+                        width=2,
+                    )
             from io import BytesIO
+
             buffer = BytesIO()
             image.save(buffer, format="PNG")
             return buffer.getvalue()
@@ -1131,23 +1373,37 @@ class ReportService:
         try:
             data = json.loads(candidate)
         except json.JSONDecodeError as e:
-            logger.warning("JSON parse failed at char %d, attempting repair. Original length=%d. Error: %s", e.pos, len(candidate), e)
+            logger.warning(
+                "JSON parse failed at char %d, attempting repair. Original length=%d. Error: %s",
+                e.pos,
+                len(candidate),
+                e,
+            )
             repaired = candidate
             in_string = False
             for i, ch in enumerate(repaired):
-                if ch == '"' and (i == 0 or repaired[i - 1] != '\\'):
+                if ch == '"' and (i == 0 or repaired[i - 1] != "\\"):
                     in_string = not in_string
             if in_string:
                 repaired += '"'
-            open_braces = repaired.count('{') - repaired.count('}')
-            open_brackets = repaired.count('[') - repaired.count(']')
-            repaired += ']' * open_brackets + '}' * open_braces
-            logger.warning("Repaired JSON length=%d, adding quotes=%s, braces=%d, brackets=%d",
-                           len(repaired), in_string, open_braces, open_brackets)
+            open_braces = repaired.count("{") - repaired.count("}")
+            open_brackets = repaired.count("[") - repaired.count("]")
+            repaired += "]" * open_brackets + "}" * open_braces
+            logger.warning(
+                "Repaired JSON length=%d, adding quotes=%s, braces=%d, brackets=%d",
+                len(repaired),
+                in_string,
+                open_braces,
+                open_brackets,
+            )
             try:
                 data = json.loads(repaired)
             except json.JSONDecodeError as e2:
-                logger.warning("Repaired JSON also failed: %s. Repaired tail: %s", e2, repaired[-200:])
+                logger.warning(
+                    "Repaired JSON also failed: %s. Repaired tail: %s",
+                    e2,
+                    repaired[-200:],
+                )
                 raise
         if not isinstance(data, dict):
             raise ValueError("LLM report response is not a JSON object")
@@ -1164,24 +1420,45 @@ class ReportService:
         return llm_report
 
     _LLM_NARRATIVE_FIELDS = {
-        "report_purpose", "problem_and_escalation", "test_items_summary",
-        "test_coverage_evaluation", "test_procedure_variances",
-        "test_case_variances", "test_process_changes", "defect_summary_narrative",
-        "defect_patterns", "test_item_limitations", "dropped_features",
-        "major_activities_summary", "activity_variances", "uncovered_attributes",
-        "executive_summary", "critical_issues", "geometry_technical_analysis",
-        "gameplay_flow_analysis", "combat_design_review", "itemization_audit",
-        "ai_enemy_behavior", "navigation_readability", "secrets_optional_content",
-        "performance_engine_compliance", "speedrunning_advanced_play",
-        "recommendations", "final_verdict",
+        "report_purpose",
+        "problem_and_escalation",
+        "test_items_summary",
+        "test_coverage_evaluation",
+        "test_procedure_variances",
+        "test_case_variances",
+        "test_process_changes",
+        "defect_summary_narrative",
+        "defect_patterns",
+        "test_item_limitations",
+        "dropped_features",
+        "major_activities_summary",
+        "activity_variances",
+        "uncovered_attributes",
+        "executive_summary",
+        "critical_issues",
+        "geometry_technical_analysis",
+        "gameplay_flow_analysis",
+        "combat_design_review",
+        "itemization_audit",
+        "ai_enemy_behavior",
+        "navigation_readability",
+        "secrets_optional_content",
+        "performance_engine_compliance",
+        "speedrunning_advanced_play",
+        "recommendations",
+        "final_verdict",
     }
 
     _LLM_LIST_FIELDS = {
-        "objectives_planned", "objectives_covered", "objectives_omitted",
+        "objectives_planned",
+        "objectives_covered",
+        "objectives_omitted",
     }
 
     @staticmethod
-    def _merge_report_defaults(defaults: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:
+    def _merge_report_defaults(
+        defaults: dict[str, Any], generated: dict[str, Any]
+    ) -> dict[str, Any]:
         """Merge LLM-generated report with deterministic fallback.
 
         The LLM output is primary for all fields. The deterministic fallback
@@ -1204,15 +1481,25 @@ class ReportService:
         run: TestRun = payload["run"]
         analysis: StaticAnalysisResult | None = payload["analysis"]
         all_defects: list[Defect] = payload["defects"]
-        defects = [defect for defect in all_defects if defect.resolution_status != "candidate"]
+        defects = [
+            defect for defect in all_defects if defect.resolution_status != "candidate"
+        ]
         candidate_count = len(all_defects) - len(defects)
         metrics: dict[str, Any] = payload["metrics"]
         if ReportService._is_pwad_crash(run):
             return ReportService._pwad_crash_report(payload)
         outcome = ReportService._display_outcome(run, defects)
         passed = run.status == "completed" and run.outcome == "map_completed"
-        outcome_sentence = "The map was completed." if passed else f"The run ended with outcome '{outcome}'."
-        defect_phrase = "No confirmed defects were detected." if not defects else f"{len(defects)} confirmed defect(s) were detected."
+        outcome_sentence = (
+            "The map was completed."
+            if passed
+            else f"The run ended with outcome '{outcome}'."
+        )
+        defect_phrase = (
+            "No confirmed defects were detected."
+            if not defects
+            else f"{len(defects)} confirmed defect(s) were detected."
+        )
         if candidate_count:
             defect_phrase += f" {candidate_count} candidate signal(s) require review."
         coverage_phrase = (
@@ -1229,12 +1516,21 @@ class ReportService:
         hidden_enemies = int(metrics.get("hidden_enemy_count") or 0)
         health_ratio = float(skill_summary.get("health_ratio") or 0)
         ammo_ratio = float(skill_summary.get("ammo_ratio") or 0)
-        kill_ratio = (run.total_kills or 0) / spawned_enemies if spawned_enemies else 1.0
+        kill_ratio = (
+            (run.total_kills or 0) / spawned_enemies if spawned_enemies else 1.0
+        )
         map_navigation_pass = passed
-        combat_pass = spawned_enemies == 0 or ((run.total_kills or 0) > 0 and kill_ratio >= 0.5)
-        resource_pass = spawned_enemies == 0 or (health_ratio >= 0.15 and ammo_ratio >= 0.8 and not any(
-            defect.defect_type in {"ammo_starvation", "health_deficit"} for defect in defects
-        ))
+        combat_pass = spawned_enemies == 0 or (
+            (run.total_kills or 0) > 0 and kill_ratio >= 0.5
+        )
+        resource_pass = spawned_enemies == 0 or (
+            health_ratio >= 0.15
+            and ammo_ratio >= 0.8
+            and not any(
+                defect.defect_type in {"ammo_starvation", "health_deficit"}
+                for defect in defects
+            )
+        )
         coverage_percent = float(metrics.get("coverage_percent") or 0)
         if analysis and analysis.secret_sector_count == 0:
             secret_status = "PASS"
@@ -1293,7 +1589,9 @@ class ReportService:
             f" Deterministic fallback actions: {metrics.get('fallback_action_count', 0)}."
             f" Validation rejections: {metrics.get('validation_rejection_count', 0)}."
         )
-        evidence_model = ReportService._build_evidence_model(run, defects, metrics, analysis, outcome, overall_verdict)
+        evidence_model = ReportService._build_evidence_model(
+            run, defects, metrics, analysis, outcome, overall_verdict
+        )
 
         return {
             "report_purpose": (
@@ -1302,7 +1600,9 @@ class ReportService:
                 f"The selected-difficulty gameplay evidence uses {spawned_enemies} spawned enemy/enemies.{spawn_note}"
             ),
             "intended_audience": "",
-            "problem_and_escalation": ReportService._problem_statement(run, defects, metrics),
+            "problem_and_escalation": ReportService._problem_statement(
+                run, defects, metrics
+            ),
             "test_items_summary": (
                 f"Test item: {run.map_name} from WAD {run.wad_file_id}. "
                 f"Static analysis context: {analysis_phrase} At difficulty {run.difficulty_level}, "
@@ -1320,12 +1620,23 @@ class ReportService:
                 f"{recording_note} {progress_note}"
             ),
             "objectives_planned": [
-                {"objective": "Validate the map starts correctly in single-player QA mode.", "status": "planned"},
-                {"objective": "Exercise live traversal and combat using static analysis as runtime context.", "status": "planned"},
-                {"objective": "Capture gameplay video, position history, events, defects, and a PDF report.", "status": "planned"},
+                {
+                    "objective": "Validate the map starts correctly in single-player QA mode.",
+                    "status": "planned",
+                },
+                {
+                    "objective": "Exercise live traversal and combat using static analysis as runtime context.",
+                    "status": "planned",
+                },
+                {
+                    "objective": "Capture gameplay video, position history, events, defects, and a PDF report.",
+                    "status": "planned",
+                },
             ],
             "objectives_covered": ReportService._covered_objectives(run, metrics),
-            "objectives_omitted": ReportService._omitted_objectives(run, metrics, outcome),
+            "objectives_omitted": ReportService._omitted_objectives(
+                run, metrics, outcome
+            ),
             "uncovered_attributes": ReportService._uncovered_attributes(run, metrics),
             "test_process_changes": "",
             "defect_summary_narrative": f"{defect_phrase} {major_risk}",
@@ -1368,7 +1679,9 @@ class ReportService:
                 ),
             },
             "risk_areas": ReportService._risk_areas(run, defects, metrics),
-            "good_quality_areas": ReportService._good_quality_areas(run, metrics, analysis),
+            "good_quality_areas": ReportService._good_quality_areas(
+                run, metrics, analysis
+            ),
             "qa_sections": evidence_model["qa_sections"],
             "evidence_matrix": evidence_model["evidence_matrix"],
             "major_activities_summary": (
@@ -1384,20 +1697,44 @@ class ReportService:
             "elapsed_time_seconds": run.duration_seconds,
             "total_actions_taken": run.total_actions_taken,
             # ---- 14-section professional QA report fields ----
-            "executive_summary": ReportService._build_executive_summary(run, defects, metrics, analysis, outcome, overall_verdict),
+            "executive_summary": ReportService._build_executive_summary(
+                run, defects, metrics, analysis, outcome, overall_verdict
+            ),
             "critical_issues": ReportService._build_critical_issues(defects, run),
-            "geometry_technical_analysis": ReportService._build_geometry_analysis(analysis, run),
-            "gameplay_flow_analysis": ReportService._build_gameplay_flow(run, metrics, analysis),
-            "combat_design_review": ReportService._build_combat_review(run, metrics, analysis, defects),
-            "itemization_audit": ReportService._build_itemization_audit(run, metrics, analysis, defects),
-            "ai_enemy_behavior": ReportService._build_ai_behavior(run, metrics, defects),
-            "navigation_readability": ReportService._build_navigation_readability(run, metrics, analysis),
-            "secrets_optional_content": ReportService._build_secrets_analysis(run, metrics, analysis),
+            "geometry_technical_analysis": ReportService._build_geometry_analysis(
+                analysis, run
+            ),
+            "gameplay_flow_analysis": ReportService._build_gameplay_flow(
+                run, metrics, analysis
+            ),
+            "combat_design_review": ReportService._build_combat_review(
+                run, metrics, analysis, defects
+            ),
+            "itemization_audit": ReportService._build_itemization_audit(
+                run, metrics, analysis, defects
+            ),
+            "ai_enemy_behavior": ReportService._build_ai_behavior(
+                run, metrics, defects
+            ),
+            "navigation_readability": ReportService._build_navigation_readability(
+                run, metrics, analysis
+            ),
+            "secrets_optional_content": ReportService._build_secrets_analysis(
+                run, metrics, analysis
+            ),
             "multiplayer_analysis": "",
-            "performance_engine_compliance": ReportService._build_performance_analysis(analysis, run),
-            "speedrunning_advanced_play": ReportService._build_speedrunning_analysis(run, metrics, analysis),
-            "recommendations": ReportService._build_recommendations(run, defects, metrics, analysis),
-            "final_verdict": ReportService._build_final_verdict(run, defects, metrics, analysis, overall_verdict),
+            "performance_engine_compliance": ReportService._build_performance_analysis(
+                analysis, run
+            ),
+            "speedrunning_advanced_play": ReportService._build_speedrunning_analysis(
+                run, metrics, analysis
+            ),
+            "recommendations": ReportService._build_recommendations(
+                run, defects, metrics, analysis
+            ),
+            "final_verdict": ReportService._build_final_verdict(
+                run, defects, metrics, analysis, overall_verdict
+            ),
         }
 
     @staticmethod
@@ -1406,10 +1743,24 @@ class ReportService:
 
     @staticmethod
     def _factual_environment_fields(run: TestRun) -> dict[str, Any]:
-        metadata = run.environment_metadata if isinstance(getattr(run, "environment_metadata", None), dict) else {}
-        hardware = metadata.get("hardware") if isinstance(metadata.get("hardware"), dict) else {}
-        software = metadata.get("software") if isinstance(metadata.get("software"), dict) else {}
-        run_context = metadata.get("run") if isinstance(metadata.get("run"), dict) else {}
+        metadata = (
+            run.environment_metadata
+            if isinstance(getattr(run, "environment_metadata", None), dict)
+            else {}
+        )
+        hardware = (
+            metadata.get("hardware")
+            if isinstance(metadata.get("hardware"), dict)
+            else {}
+        )
+        software = (
+            metadata.get("software")
+            if isinstance(metadata.get("software"), dict)
+            else {}
+        )
+        run_context = (
+            metadata.get("run") if isinstance(metadata.get("run"), dict) else {}
+        )
         factual_hardware = {
             "cpu": hardware.get("cpu", "not reported"),
             "ram_gb": hardware.get("ram_gb", "not reported"),
@@ -1446,9 +1797,15 @@ class ReportService:
         defects: list[Defect] = payload["defects"]
         metrics: dict[str, Any] = payload["metrics"]
         analysis_phrase = ReportService._analysis_phrase(analysis)
-        diagnostic = run.error_message or run.failure_summary or "No raw runtime error was stored."
+        diagnostic = (
+            run.error_message
+            or run.failure_summary
+            or "No raw runtime error was stored."
+        )
         environment = ReportService._factual_environment_fields(run)
-        evidence_model = ReportService._build_evidence_model(run, defects, metrics, analysis, "pwad_crash", "FAIL")
+        evidence_model = ReportService._build_evidence_model(
+            run, defects, metrics, analysis, "pwad_crash", "FAIL"
+        )
         return {
             "report_purpose": (
                 "Document that the PWAD crashed or failed to initialize under the configured "
@@ -1479,19 +1836,43 @@ class ReportService:
                 "defect creation, and report generation. No combat, traversal, item, or secret conclusions should be drawn."
             ),
             "objectives_planned": [
-                {"objective": "Validate the map can initialize in the configured runtime.", "status": "planned"},
-                {"objective": "Capture structured failure evidence if initialization fails.", "status": "planned"},
-                {"objective": "Return valid run/report/defect endpoint payloads.", "status": "planned"},
+                {
+                    "objective": "Validate the map can initialize in the configured runtime.",
+                    "status": "planned",
+                },
+                {
+                    "objective": "Capture structured failure evidence if initialization fails.",
+                    "status": "planned",
+                },
+                {
+                    "objective": "Return valid run/report/defect endpoint payloads.",
+                    "status": "planned",
+                },
             ],
             "objectives_covered": [
                 {"objective": "Runtime failure capture", "evidence": diagnostic},
-                {"objective": "Report artifact", "evidence": "A crash report JSON/PDF was generated."},
-                {"objective": "Defect payload", "evidence": f"{len(defects)} defect(s) attached to the run."},
+                {
+                    "objective": "Report artifact",
+                    "evidence": "A crash report JSON/PDF was generated.",
+                },
+                {
+                    "objective": "Defect payload",
+                    "evidence": f"{len(defects)} defect(s) attached to the run.",
+                },
             ],
             "objectives_omitted": [
-                {"objective": "Gameplay traversal", "reason": "The PWAD did not initialize into a playable episode."},
-                {"objective": "Combat/resource coverage", "reason": "No gameplay state was available after startup failure."},
-                {"objective": "Video artifact", "reason": "No recording is expected when gameplay never initializes."},
+                {
+                    "objective": "Gameplay traversal",
+                    "reason": "The PWAD did not initialize into a playable episode.",
+                },
+                {
+                    "objective": "Combat/resource coverage",
+                    "reason": "No gameplay state was available after startup failure.",
+                },
+                {
+                    "objective": "Video artifact",
+                    "reason": "No recording is expected when gameplay never initializes.",
+                },
             ],
             "uncovered_attributes": "Traversal, combat, resource balance, secrets, and progression were not exercised.",
             "test_process_changes": "",
@@ -1518,11 +1899,20 @@ class ReportService:
             },
             "risk_areas": [
                 {"area": "Runtime compatibility", "risk": diagnostic},
-                {"area": "Release readiness", "risk": "Players may be unable to launch this PWAD in the tested setup."},
+                {
+                    "area": "Release readiness",
+                    "risk": "Players may be unable to launch this PWAD in the tested setup.",
+                },
             ],
             "good_quality_areas": [
-                {"area": "Failure evidence", "evidence": "The backend preserved the crash as structured QA output."},
-                {"area": "Static context", "evidence": "Static map analysis is included when available."},
+                {
+                    "area": "Failure evidence",
+                    "evidence": "The backend preserved the crash as structured QA output.",
+                },
+                {
+                    "area": "Static context",
+                    "evidence": "Static map analysis is included when available.",
+                },
             ],
             "qa_sections": evidence_model["qa_sections"],
             "evidence_matrix": evidence_model["evidence_matrix"],
@@ -1550,9 +1940,14 @@ class ReportService:
         )
 
     @staticmethod
-    def _problem_statement(run: TestRun, defects: list[Defect], metrics: dict[str, Any]) -> str:
+    def _problem_statement(
+        run: TestRun, defects: list[Defect], metrics: dict[str, Any]
+    ) -> str:
         if ReportService._is_pwad_crash(run):
-            return run.failure_summary or "The PWAD crashed or failed to initialize in the configured test runtime."
+            return (
+                run.failure_summary
+                or "The PWAD crashed or failed to initialize in the configured test runtime."
+            )
         if run.status == "failed":
             return f"The QA run ended before producing a complete gameplay verdict: {run.error_message or run.outcome}."
         if defects:
@@ -1563,21 +1958,33 @@ class ReportService:
             )
         if metrics["position_sample_count"] < 3:
             return "Gameplay evidence is limited because the run produced fewer than three position samples."
-        return "No escalation blocker was detected from the collected automated evidence."
+        return (
+            "No escalation blocker was detected from the collected automated evidence."
+        )
 
     @staticmethod
     def _display_outcome(run: TestRun, defects: list[Defect]) -> str:
         if any(defect.defect_type == "inconclusive_agent_stall" for defect in defects):
             return "inconclusive_agent_stall"
-        if run.outcome == "timeout" and any(defect.defect_type == "softlock_navigation" for defect in defects):
+        if run.outcome == "timeout" and any(
+            defect.defect_type == "softlock_navigation" for defect in defects
+        ):
             return "stuck"
         return run.outcome or run.status
 
     @staticmethod
-    def _covered_objectives(run: TestRun, metrics: dict[str, Any]) -> list[dict[str, Any]]:
+    def _covered_objectives(
+        run: TestRun, metrics: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         covered = [
-            {"objective": "Map launch and initial state capture", "evidence": f"Run status: {run.status}."},
-            {"objective": "Agent decision logging", "evidence": f"{metrics['event_count']} decision event(s) recorded."},
+            {
+                "objective": "Map launch and initial state capture",
+                "evidence": f"Run status: {run.status}.",
+            },
+            {
+                "objective": "Agent decision logging",
+                "evidence": f"{metrics['event_count']} decision event(s) recorded.",
+            },
         ]
         if metrics["position_sample_count"]:
             covered.append(
@@ -1587,7 +1994,12 @@ class ReportService:
                 }
             )
         if run.recording_mp4_path:
-            covered.append({"objective": "Gameplay recording", "evidence": f"/runs/{run.id}/recording"})
+            covered.append(
+                {
+                    "objective": "Gameplay recording",
+                    "evidence": f"/runs/{run.id}/recording",
+                }
+            )
         return covered
 
     @staticmethod
@@ -1599,12 +2011,32 @@ class ReportService:
         omitted: list[dict[str, Any]] = []
         display_outcome = outcome or run.outcome or run.status
         if display_outcome != "map_completed":
-            omitted.append({"objective": "Verified map exit", "reason": f"Run outcome was {display_outcome}."})
+            omitted.append(
+                {
+                    "objective": "Verified map exit",
+                    "reason": f"Run outcome was {display_outcome}.",
+                }
+            )
         if metrics["position_cluster_count"] < 3:
-            omitted.append({"objective": "Broad spatial coverage", "reason": "The automated playthrough did not visit at least three coarse map areas."})
+            omitted.append(
+                {
+                    "objective": "Broad spatial coverage",
+                    "reason": "The automated playthrough did not visit at least three coarse map areas.",
+                }
+            )
         if not run.recording_mp4_path:
-            omitted.append({"objective": "Video artifact", "reason": "No recording path was produced."})
-        return omitted or [{"objective": "None", "reason": "All planned high-level objectives produced evidence."}]
+            omitted.append(
+                {
+                    "objective": "Video artifact",
+                    "reason": "No recording path was produced.",
+                }
+            )
+        return omitted or [
+            {
+                "objective": "None",
+                "reason": "All planned high-level objectives produced evidence.",
+            }
+        ]
 
     @staticmethod
     def _uncovered_attributes(run: TestRun, metrics: dict[str, Any]) -> str:
@@ -1620,7 +2052,11 @@ class ReportService:
             missing.append("secret accessibility")
         if metrics["position_cluster_count"] < 3:
             missing.append("full-map traversal depth")
-        return ", ".join(missing) if missing else "No major attributes remained uncovered by this run."
+        return (
+            ", ".join(missing)
+            if missing
+            else "No major attributes remained uncovered by this run."
+        )
 
     @staticmethod
     def _defect_patterns(defects: list[Defect]) -> str:
@@ -1629,7 +2065,9 @@ class ReportService:
         counts: dict[str, int] = {}
         for defect in defects:
             counts[defect.defect_type] = counts.get(defect.defect_type, 0) + 1
-        return "; ".join(f"{defect_type}: {count}" for defect_type, count in sorted(counts.items()))
+        return "; ".join(
+            f"{defect_type}: {count}" for defect_type, count in sorted(counts.items())
+        )
 
     @staticmethod
     def _test_limitations(run: TestRun, metrics: dict[str, Any]) -> str:
@@ -1638,9 +2076,13 @@ class ReportService:
             "Single-run results should be confirmed with additional seeds or manual review before release decisions.",
         ]
         if run.status == "failed":
-            limitations.insert(0, "The run ended before gameplay coverage was complete.")
+            limitations.insert(
+                0, "The run ended before gameplay coverage was complete."
+            )
         if metrics["position_sample_count"] < 3:
-            limitations.insert(0, "Telemetry volume was too low for strong spatial conclusions.")
+            limitations.insert(
+                0, "Telemetry volume was too low for strong spatial conclusions."
+            )
         if metrics.get("hidden_enemy_count"):
             limitations.insert(
                 0,
@@ -1650,9 +2092,13 @@ class ReportService:
         return " ".join(limitations)
 
     @staticmethod
-    def _major_risk(run: TestRun, defects: list[Defect], metrics: dict[str, Any]) -> str:
+    def _major_risk(
+        run: TestRun, defects: list[Defect], metrics: dict[str, Any]
+    ) -> str:
         if run.status == "failed":
-            return "Primary risk: the automated QA run did not complete gameplay coverage."
+            return (
+                "Primary risk: the automated QA run did not complete gameplay coverage."
+            )
         if defects:
             return "Primary risk: at least one detected defect needs author review."
         if metrics.get("hidden_enemy_count"):
@@ -1662,16 +2108,39 @@ class ReportService:
         return "Primary risk is low for the paths exercised in this automated run."
 
     @staticmethod
-    def _risk_areas(run: TestRun, defects: list[Defect], metrics: dict[str, Any]) -> list[dict[str, Any]]:
+    def _risk_areas(
+        run: TestRun, defects: list[Defect], metrics: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         risks: list[dict[str, Any]] = []
         outcome = ReportService._display_outcome(run, defects)
         if run.status == "failed":
-            area = "Runtime compatibility" if ReportService._is_pwad_crash(run) else "Run completion"
-            risks.append({"area": area, "risk": run.failure_summary or run.error_message or "Run ended before completion."})
+            area = (
+                "Runtime compatibility"
+                if ReportService._is_pwad_crash(run)
+                else "Run completion"
+            )
+            risks.append(
+                {
+                    "area": area,
+                    "risk": run.failure_summary
+                    or run.error_message
+                    or "Run ended before completion.",
+                }
+            )
         if outcome != "map_completed":
-            risks.append({"area": "Progression", "risk": f"Map exit was not verified; outcome was {outcome}."})
+            risks.append(
+                {
+                    "area": "Progression",
+                    "risk": f"Map exit was not verified; outcome was {outcome}.",
+                }
+            )
         if metrics["position_cluster_count"] < 3:
-            risks.append({"area": "Traversal coverage", "risk": "The automated playthrough visited too few coarse position clusters."})
+            risks.append(
+                {
+                    "area": "Traversal coverage",
+                    "risk": "The automated playthrough visited too few coarse position clusters.",
+                }
+            )
         if metrics.get("hidden_enemy_count"):
             risks.append(
                 {
@@ -1684,7 +2153,9 @@ class ReportService:
             )
         for defect in defects[:5]:
             risks.append({"area": defect.defect_type, "risk": defect.title})
-        return risks or [{"area": "Exercised path", "risk": "No high-risk issue was observed."}]
+        return risks or [
+            {"area": "Exercised path", "risk": "No high-risk issue was observed."}
+        ]
 
     @staticmethod
     def _good_quality_areas(
@@ -1694,21 +2165,50 @@ class ReportService:
     ) -> list[dict[str, Any]]:
         areas = []
         if run.status == "completed":
-            areas.append({"area": "Runtime stability", "evidence": "The backend completed the run lifecycle."})
+            areas.append(
+                {
+                    "area": "Runtime stability",
+                    "evidence": "The backend completed the run lifecycle.",
+                }
+            )
         if metrics["position_sample_count"] >= 3:
-            areas.append({"area": "Telemetry", "evidence": "The run includes multiple position samples."})
+            areas.append(
+                {
+                    "area": "Telemetry",
+                    "evidence": "The run includes multiple position samples.",
+                }
+            )
         if run.recording_mp4_path:
-            areas.append({"area": "Evidence capture", "evidence": "A gameplay recording artifact was produced."})
+            areas.append(
+                {
+                    "area": "Evidence capture",
+                    "evidence": "A gameplay recording artifact was produced.",
+                }
+            )
         if analysis is not None:
-            areas.append({"area": "Static context", "evidence": "The report includes parsed map structure and thing counts."})
-        return areas or [{"area": "Initial launch", "evidence": "The map was accepted into the QA pipeline."}]
+            areas.append(
+                {
+                    "area": "Static context",
+                    "evidence": "The report includes parsed map structure and thing counts.",
+                }
+            )
+        return areas or [
+            {
+                "area": "Initial launch",
+                "evidence": "The map was accepted into the QA pipeline.",
+            }
+        ]
 
     # ---- 14-section professional QA report builders ----
 
     @staticmethod
     def _build_executive_summary(
-        run: TestRun, defects: list[Defect], metrics: dict[str, Any],
-        analysis: StaticAnalysisResult | None, outcome: str, overall_verdict: str,
+        run: TestRun,
+        defects: list[Defect],
+        metrics: dict[str, Any],
+        analysis: StaticAnalysisResult | None,
+        outcome: str,
+        overall_verdict: str,
     ) -> str:
         spawned = int(metrics.get("spawned_enemy_count") or 0)
         kills = run.total_kills or 0
@@ -1722,9 +2222,13 @@ class ReportService:
             f"{run.duration_seconds or 0} wall-clock seconds, achieving {coverage:.1f}% coarse cell coverage.",
         ]
         if spawned > 0:
-            parts.append(f"Combat: {kills}/{spawned} enemies eliminated ({kills/spawned*100:.0f}% kill rate).")
+            parts.append(
+                f"Combat: {kills}/{spawned} enemies eliminated ({kills / spawned * 100:.0f}% kill rate)."
+            )
         if defect_count:
-            parts.append(f"Defects detected: {defect_count} ({severity_1} critical/major).")
+            parts.append(
+                f"Defects detected: {defect_count} ({severity_1} critical/major)."
+            )
         else:
             parts.append("No confirmed defects were detected during this run.")
         if analysis:
@@ -1740,17 +2244,27 @@ class ReportService:
             return "No critical issues were identified during this automated QA pass."
         lines = []
         for defect in sorted(defects, key=lambda d: (d.severity, d.priority)):
-            sev_label = {1: "Critical", 2: "Major", 3: "Moderate", 4: "Minor", 5: "Cosmetic"}.get(
-                defect.severity, f"Severity-{defect.severity}"
-            )
+            sev_label = {
+                1: "Critical",
+                2: "Major",
+                3: "Moderate",
+                4: "Minor",
+                5: "Cosmetic",
+            }.get(defect.severity, f"Severity-{defect.severity}")
             lines.append(
                 f"[{sev_label}] {defect.title} — {defect.description[:200]}"
-                + (f" (tick {defect.detected_at_tick})" if defect.detected_at_tick else "")
+                + (
+                    f" (tick {defect.detected_at_tick})"
+                    if defect.detected_at_tick
+                    else ""
+                )
             )
         return "\n".join(lines)
 
     @staticmethod
-    def _build_geometry_analysis(analysis: StaticAnalysisResult | None, run: TestRun) -> str:
+    def _build_geometry_analysis(
+        analysis: StaticAnalysisResult | None, run: TestRun
+    ) -> str:
         if not analysis:
             return "Static analysis was unavailable. Geometry assessment requires parsed WAD data."
         parts = [
@@ -1769,18 +2283,26 @@ class ReportService:
             )
         # Vanilla Doom limits check
         if analysis.linedef_count and analysis.linedef_count > 32768:
-            parts.append("WARNING: Linedef count exceeds vanilla Doom limit (32768). Requires limit-removing port.")
+            parts.append(
+                "WARNING: Linedef count exceeds vanilla Doom limit (32768). Requires limit-removing port."
+            )
         if analysis.sector_count and analysis.sector_count > 32768:
-            parts.append("WARNING: Sector count exceeds vanilla Doom limit (32768). Requires limit-removing port.")
+            parts.append(
+                "WARNING: Sector count exceeds vanilla Doom limit (32768). Requires limit-removing port."
+            )
         if analysis.vertex_count and analysis.vertex_count > 65536:
             parts.append("WARNING: Vertex count exceeds vanilla Doom limit (65536).")
         # Visplane estimate
         if analysis.sector_count and analysis.sector_count > 128:
-            parts.append(f"Sector count ({analysis.sector_count}) is elevated. Monitor for visplane overflow risk.")
+            parts.append(
+                f"Sector count ({analysis.sector_count}) is elevated. Monitor for visplane overflow risk."
+            )
         return " ".join(parts)
 
     @staticmethod
-    def _build_gameplay_flow(run: TestRun, metrics: dict[str, Any], analysis: StaticAnalysisResult | None) -> str:
+    def _build_gameplay_flow(
+        run: TestRun, metrics: dict[str, Any], analysis: StaticAnalysisResult | None
+    ) -> str:
         coverage = float(metrics.get("coverage_percent") or 0)
         clusters = metrics.get("position_cluster_count", 0)
         movement = metrics.get("movement_distance_units", 0)
@@ -1791,9 +2313,13 @@ class ReportService:
         if run.outcome == "map_completed":
             parts.append("The map exit was reached — full progression path validated.")
         elif run.outcome == "timeout":
-            parts.append("Run timed out before reaching the map exit; classify this as limited evidence unless a confirmed static or runtime defect is listed.")
+            parts.append(
+                "Run timed out before reaching the map exit; classify this as limited evidence unless a confirmed static or runtime defect is listed."
+            )
         elif run.outcome == "player_died":
-            parts.append("The automated playthrough ended in player death; use combat, health, and ammo evidence below to judge whether the cause is map-side.")
+            parts.append(
+                "The automated playthrough ended in player death; use combat, health, and ammo evidence below to judge whether the cause is map-side."
+            )
         elif run.outcome in ("stuck", "inconclusive_agent_stall"):
             confidence = ReportService._harness_confidence(metrics)
             parts.append(
@@ -1805,45 +2331,83 @@ class ReportService:
             lift_count = getattr(analysis, "lift_count", None)
             teleporter_count = getattr(analysis, "teleporter_count", None)
             if door_count:
-                parts.append(f"Map contains {door_count} doors, {lift_count or 0} lifts, {teleporter_count or 0} teleporters.")
+                parts.append(
+                    f"Map contains {door_count} doors, {lift_count or 0} lifts, {teleporter_count or 0} teleporters."
+                )
         return " ".join(parts)
 
     @staticmethod
     def _build_combat_review(
-        run: TestRun, metrics: dict[str, Any],
-        analysis: StaticAnalysisResult | None, defects: list[Defect],
+        run: TestRun,
+        metrics: dict[str, Any],
+        analysis: StaticAnalysisResult | None,
+        defects: list[Defect],
     ) -> str:
         spawned = int(metrics.get("spawned_enemy_count") or 0)
         kills = run.total_kills or 0
-        hitscanner_pct = float((analysis or StaticAnalysisResult()).hitscanner_percent or 0)
+        hitscanner_pct = float(
+            (analysis or StaticAnalysisResult()).hitscanner_percent or 0
+        )
         parts = []
         if spawned == 0:
-            parts.append("No enemies spawn at the selected difficulty. Combat review not applicable.")
+            parts.append(
+                "No enemies spawn at the selected difficulty. Combat review not applicable."
+            )
         else:
             kill_rate = kills / spawned * 100
             parts.append(f"Kill rate: {kills}/{spawned} ({kill_rate:.0f}%).")
             if kill_rate < 25:
-                classification = "map-side resource risk" if any(d.defect_type in {"ammo_starvation", "static_ammo_risk", "static_ammo_insufficiency"} for d in defects) else "limited combat evidence"
-                parts.append(f"Kill rate is very low; classification: {classification}.")
+                classification = (
+                    "map-side resource risk"
+                    if any(
+                        d.defect_type
+                        in {
+                            "ammo_starvation",
+                            "static_ammo_risk",
+                            "static_ammo_insufficiency",
+                        }
+                        for d in defects
+                    )
+                    else "limited combat evidence"
+                )
+                parts.append(
+                    f"Kill rate is very low; classification: {classification}."
+                )
             elif kill_rate < 50:
-                parts.append("Kill rate is moderate; encounter coverage is partial for this run.")
+                parts.append(
+                    "Kill rate is moderate; encounter coverage is partial for this run."
+                )
             if hitscanner_pct > 40:
-                parts.append(f"Hitscanner ratio is high ({hitscanner_pct:.0f}%). Expect ranged pressure on the player.")
-            combat_defects = [d for d in defects if "combat" in d.defect_type or d.defect_type == "ammo_starvation"]
+                parts.append(
+                    f"Hitscanner ratio is high ({hitscanner_pct:.0f}%). Expect ranged pressure on the player."
+                )
+            combat_defects = [
+                d
+                for d in defects
+                if "combat" in d.defect_type or d.defect_type == "ammo_starvation"
+            ]
             if combat_defects:
-                parts.append(f"{len(combat_defects)} combat-related defect(s) detected.")
+                parts.append(
+                    f"{len(combat_defects)} combat-related defect(s) detected."
+                )
         health_ratio = float(analysis.health_ratio or 1.0) if analysis else 1.0
         ammo_ratio = float(analysis.ammo_ratio or 1.0) if analysis else 1.0
         if health_ratio < 0.2:
             parts.append("Health economy is critically low relative to monster HP.")
         if ammo_ratio < 0.5:
             parts.append("Ammo economy is deficient relative to monster HP.")
-        return " ".join(parts) if parts else "Combat data is insufficient for detailed review."
+        return (
+            " ".join(parts)
+            if parts
+            else "Combat data is insufficient for detailed review."
+        )
 
     @staticmethod
     def _build_itemization_audit(
-        run: TestRun, metrics: dict[str, Any],
-        analysis: StaticAnalysisResult | None, defects: list[Defect],
+        run: TestRun,
+        metrics: dict[str, Any],
+        analysis: StaticAnalysisResult | None,
+        defects: list[Defect],
     ) -> str:
         if not analysis:
             return "Static analysis unavailable. Itemization audit requires parsed WAD data."
@@ -1853,46 +2417,85 @@ class ReportService:
             f"Health ratio: {analysis.health_ratio:.4f}. Ammo ratio: {analysis.ammo_ratio:.4f}.",
         ]
         if analysis.health_ratio < 0.2:
-            parts.append("SEVERITY: Health economy is critically low. Players will face ammo starvation.")
+            parts.append(
+                "SEVERITY: Health economy is critically low. Players will face ammo starvation."
+            )
         elif analysis.health_ratio < 0.4:
-            parts.append("Health economy is tight. Resource management will be challenging.")
+            parts.append(
+                "Health economy is tight. Resource management will be challenging."
+            )
         if analysis.ammo_ratio < 0.5:
-            parts.append("SEVERITY: Ammo economy is critically low. Melee combat or infighting may be required.")
+            parts.append(
+                "SEVERITY: Ammo economy is critically low. Melee combat or infighting may be required."
+            )
         elif analysis.ammo_ratio < 0.8:
             parts.append("Ammo economy is tight. Conservation will be necessary.")
-        items = [d for d in defects if d.defect_type in ("static_ammo_risk", "static_health_risk", "ammo_starvation")]
+        items = [
+            d
+            for d in defects
+            if d.defect_type
+            in ("static_ammo_risk", "static_health_risk", "ammo_starvation")
+        ]
         if items:
             parts.append(f"{len(items)} itemization-related defect(s) flagged.")
         return " ".join(parts)
 
     @staticmethod
-    def _build_ai_behavior(run: TestRun, metrics: dict[str, Any], defects: list[Defect]) -> str:
+    def _build_ai_behavior(
+        run: TestRun, metrics: dict[str, Any], defects: list[Defect]
+    ) -> str:
         parts = []
         spawned = int(metrics.get("spawned_enemy_count") or 0)
         kills = run.total_kills or 0
         if spawned == 0:
-            parts.append("No enemies spawn at the selected difficulty. Enemy behavior analysis is not applicable.")
+            parts.append(
+                "No enemies spawn at the selected difficulty. Enemy behavior analysis is not applicable."
+            )
         else:
             kill_rate = kills / spawned * 100
-            parts.append(f"Enemy engagement: {kills}/{spawned} eliminated ({kill_rate:.0f}% kill rate).")
-            stuck_defects = [d for d in defects if d.defect_type in ("softlock_navigation",) or "stuck" in d.defect_type]
+            parts.append(
+                f"Enemy engagement: {kills}/{spawned} eliminated ({kill_rate:.0f}% kill rate)."
+            )
+            stuck_defects = [
+                d
+                for d in defects
+                if d.defect_type in ("softlock_navigation",) or "stuck" in d.defect_type
+            ]
             if stuck_defects:
-                parts.append(f"Map-side navigation defects detected: {len(stuck_defects)} occurrence(s). "
-                             "These indicate geometry or pathing issues in the map itself.")
-            combat_defects = [d for d in defects if "combat" in d.defect_type or d.defect_type in ("ammo_starvation", "health_deficit")]
+                parts.append(
+                    f"Map-side navigation defects detected: {len(stuck_defects)} occurrence(s). "
+                    "These indicate geometry or pathing issues in the map itself."
+                )
+            combat_defects = [
+                d
+                for d in defects
+                if "combat" in d.defect_type
+                or d.defect_type in ("ammo_starvation", "health_deficit")
+            ]
             if combat_defects:
-                parts.append(f"Combat-related map defects: {len(combat_defects)}. "
-                             "Review encounter balance, enemy placement, and resource distribution.")
-            hitscanner_pct = float((metrics.get("selected_skill_summary") or {}).get("hitscanner_percent") or 0)
+                parts.append(
+                    f"Combat-related map defects: {len(combat_defects)}. "
+                    "Review encounter balance, enemy placement, and resource distribution."
+                )
+            hitscanner_pct = float(
+                (metrics.get("selected_skill_summary") or {}).get("hitscanner_percent")
+                or 0
+            )
             if hitscanner_pct > 40:
-                parts.append(f"Hitscanner ratio is high ({hitscanner_pct:.0f}%). "
-                             "Expect significant ranged pressure on the player from enemy composition.")
+                parts.append(
+                    f"Hitscanner ratio is high ({hitscanner_pct:.0f}%). "
+                    "Expect significant ranged pressure on the player from enemy composition."
+                )
         if not parts:
-            parts.append("Enemy behavior and encounter design analysis requires more gameplay data from this map.")
+            parts.append(
+                "Enemy behavior and encounter design analysis requires more gameplay data from this map."
+            )
         return " ".join(parts)
 
     @staticmethod
-    def _build_navigation_readability(run: TestRun, metrics: dict[str, Any], analysis: StaticAnalysisResult | None) -> str:
+    def _build_navigation_readability(
+        run: TestRun, metrics: dict[str, Any], analysis: StaticAnalysisResult | None
+    ) -> str:
         coverage = float(metrics.get("coverage_percent") or 0)
         clusters = metrics.get("position_cluster_count", 0)
         parts = [
@@ -1900,16 +2503,24 @@ class ReportService:
             f"Position clusters visited: {clusters}.",
         ]
         if coverage < 20:
-            parts.append("Coverage is critically low; map-wide navigation conclusions are limited.")
+            parts.append(
+                "Coverage is critically low; map-wide navigation conclusions are limited."
+            )
         elif coverage < 50:
-            parts.append("Coverage is moderate. Significant portions of the map remain unexplored.")
+            parts.append(
+                "Coverage is moderate. Significant portions of the map remain unexplored."
+            )
         if analysis and analysis.secret_sector_count > 0:
             secrets_found = run.secrets_found or 0
-            parts.append(f"Secrets: {secrets_found}/{analysis.secret_sector_count} found.")
+            parts.append(
+                f"Secrets: {secrets_found}/{analysis.secret_sector_count} found."
+            )
         return " ".join(parts)
 
     @staticmethod
-    def _build_secrets_analysis(run: TestRun, metrics: dict[str, Any], analysis: StaticAnalysisResult | None) -> str:
+    def _build_secrets_analysis(
+        run: TestRun, metrics: dict[str, Any], analysis: StaticAnalysisResult | None
+    ) -> str:
         if not analysis or analysis.secret_sector_count == 0:
             return "No secret sectors detected in static analysis."
         secrets_found = run.secrets_found or 0
@@ -1920,49 +2531,76 @@ class ReportService:
             f"Map coverage: {coverage:.1f}%.",
         ]
         if secrets_found == 0 and coverage >= 40:
-            parts.append("No secrets found at sufficient coverage. Possible unreachable secret or poor placement.")
+            parts.append(
+                "No secrets found at sufficient coverage. Possible unreachable secret or poor placement."
+            )
         elif secrets_found == 0:
-            parts.append("No secrets found, but coverage may be insufficient to draw conclusions.")
+            parts.append(
+                "No secrets found, but coverage may be insufficient to draw conclusions."
+            )
         return " ".join(parts)
 
     @staticmethod
-    def _build_performance_analysis(analysis: StaticAnalysisResult | None, run: TestRun) -> str:
+    def _build_performance_analysis(
+        analysis: StaticAnalysisResult | None, run: TestRun
+    ) -> str:
         if not analysis:
             return "Static analysis unavailable. Performance assessment requires geometry data."
         parts = []
         # Vanilla Doom limits
         vanilla_limits = {
-            "linedefs": 32768, "sidedefs": 65536, "sectors": 32768,
-            "vertices": 65536, "segments": 65536, "subsectors": 32768,
-            "nodes": 32768, "things": 4096,
+            "linedefs": 32768,
+            "sidedefs": 65536,
+            "sectors": 32768,
+            "vertices": 65536,
+            "segments": 65536,
+            "subsectors": 32768,
+            "nodes": 32768,
+            "things": 4096,
         }
         if analysis.linedef_count:
             ratio = analysis.linedef_count / vanilla_limits["linedefs"] * 100
-            parts.append(f"Linedefs: {analysis.linedef_count}/{vanilla_limits['linedefs']} ({ratio:.0f}% of vanilla limit).")
+            parts.append(
+                f"Linedefs: {analysis.linedef_count}/{vanilla_limits['linedefs']} ({ratio:.0f}% of vanilla limit)."
+            )
             if ratio > 80:
                 parts.append("WARNING: Approaching vanilla linedef limit.")
         if analysis.sector_count:
             ratio = analysis.sector_count / vanilla_limits["sectors"] * 100
-            parts.append(f"Sectors: {analysis.sector_count}/{vanilla_limits['sectors']} ({ratio:.0f}% of vanilla limit).")
+            parts.append(
+                f"Sectors: {analysis.sector_count}/{vanilla_limits['sectors']} ({ratio:.0f}% of vanilla limit)."
+            )
         if analysis.thing_count_total:
             ratio = analysis.thing_count_total / vanilla_limits["things"] * 100
-            parts.append(f"Things: {analysis.thing_count_total}/{vanilla_limits['things']} ({ratio:.0f}% of vanilla limit).")
-        parts.append("Compatible with limit-removing source ports (Boom, MBF, PrBoom+).")
+            parts.append(
+                f"Things: {analysis.thing_count_total}/{vanilla_limits['things']} ({ratio:.0f}% of vanilla limit)."
+            )
+        parts.append(
+            "Compatible with limit-removing source ports (Boom, MBF, PrBoom+)."
+        )
         return " ".join(parts)
 
     @staticmethod
-    def _build_speedrunning_analysis(run: TestRun, metrics: dict[str, Any], analysis: StaticAnalysisResult | None) -> str:
+    def _build_speedrunning_analysis(
+        run: TestRun, metrics: dict[str, Any], analysis: StaticAnalysisResult | None
+    ) -> str:
         parts = []
         if run.outcome == "map_completed":
-            parts.append("Map completion achieved. Speedrun route analysis is possible from the position trail data.")
+            parts.append(
+                "Map completion achieved. Speedrun route analysis is possible from the position trail data."
+            )
         else:
-            parts.append("Map was not completed. Full speedrun route analysis requires a completed run.")
+            parts.append(
+                "Map was not completed. Full speedrun route analysis requires a completed run."
+            )
         if analysis:
             parts.append(
                 f"Map dimensions: {analysis.map_width_units or '?'} x {analysis.map_height_units or '?'} units. "
                 "Larger maps may have more sequence break opportunities."
             )
-        parts.append("Potential speedrun elements: linedef skips, glide spots, arch-vile jumps, and exit shortcuts.")
+        parts.append(
+            "Potential speedrun elements: linedef skips, glide spots, arch-vile jumps, and exit shortcuts."
+        )
         return " ".join(parts)
 
     @staticmethod
@@ -1971,8 +2609,6 @@ class ReportService:
         linedefs = analysis.linedef_count or 0
         sectors = analysis.sector_count or 0
         things = analysis.thing_count_total or 0
-        enemies = analysis.thing_count_enemies or 0
-        items = analysis.thing_count_items or 0
         # Trivial: minimal geometry, essentially a test room or corridor
         if linedefs <= 8 and sectors <= 2 and things <= 6:
             return "TRIVIAL"
@@ -1989,7 +2625,9 @@ class ReportService:
 
     @staticmethod
     def _build_recommendations(
-        run: TestRun, defects: list[Defect], metrics: dict[str, Any],
+        run: TestRun,
+        defects: list[Defect],
+        metrics: dict[str, Any],
         analysis: StaticAnalysisResult | None,
     ) -> str:
         recs = []
@@ -2005,31 +2643,50 @@ class ReportService:
             sev1 = [d for d in defects if d.severity == 1]
             sev2 = [d for d in defects if d.severity == 2]
             if sev1:
-                recs.append(f"PRIORITY 1: Address {len(sev1)} critical/major map defect(s) before release.")
+                recs.append(
+                    f"PRIORITY 1: Address {len(sev1)} critical/major map defect(s) before release."
+                )
             if sev2:
-                recs.append(f"PRIORITY 2: Review {len(sev2)} moderate defect(s) for gameplay impact.")
+                recs.append(
+                    f"PRIORITY 2: Review {len(sev2)} moderate defect(s) for gameplay impact."
+                )
         coverage = float(metrics.get("coverage_percent") or 0)
         if coverage < 50:
-            recs.append("Test with a larger tick budget or additional runs to improve map coverage confidence.")
+            recs.append(
+                "Test with a larger tick budget or additional runs to improve map coverage confidence."
+            )
         if run.outcome != "map_completed":
-            recs.append("Re-test to verify map exit reachability and full progression path.")
+            recs.append(
+                "Re-test to verify map exit reachability and full progression path."
+            )
         if analysis and analysis.health_ratio < 0.2:
-            recs.append("Map health economy is critically low. Add health pickups to improve player survivability.")
+            recs.append(
+                "Map health economy is critically low. Add health pickups to improve player survivability."
+            )
         if analysis and analysis.ammo_ratio < 0.5:
-            recs.append("Map ammo economy is deficient. Add ammo pickups or reduce enemy count.")
+            recs.append(
+                "Map ammo economy is deficient. Add ammo pickups or reduce enemy count."
+            )
         if not recs:
-            recs.append("No immediate map changes required. Map passed automated QA checks.")
+            recs.append(
+                "No immediate map changes required. Map passed automated QA checks."
+            )
         return " ".join(recs)
 
     @staticmethod
     def _build_final_verdict(
-        run: TestRun, defects: list[Defect], metrics: dict[str, Any],
-        analysis: StaticAnalysisResult | None, overall_verdict: str,
+        run: TestRun,
+        defects: list[Defect],
+        metrics: dict[str, Any],
+        analysis: StaticAnalysisResult | None,
+        overall_verdict: str,
     ) -> str:
         coverage = float(metrics.get("coverage_percent") or 0)
         spawned = int(metrics.get("spawned_enemy_count") or 0)
         kills = run.total_kills or 0
-        complexity = ReportService._assess_map_complexity(analysis) if analysis else "UNKNOWN"
+        complexity = (
+            ReportService._assess_map_complexity(analysis) if analysis else "UNKNOWN"
+        )
         parts = [
             f"Overall Quality Rating: {'3/5' if overall_verdict == 'PASS' else '2/5' if overall_verdict == 'PARTIAL' else '1/5'}.",
             f"Technical Stability: {'PASS' if run.status == 'completed' else 'FAIL'}.",
@@ -2037,7 +2694,9 @@ class ReportService:
             f"Map Complexity: {complexity}.",
         ]
         if spawned > 0:
-            parts.append(f"Combat Effectiveness: {kills}/{spawned} kills ({kills/spawned*100:.0f}%).")
+            parts.append(
+                f"Combat Effectiveness: {kills}/{spawned} kills ({kills / spawned * 100:.0f}%)."
+            )
         parts.append(f"Coverage: {coverage:.1f}%.")
         if complexity == "TRIVIAL":
             parts.append(
@@ -2045,7 +2704,9 @@ class ReportService:
                 "Add geometry, encounters, and secrets before re-testing."
             )
         elif overall_verdict == "PASS":
-            parts.append("Release Readiness: CONDITIONAL PASS — verify with additional runs.")
+            parts.append(
+                "Release Readiness: CONDITIONAL PASS — verify with additional runs."
+            )
         else:
             parts.append("Release Readiness: NOT READY — address defects and re-test.")
         return " ".join(parts)
@@ -2082,11 +2743,20 @@ class ReportService:
             "agent_quality_flags",
         ]
         result = {key: getattr(run, key) for key in keys}
-        result["recording_mp4_url"] = f"/runs/{run.id}/recording" if (run.recording_mp4_path or (run.recording_metadata or {}).get("quality_status") == "ok") else None
+        result["recording_mp4_url"] = (
+            f"/runs/{run.id}/recording"
+            if (
+                run.recording_mp4_path
+                or (run.recording_metadata or {}).get("quality_status") == "ok"
+            )
+            else None
+        )
         return result
 
     @staticmethod
-    def _analysis_snapshot(analysis: StaticAnalysisResult | None) -> dict[str, Any] | None:
+    def _analysis_snapshot(
+        analysis: StaticAnalysisResult | None,
+    ) -> dict[str, Any] | None:
         if analysis is None:
             return None
         keys = [
@@ -2119,21 +2789,34 @@ class ReportService:
         result = {key: getattr(analysis, key) for key in keys}
         result["map_overview_png_url"] = (
             f"/wads/{analysis.wad_file_id}/map-png?map_name={analysis.map_name}"
-            if analysis.map_overview_png_path else None
+            if analysis.map_overview_png_path
+            else None
         )
         return result
 
     @staticmethod
     def _event_snapshot(event: GameEvent) -> dict[str, Any]:
         action = event.action_taken or {}
-        action_output = action.get("mcp_output") if isinstance(action.get("mcp_output"), dict) else {}
+        action_output = (
+            action.get("mcp_output")
+            if isinstance(action.get("mcp_output"), dict)
+            else {}
+        )
         action_summary = action.get("mcp_action_summary")
         if not isinstance(action_summary, dict):
-            action_summary = action_output.get("action_summary") if isinstance(action_output, dict) else None
+            action_summary = (
+                action_output.get("action_summary")
+                if isinstance(action_output, dict)
+                else None
+            )
         return {
             "tick": event.tick_number,
             "event_type": event.event_type,
-            "position": {"x": event.player_x, "y": event.player_y, "angle": event.player_angle},
+            "position": {
+                "x": event.player_x,
+                "y": event.player_y,
+                "angle": event.player_angle,
+            },
             "health": event.health,
             "armor": event.armor,
             "kills": event.kill_count,
@@ -2141,9 +2824,12 @@ class ReportService:
             "secrets": event.secret_count,
             "damage_received": event.damage_received,
             "mcp_tool": action.get("mcp_tool"),
-            "mcp_executed_tool": action.get("mcp_executed_tool") or action.get("mcp_tool"),
+            "mcp_executed_tool": action.get("mcp_executed_tool")
+            or action.get("mcp_tool"),
             "mcp_params": action.get("mcp_params"),
-            "mcp_action_summary": action_summary if isinstance(action_summary, dict) else None,
+            "mcp_action_summary": action_summary
+            if isinstance(action_summary, dict)
+            else None,
             "reasoning": (event.llm_reasoning or "")[:500],
         }
 
@@ -2160,7 +2846,9 @@ class ReportService:
             "mcp_stop_reason": decision.mcp_stop_reason,
             "decision_source": decision.decision_source,
             "validation_rejection": (
-                (decision.mcp_output or {}).get("action_summary", {}).get("validation_error")
+                (decision.mcp_output or {})
+                .get("action_summary", {})
+                .get("validation_error")
                 if isinstance(decision.mcp_output, dict)
                 else None
             ),
@@ -2187,7 +2875,9 @@ class ReportService:
         }
 
     @staticmethod
-    def _position_snapshot(position: AgentPositionTrail | None) -> dict[str, Any] | None:
+    def _position_snapshot(
+        position: AgentPositionTrail | None,
+    ) -> dict[str, Any] | None:
         if position is None:
             return None
         return {
@@ -2211,20 +2901,28 @@ class ReportService:
         return None
 
     @staticmethod
-    def _difficulty_rows(analysis: StaticAnalysisResult | None, selected_difficulty: int) -> list[dict[str, Any]]:
+    def _difficulty_rows(
+        analysis: StaticAnalysisResult | None, selected_difficulty: int
+    ) -> list[dict[str, Any]]:
         if analysis is None:
             return []
         summaries = getattr(analysis, "spawn_summary_by_skill", None) or {}
         rows = []
         for skill in range(1, 6):
-            row = summaries.get(str(skill)) or summaries.get(skill) if isinstance(summaries, dict) else None
+            row = (
+                summaries.get(str(skill)) or summaries.get(skill)
+                if isinstance(summaries, dict)
+                else None
+            )
             if not isinstance(row, dict):
                 row = {
                     "thing_count_enemies": getattr(analysis, "thing_count_enemies", 0),
                     "thing_count_items": getattr(analysis, "thing_count_items", 0),
                     "health_ratio": getattr(analysis, "health_ratio", 0),
                     "ammo_ratio": getattr(analysis, "ammo_ratio", 0),
-                    "estimated_difficulty": getattr(analysis, "estimated_difficulty", "unknown"),
+                    "estimated_difficulty": getattr(
+                        analysis, "estimated_difficulty", "unknown"
+                    ),
                 }
             rows.append(
                 {
@@ -2267,20 +2965,39 @@ class ReportService:
             def project(x: float, y: float) -> tuple[int, int]:
                 width, height = image.size
                 px = int(20 + ((x - min_x) / max(max_x - min_x, 1)) * (width - 40))
-                py = int(height - 20 - ((y - min_y) / max(max_y - min_y, 1)) * (height - 40))
+                py = int(
+                    height - 20 - ((y - min_y) / max(max_y - min_y, 1)) * (height - 40)
+                )
                 return px, py
 
             trail_points = [project(position.x, position.y) for position in positions]
             if len(trail_points) > 1:
                 draw.line(trail_points, fill=(37, 99, 235, 235), width=6, joint="curve")
-                draw.line(trail_points, fill=(147, 197, 253, 210), width=2, joint="curve")
+                draw.line(
+                    trail_points, fill=(147, 197, 253, 210), width=2, joint="curve"
+                )
             for x, y in trail_points:
-                draw.ellipse((x - 4, y - 4, x + 4, y + 4), fill=(59, 130, 246, 180), outline=(255, 255, 255, 180), width=1)
+                draw.ellipse(
+                    (x - 4, y - 4, x + 4, y + 4),
+                    fill=(59, 130, 246, 180),
+                    outline=(255, 255, 255, 180),
+                    width=1,
+                )
             if trail_points:
                 start_x, start_y = trail_points[0]
                 end_x, end_y = trail_points[-1]
-                draw.ellipse((start_x - 8, start_y - 8, start_x + 8, start_y + 8), fill=(22, 163, 74, 240), outline=(255, 255, 255, 230), width=2)
-                draw.ellipse((end_x - 9, end_y - 9, end_x + 9, end_y + 9), fill=(245, 158, 11, 245), outline=(255, 255, 255, 240), width=2)
+                draw.ellipse(
+                    (start_x - 8, start_y - 8, start_x + 8, start_y + 8),
+                    fill=(22, 163, 74, 240),
+                    outline=(255, 255, 255, 230),
+                    width=2,
+                )
+                draw.ellipse(
+                    (end_x - 9, end_y - 9, end_x + 9, end_y + 9),
+                    fill=(245, 158, 11, 245),
+                    outline=(255, 255, 255, 240),
+                    width=2,
+                )
             for event in events:
                 if event.event_type == "normal":
                     continue
@@ -2295,7 +3012,12 @@ class ReportService:
                     draw.line((x - 10, y - 10, x + 10, y + 10), fill=color, width=5)
                     draw.line((x + 10, y - 10, x - 10, y + 10), fill=color, width=5)
                 else:
-                    draw.ellipse((x - 7, y - 7, x + 7, y + 7), fill=color, outline=(255, 255, 255, 230), width=2)
+                    draw.ellipse(
+                        (x - 7, y - 7, x + 7, y + 7),
+                        fill=color,
+                        outline=(255, 255, 255, 230),
+                        width=2,
+                    )
             from io import BytesIO
 
             buffer = BytesIO()
@@ -2305,7 +3027,9 @@ class ReportService:
         except Exception:
             return None
 
-    def _render_pdf(self, run_id: UUID, report: dict[str, Any], payload: dict[str, Any]) -> Path:
+    def _render_pdf(
+        self, run_id: UUID, report: dict[str, Any], payload: dict[str, Any]
+    ) -> Path:
         self.settings.report_storage_dir.mkdir(parents=True, exist_ok=True)
         path = self.settings.report_storage_dir / f"{run_id}.pdf"
         HTML(string=self._render_pdf_html(report, payload)).write_pdf(path)
@@ -2313,8 +3037,19 @@ class ReportService:
 
     @staticmethod
     def _render_pdf_html(report: dict[str, Any], payload: dict[str, Any]) -> str:
-        verdict_keys = ["map_navigation", "combat_engagement", "resource_balance", "secret_coverage", "overall_verdict"]
-        rationale_keys = ["navigation_rationale", "combat_rationale", "resource_rationale", "secret_rationale"]
+        verdict_keys = [
+            "map_navigation",
+            "combat_engagement",
+            "resource_balance",
+            "secret_coverage",
+            "overall_verdict",
+        ]
+        rationale_keys = [
+            "navigation_rationale",
+            "combat_rationale",
+            "resource_rationale",
+            "secret_rationale",
+        ]
         display_defects = payload["defects"][:25]
         all_decisions = payload.get("decisions", [])
         if len(all_decisions) > 16:
@@ -2323,10 +3058,14 @@ class ReportService:
             display_decisions = all_decisions
         defect_omitted_count = max(len(payload["defects"]) - len(display_defects), 0)
         decision_omitted_count = max(len(all_decisions) - len(display_decisions), 0)
-        display_outcome = ReportService._display_outcome(payload["run"], payload["defects"])
+        display_outcome = ReportService._display_outcome(
+            payload["run"], payload["defects"]
+        )
         analysis = payload.get("analysis")
         run = payload["run"]
-        map_thumbnail = ReportService._image_data_uri(getattr(analysis, "map_overview_png_path", None))
+        map_thumbnail = ReportService._image_data_uri(
+            getattr(analysis, "map_overview_png_path", None)
+        )
         trail_overlay = ReportService._position_trail_overlay_data_uri(
             getattr(analysis, "map_overview_png_path", None),
             payload.get("position_trail") or [],
@@ -2334,19 +3073,39 @@ class ReportService:
             payload.get("map_bounds") or ReportService._analysis_map_bounds(analysis),
         )
         metric_cards = [
-            {"label": "Wall-clock sec", "value": getattr(run, "duration_seconds", None) or 0},
-            {"label": "Gameplay sec", "value": (getattr(run, "recording_metadata", None) or {}).get("duration_seconds", 0)},
-            {"label": "Actions", "value": getattr(run, "total_actions_taken", None) or 0},
+            {
+                "label": "Wall-clock sec",
+                "value": getattr(run, "duration_seconds", None) or 0,
+            },
+            {
+                "label": "Gameplay sec",
+                "value": (getattr(run, "recording_metadata", None) or {}).get(
+                    "duration_seconds", 0
+                ),
+            },
+            {
+                "label": "Actions",
+                "value": getattr(run, "total_actions_taken", None) or 0,
+            },
             {"label": "Final HP", "value": getattr(run, "final_hp", None) or 0},
-            {"label": "Kills/Spawned", "value": f"{getattr(run, 'total_kills', None) or 0}/{payload['metrics'].get('spawned_enemy_count', 0)}"},
+            {
+                "label": "Kills/Spawned",
+                "value": f"{getattr(run, 'total_kills', None) or 0}/{payload['metrics'].get('spawned_enemy_count', 0)}",
+            },
             {"label": "Secrets", "value": getattr(run, "secrets_found", None) or 0},
             {"label": "Defects", "value": len(payload["defects"])},
         ]
-        difficulty_rows = ReportService._difficulty_rows(analysis, getattr(run, "difficulty_level", 3))
+        difficulty_rows = ReportService._difficulty_rows(
+            analysis, getattr(run, "difficulty_level", 3)
+        )
         event_rows = []
         for event in payload["notable_events"]:
             action = event.action_taken or {}
-            output = action.get("mcp_output") if isinstance(action.get("mcp_output"), dict) else {}
+            output = (
+                action.get("mcp_output")
+                if isinstance(action.get("mcp_output"), dict)
+                else {}
+            )
             summary = output.get("action_summary") if isinstance(output, dict) else {}
             event_rows.append(
                 {
@@ -2354,8 +3113,12 @@ class ReportService:
                     "event_type": event.event_type,
                     "position": f"{event.player_x:.1f}, {event.player_y:.1f}",
                     "health": event.health,
-                    "tool": action.get("mcp_executed_tool") or action.get("mcp_tool") or "",
-                    "stop_reason": summary.get("stop_reason") if isinstance(summary, dict) else None,
+                    "tool": action.get("mcp_executed_tool")
+                    or action.get("mcp_tool")
+                    or "",
+                    "stop_reason": summary.get("stop_reason")
+                    if isinstance(summary, dict)
+                    else None,
                 }
             )
         decision_rows = [
@@ -2367,13 +3130,19 @@ class ReportService:
                 "mcp_stop_reason": decision.mcp_stop_reason,
                 "decision_source": getattr(decision, "decision_source", "gemini"),
                 "validation_rejection": (
-                    (getattr(decision, "mcp_output", None) or {}).get("action_summary", {}).get("validation_error")
+                    (getattr(decision, "mcp_output", None) or {})
+                    .get("action_summary", {})
+                    .get("validation_error")
                     if isinstance(getattr(decision, "mcp_output", None), dict)
                     else None
                 ),
                 "reasoning_summary": decision.reasoning_summary,
-                "mcp_input": ReportService._json_block(getattr(decision, "mcp_input", None), limit=700),
-                "mcp_output": ReportService._json_block(getattr(decision, "mcp_output", None), limit=900),
+                "mcp_input": ReportService._json_block(
+                    getattr(decision, "mcp_input", None), limit=700
+                ),
+                "mcp_output": ReportService._json_block(
+                    getattr(decision, "mcp_output", None), limit=900
+                ),
             }
             for decision in display_decisions
         ]
@@ -2410,10 +3179,14 @@ class ReportService:
         return text if len(text) <= limit else f"{text[:limit]}..."
 
     @staticmethod
-    def _analysis_map_bounds(analysis: StaticAnalysisResult | None) -> dict[str, int] | None:
+    def _analysis_map_bounds(
+        analysis: StaticAnalysisResult | None,
+    ) -> dict[str, int] | None:
         if analysis is None:
             return None
-        features = (getattr(analysis, "spawn_summary_by_skill", None) or {}).get("_map_features")
+        features = (getattr(analysis, "spawn_summary_by_skill", None) or {}).get(
+            "_map_features"
+        )
         if not isinstance(features, dict):
             return None
         bounds = features.get("bounds")
@@ -2431,7 +3204,9 @@ class ReportService:
         return {"min_x": min_x, "max_x": max_x, "min_y": min_y, "max_y": max_y}
 
 
-def _point_bounds(points: list[tuple[float, float]]) -> tuple[float, float, float, float]:
+def _point_bounds(
+    points: list[tuple[float, float]],
+) -> tuple[float, float, float, float]:
     xs = [point[0] for point in points] or [0.0]
     ys = [point[1] for point in points] or [0.0]
     min_x = min(xs)

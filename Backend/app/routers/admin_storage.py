@@ -28,7 +28,10 @@ async def storage_stats() -> dict[str, object]:
         "recordings": settings.recording_storage_dir,
         "screenshots": settings.screenshot_storage_dir,
     }
-    by_type = {name: await asyncio.to_thread(_path_stats, path) for name, path in buckets.items()}
+    by_type = {
+        name: await asyncio.to_thread(_path_stats, path)
+        for name, path in buckets.items()
+    }
     return {
         "total_bytes": sum(item["total_bytes"] for item in by_type.values()),
         "total_files": sum(item["file_count"] for item in by_type.values()),
@@ -37,7 +40,9 @@ async def storage_stats() -> dict[str, object]:
 
 
 @router.delete("/runs/{run_id}")
-async def purge_run_storage(run_id: UUID, db: AsyncSession = Depends(get_db)) -> dict[str, object]:
+async def purge_run_storage(
+    run_id: UUID, db: AsyncSession = Depends(get_db)
+) -> dict[str, object]:
     run = await RunRepository(db).get_by_id(run_id)
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
@@ -63,7 +68,11 @@ async def cleanup_old_storage(
     for run in runs:
         deleted += await _purge_run_files(db, run)
     await db.commit()
-    return {"runs_checked": len(runs), "deleted_files": deleted, "older_than_days": older_than_days}
+    return {
+        "runs_checked": len(runs),
+        "deleted_files": deleted,
+        "older_than_days": older_than_days,
+    }
 
 
 def _path_stats(path: Path) -> dict[str, int | str]:
@@ -82,13 +91,20 @@ async def _purge_run_files(db: AsyncSession, run: TestRun) -> int:
     settings = get_settings()
     if run.recording_mp4_path:
         recording_path = Path(run.recording_mp4_path)
-        for path in (recording_path, recording_path.with_name(f"{recording_path.stem}.source.mp4")):
+        for path in (
+            recording_path,
+            recording_path.with_name(f"{recording_path.stem}.source.mp4"),
+        ):
             if unlink_if_within(path, settings.recording_storage_dir):
                 deleted += 1
         run.recording_mp4_path = None
-    result = await db.execute(select(NotableEventScreenshot).where(NotableEventScreenshot.run_id == run.id))
+    result = await db.execute(
+        select(NotableEventScreenshot).where(NotableEventScreenshot.run_id == run.id)
+    )
     for screenshot in result.scalars().all():
-        if unlink_if_within(screenshot.screenshot_path, settings.screenshot_storage_dir):
+        if unlink_if_within(
+            screenshot.screenshot_path, settings.screenshot_storage_dir
+        ):
             deleted += 1
         await db.delete(screenshot)
     await db.flush()

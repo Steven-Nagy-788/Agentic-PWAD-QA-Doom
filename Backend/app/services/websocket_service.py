@@ -80,7 +80,13 @@ class WebSocketService:
         }:
             self._latest_by_run[run_key][message_type] = dict(payload)
             return
-        if message_type in {"llm_start", "llm_decision", "mcp_call_start", "mcp_call_result", "defect"}:
+        if message_type in {
+            "llm_start",
+            "llm_decision",
+            "mcp_call_start",
+            "mcp_call_result",
+            "defect",
+        }:
             recent = self._recent_by_run[run_key]
             recent.append(dict(payload))
             self._recent_by_run[run_key] = recent[-250:]
@@ -91,13 +97,23 @@ class WebSocketService:
             {"type": "replay_start"},
             *self._recent_by_run.get(run_key, []),
         ]
-        for key in ("progress", "state", "frame", "recording_status", "quality_summary", "report_status", "status"):
+        for key in (
+            "progress",
+            "state",
+            "frame",
+            "recording_status",
+            "quality_summary",
+            "report_status",
+            "status",
+        ):
             if key in latest:
                 messages.append(latest[key])
         messages.append({"type": "replay_end"})
         for payload in messages:
             try:
-                await asyncio.wait_for(websocket.send_text(json.dumps(payload, default=str)), timeout=2.0)
+                await asyncio.wait_for(
+                    websocket.send_text(json.dumps(payload, default=str)), timeout=2.0
+                )
             except Exception:
                 break
 

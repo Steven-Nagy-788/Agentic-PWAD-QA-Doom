@@ -30,11 +30,16 @@ from app.serializers.run_serializers import RunCompareOut, RunCreate, RunListOut
 from app.services.analysis_constants import CELL_SIZE
 from app.services.run_compare_service import RunCompareService
 from app.services.run_service import RunService
-from app.services.run_utils import _build_same_run_memory, _initial_lockstep_state, _record_decision_in_history
+from app.services.run_utils import (
+    _build_same_run_memory,
+    _initial_lockstep_state,
+    _record_decision_in_history,
+)
 
 
 class BehaviorUpdatePayload(BaseModel):
     behavior_profile: BehaviorProfileName
+
 
 router = APIRouter(prefix="/runs", tags=["Runs"])
 
@@ -79,7 +84,9 @@ async def list_runs(
 
 
 @router.get("/compare", response_model=RunCompareOut)
-async def compare_runs(run_a: UUID, run_b: UUID, db: AsyncSession = Depends(get_db)) -> RunCompareOut:
+async def compare_runs(
+    run_a: UUID, run_b: UUID, db: AsyncSession = Depends(get_db)
+) -> RunCompareOut:
     return await RunCompareService(db).compare(run_a, run_b)
 
 
@@ -91,7 +98,9 @@ async def batch_trails(
 ) -> dict[str, list[dict[str, Any]]]:
     run_ids = [UUID(rid.strip()) for rid in ids.split(",") if rid.strip()]
     if len(run_ids) > 50:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Maximum 50 run IDs per request")
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Maximum 50 run IDs per request"
+        )
     event_repo = GameEventRepository(db)
     result: dict[str, list[dict[str, Any]]] = {}
     for run_id in run_ids:
@@ -117,7 +126,9 @@ async def get_run(run_id: UUID, db: AsyncSession = Depends(get_db)) -> RunOut:
 
 
 @router.get("/{run_id}/live-snapshot", tags=["Trace"])
-async def get_live_snapshot(run_id: UUID, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def get_live_snapshot(
+    run_id: UUID, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
     run = await RunRepository(db).get_by_id(run_id)
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
@@ -127,7 +138,18 @@ async def get_live_snapshot(run_id: UUID, db: AsyncSession = Depends(get_db)) ->
     defect_repo = DefectRepository(db)
     decisions = await decision_repo.list_by_run(run_id, 1, 200)
     trace = await event_repo.list_trace(run_id, 1, 200)
-    events = await event_repo.list_events(run_id, ["kill", "death", "item_pickup", "secret_found", "stuck", "damage_taken", "map_exit"])
+    events = await event_repo.list_events(
+        run_id,
+        [
+            "kill",
+            "death",
+            "item_pickup",
+            "secret_found",
+            "stuck",
+            "damage_taken",
+            "map_exit",
+        ],
+    )
     trail = await event_repo.list_position_trail(run_id, limit=500)
     defects = await defect_repo.list_by_run(run_id)
     report_status = await _report_status_payload(run_id, run, db)
@@ -138,23 +160,42 @@ async def get_live_snapshot(run_id: UUID, db: AsyncSession = Depends(get_db)) ->
         {
             "run": RunOut.model_validate(run).model_dump(mode="json"),
             "state": latest_state,
-            "decisions": [AgentDecisionOut.model_validate(item).model_dump(mode="json") for item in decisions],
-            "trace": [TraceEntryOut.model_validate(item).model_dump(mode="json") for item in trace],
-            "events": [TraceEntryOut.model_validate(item).model_dump(mode="json") for item in events],
-            "position_trail": [PositionTrailOut.model_validate(item).model_dump(mode="json") for item in trail],
-            "defects": [DefectOut.model_validate(item).model_dump(mode="json") for item in defects],
+            "decisions": [
+                AgentDecisionOut.model_validate(item).model_dump(mode="json")
+                for item in decisions
+            ],
+            "trace": [
+                TraceEntryOut.model_validate(item).model_dump(mode="json")
+                for item in trace
+            ],
+            "events": [
+                TraceEntryOut.model_validate(item).model_dump(mode="json")
+                for item in events
+            ],
+            "position_trail": [
+                PositionTrailOut.model_validate(item).model_dump(mode="json")
+                for item in trail
+            ],
+            "defects": [
+                DefectOut.model_validate(item).model_dump(mode="json")
+                for item in defects
+            ],
             "usage": usage,
             "progress_metrics": run.progress_metrics or {},
             "agent_quality_flags": run.agent_quality_flags or {},
             "report_status": report_status,
-            "same_run_memory": _persisted_same_run_memory(run, decisions, trace, defects),
+            "same_run_memory": _persisted_same_run_memory(
+                run, decisions, trace, defects
+            ),
             "visited_cells": _visited_cells_from_trail(trail),
             "visited_cell_size": CELL_SIZE,
         }
     )
 
 
-async def _report_status_payload(run_id: UUID, run: Any, db: AsyncSession) -> dict[str, Any]:
+async def _report_status_payload(
+    run_id: UUID, run: Any, db: AsyncSession
+) -> dict[str, Any]:
     report = await ReportRepository(db).get_by_run(run_id)
     if report is None:
         terminal = run.status in {"completed", "cancelled", "failed"}
@@ -174,12 +215,17 @@ async def _report_status_payload(run_id: UUID, run: Any, db: AsyncSession) -> di
             "generation_error": None,
         }
     pdf_available = bool(
-        report.pdf_path and Path(get_settings().report_storage_dir.parent, report.pdf_path).exists()
+        report.pdf_path
+        and Path(get_settings().report_storage_dir.parent, report.pdf_path).exists()
     )
     status_value = report.generation_status
     if status_value == "complete" and not pdf_available:
         status_value = "missing"
-    if status_value == "generating" and not pdf_available and run.status in {"completed", "cancelled", "failed"}:
+    if (
+        status_value == "generating"
+        and not pdf_available
+        and run.status in {"completed", "cancelled", "failed"}
+    ):
         status_value = "missing"
     return {
         "status": status_value,
@@ -223,7 +269,11 @@ def _latest_state_payload(run: Any, event: Any | None) -> dict[str, Any] | None:
             "rockets": event.ammo_rockets,
             "cells": event.ammo_cells,
         },
-        "position": {"x": event.player_x, "y": event.player_y, "angle": event.player_angle},
+        "position": {
+            "x": event.player_x,
+            "y": event.player_y,
+            "angle": event.player_angle,
+        },
         "event_type": event.event_type,
         "llm_reasoning": event.llm_reasoning,
         "action": event.action_taken or {},
@@ -245,7 +295,11 @@ def _persisted_same_run_memory(
 ) -> dict[str, Any]:
     state = _initial_lockstep_state()
     state["defects_found"] = [
-        {"defect_type": item.defect_type, "title": item.title, "severity": item.severity}
+        {
+            "defect_type": item.defect_type,
+            "title": item.title,
+            "severity": item.severity,
+        }
         for item in defects
     ]
     state["checkpoints"] = [
@@ -259,7 +313,11 @@ def _persisted_same_run_memory(
     ][-15:]
     for item in decisions:
         output = item.mcp_output if isinstance(item.mcp_output, dict) else {}
-        summary = output.get("action_summary") if isinstance(output.get("action_summary"), dict) else {}
+        summary = (
+            output.get("action_summary")
+            if isinstance(output.get("action_summary"), dict)
+            else {}
+        )
         _record_decision_in_history(
             state,
             seq=item.sequence_number,
@@ -371,14 +429,18 @@ async def get_decisions(
 
 
 @router.get("/{run_id}/defects", response_model=list[DefectOut], tags=["Reports"])
-async def get_defects(run_id: UUID, db: AsyncSession = Depends(get_db)) -> list[DefectOut]:
+async def get_defects(
+    run_id: UUID, db: AsyncSession = Depends(get_db)
+) -> list[DefectOut]:
     run = await RunRepository(db).get_by_id(run_id)
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
     return await DefectRepository(db).list_by_run(run_id)
 
 
-@router.get("/{run_id}/position-trail", response_model=list[PositionTrailOut], tags=["Trace"])
+@router.get(
+    "/{run_id}/position-trail", response_model=list[PositionTrailOut], tags=["Trace"]
+)
 async def get_position_trail(
     run_id: UUID,
     limit: int | None = Query(default=None, ge=1, le=5000),
@@ -392,7 +454,9 @@ async def get_position_trail(
     responses={200: {"content": {"video/mp4": {}}, "description": "MP4 recording"}},
     response_class=FileResponse,
 )
-async def get_recording(run_id: UUID, db: AsyncSession = Depends(get_db)) -> FileResponse:
+async def get_recording(
+    run_id: UUID, db: AsyncSession = Depends(get_db)
+) -> FileResponse:
     run = await RunRepository(db).get_by_id(run_id)
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
@@ -409,7 +473,9 @@ async def get_recording(run_id: UUID, db: AsyncSession = Depends(get_db)) -> Fil
             )
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Recording not found")
     try:
-        resolved = resolve_path_within(run.recording_mp4_path, get_settings().recording_storage_dir)
+        resolved = resolve_path_within(
+            run.recording_mp4_path, get_settings().recording_storage_dir
+        )
     except ValueError:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Access denied")
     if not resolved.exists():
@@ -418,13 +484,21 @@ async def get_recording(run_id: UUID, db: AsyncSession = Depends(get_db)) -> Fil
 
 
 @router.get("/{run_id}/usage", tags=["Runs"])
-async def get_run_usage(run_id: UUID, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def get_run_usage(
+    run_id: UUID, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
     """Return aggregated token usage and cost for a run."""
     run = await RunRepository(db).get_by_id(run_id)
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found")
     decisions = await AgentDecisionRepository(db).list_by_run(run_id, 1, 500)
-    decisions_list = list(decisions) if isinstance(decisions, list) else list(decisions.scalars().all()) if hasattr(decisions, 'scalars') else []
+    decisions_list = (
+        list(decisions)
+        if isinstance(decisions, list)
+        else list(decisions.scalars().all())
+        if hasattr(decisions, "scalars")
+        else []
+    )
     total_prompt = sum(d.llm_input_tokens or 0 for d in decisions_list)
     total_completion = sum(d.llm_output_tokens or 0 for d in decisions_list)
     total_cost = sum(d.llm_cost_estimate_usd or 0 for d in decisions_list)
@@ -441,12 +515,24 @@ async def get_run_usage(run_id: UUID, db: AsyncSession = Depends(get_db)) -> dic
 
 
 @router.get("/{run_id}/benchmark", tags=["Runs"])
-async def get_run_benchmark(run_id: UUID, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def get_run_benchmark(
+    run_id: UUID, db: AsyncSession = Depends(get_db)
+) -> dict[str, Any]:
     """Return performance timing breakdown for a run."""
     decisions = await AgentDecisionRepository(db).list_by_run(run_id, 1, 500)
-    decisions_list = list(decisions) if isinstance(decisions, list) else list(decisions.scalars().all()) if hasattr(decisions, 'scalars') else []
-    llm_times = [d.llm_duration_ms for d in decisions_list if d.llm_duration_ms is not None]
-    mcp_times = [d.mcp_duration_ms for d in decisions_list if d.mcp_duration_ms is not None]
+    decisions_list = (
+        list(decisions)
+        if isinstance(decisions, list)
+        else list(decisions.scalars().all())
+        if hasattr(decisions, "scalars")
+        else []
+    )
+    llm_times = [
+        d.llm_duration_ms for d in decisions_list if d.llm_duration_ms is not None
+    ]
+    mcp_times = [
+        d.mcp_duration_ms for d in decisions_list if d.mcp_duration_ms is not None
+    ]
 
     def _stats(values: list[float]) -> dict[str, float]:
         if not values:

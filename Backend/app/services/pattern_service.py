@@ -23,7 +23,12 @@ class PatternService:
         run_ids = [r.id for r in runs]
 
         if not run_ids:
-            return {"wad_id": str(wad_id), "total_runs": 0, "defect_patterns": [], "difficulty_coverage": {}}
+            return {
+                "wad_id": str(wad_id),
+                "total_runs": 0,
+                "defect_patterns": [],
+                "difficulty_coverage": {},
+            }
 
         defects_result = await self.db.execute(
             select(Defect).where(Defect.run_id.in_(run_ids))
@@ -38,10 +43,15 @@ class PatternService:
         by_cell = defaultdict(list)
         for d in defects:
             if d.position_x is not None and d.position_y is not None:
-                cell = (round(d.position_x / CELL_SIZE), round(d.position_y / CELL_SIZE))
+                cell = (
+                    round(d.position_x / CELL_SIZE),
+                    round(d.position_y / CELL_SIZE),
+                )
                 by_cell[cell].append(d)
 
-        by_difficulty = defaultdict(lambda: {"runs": 0, "completed": 0, "failed": 0, "defects": 0})
+        by_difficulty = defaultdict(
+            lambda: {"runs": 0, "completed": 0, "failed": 0, "defects": 0}
+        )
         for r in runs:
             diff = r.difficulty_level or "unknown"
             by_difficulty[diff]["runs"] += 1
@@ -59,16 +69,25 @@ class PatternService:
                 cells = set()
                 for d in group:
                     if d.position_x is not None and d.position_y is not None:
-                        cells.add((round(d.position_x / CELL_SIZE), round(d.position_y / CELL_SIZE)))
-                defect_patterns.append({
-                    "fingerprint": fingerprint,
-                    "defect_type": group[0].defect_type,
-                    "title": group[0].title,
-                    "occurrence_count": len(group),
-                    "affected_runs": len(set(d.run_id for d in group)),
-                    "avg_severity": round(sum(d.severity for d in group) / len(group), 1),
-                    "grid_clusters": [{"x": c[0], "y": c[1]} for c in cells],
-                })
+                        cells.add(
+                            (
+                                round(d.position_x / CELL_SIZE),
+                                round(d.position_y / CELL_SIZE),
+                            )
+                        )
+                defect_patterns.append(
+                    {
+                        "fingerprint": fingerprint,
+                        "defect_type": group[0].defect_type,
+                        "title": group[0].title,
+                        "occurrence_count": len(group),
+                        "affected_runs": len(set(d.run_id for d in group)),
+                        "avg_severity": round(
+                            sum(d.severity for d in group) / len(group), 1
+                        ),
+                        "grid_clusters": [{"x": c[0], "y": c[1]} for c in cells],
+                    }
+                )
 
         defect_patterns.sort(key=lambda p: p["occurrence_count"], reverse=True)
 

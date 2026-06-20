@@ -13,7 +13,9 @@ class ReportRepository:
         self.db = db
 
     async def get_by_run(self, run_id: UUID) -> TestReport | None:
-        result = await self.db.execute(select(TestReport).where(TestReport.run_id == run_id))
+        result = await self.db.execute(
+            select(TestReport).where(TestReport.run_id == run_id)
+        )
         return result.scalar_one_or_none()
 
     async def create(self, report: TestReport) -> TestReport:

@@ -26,10 +26,12 @@ from app.services.recording_service import RecordingService
 from app.services.report_service import ReportService
 from app.services.run_constants import RUN_TASKS
 from app.services.run_memory import RunMemoryService
-from app.services.run_tracking import _lockstep_progress_metrics, _lockstep_quality_flags
+from app.services.run_tracking import (
+    _lockstep_progress_metrics,
+    _lockstep_quality_flags,
+)
 from app.services.run_utils import _json_safe, _normalize_run_outcome
 from app.services.websocket_service import websocket_service
-from app.core.database import SessionLocal
 
 
 logger = logging.getLogger(__name__)
@@ -101,9 +103,12 @@ async def finalize_run(
                 "final_armor": latest_event.armor,
                 "total_kills": latest_event.kill_count,
                 "secrets_found": latest_event.secret_count,
-                "total_items_collected": (latest_event.item_count or 0) + sum(
+                "total_items_collected": (latest_event.item_count or 0)
+                + sum(
                     1
-                    for value in (lockstep_state.get("completed_object_ids") or {}).values()
+                    for value in (
+                        lockstep_state.get("completed_object_ids") or {}
+                    ).values()
                     if isinstance(value, dict) and value.get("target_type") == "weapon"
                 ),
             }
@@ -120,7 +125,9 @@ async def finalize_run(
         if run_orm.status not in {"failed", "cancelled"}:
             final_fields["status"] = "completed"
         if run_started_at:
-            final_fields["duration_seconds"] = int((completed_at - run_started_at).total_seconds())
+            final_fields["duration_seconds"] = int(
+                (completed_at - run_started_at).total_seconds()
+            )
         await run_repo.update(run_orm, **final_fields)
         await db.commit()
         await websocket_service.broadcast(
@@ -159,9 +166,13 @@ async def finalize_run(
 
             # 8. Persist spatial memory + hypotheses
             try:
-                events_result = await db.execute(select(GameEvent).where(GameEvent.run_id == run_id))
+                events_result = await db.execute(
+                    select(GameEvent).where(GameEvent.run_id == run_id)
+                )
                 run_events = list(events_result.scalars().all())
-                defects_result = await db.execute(select(Defect).where(Defect.run_id == run_id))
+                defects_result = await db.execute(
+                    select(Defect).where(Defect.run_id == run_id)
+                )
                 run_defects = list(defects_result.scalars().all())
                 memory_svc = RunMemoryService(db)
                 await memory_svc.persist_spatial_memory(
@@ -182,14 +193,20 @@ async def finalize_run(
                 await db.commit()
             except Exception as exc:
                 await db.rollback()
-                logger.warning("Reviewer analytics persistence failed for run %s: %s", run_id, exc)
+                logger.warning(
+                    "Reviewer analytics persistence failed for run %s: %s", run_id, exc
+                )
 
             # 9. Generate PDF report
             try:
-                await websocket_service.broadcast(run_id, {"type": "report_status", "status": "generating"})
+                await websocket_service.broadcast(
+                    run_id, {"type": "report_status", "status": "generating"}
+                )
                 await ReportService(db).generate(run_id)
                 await db.commit()
-                await websocket_service.broadcast(run_id, {"type": "report_status", "status": "complete"})
+                await websocket_service.broadcast(
+                    run_id, {"type": "report_status", "status": "complete"}
+                )
             except Exception as exc:
                 await db.rollback()
                 await ReportService(db).mark_error(run_id, str(exc))
@@ -202,11 +219,16 @@ async def finalize_run(
                 if refreshed_run is not None:
                     await RunRepository(db).update(
                         refreshed_run,
-                        error_message=(refreshed_run.error_message or f"Report generation failed: {exc}"),
+                        error_message=(
+                            refreshed_run.error_message
+                            or f"Report generation failed: {exc}"
+                        ),
                     )
                     await db.commit()
 
         # 10. Final broadcast + cleanup
-        await websocket_service.broadcast(run_id, {"type": "state", "status": run_orm.status, "tick": max_ticks})
+        await websocket_service.broadcast(
+            run_id, {"type": "state", "status": run_orm.status, "tick": max_ticks}
+        )
         RUN_TASKS.pop(run_id, None)
         await websocket_service.cleanup_run(run_id)

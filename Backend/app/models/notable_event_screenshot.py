@@ -38,7 +38,11 @@ class NotableEventScreenshot(Base):
         nullable=False,
     )
     screenshot_path: Mapped[str] = mapped_column(Text, nullable=False)
-    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     run: Mapped[TestRun] = relationship("TestRun", back_populates="screenshots")
-    game_event: Mapped[GameEvent] = relationship("GameEvent", back_populates="screenshots")
+    game_event: Mapped[GameEvent] = relationship(
+        "GameEvent", back_populates="screenshots"
+    )

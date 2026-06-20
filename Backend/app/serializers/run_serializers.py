@@ -74,8 +74,12 @@ class RunOut(BaseModel):
 
     @model_validator(mode="after")
     def _compute_urls(self) -> "RunOut":
-        self.recording_mp4_url = f"/runs/{self.id}/recording" if self.recording_mp4_path else None
-        self.report_pdf_url = f"/runs/{self.id}/report/pdf" if self.report_pdf_path else None
+        self.recording_mp4_url = (
+            f"/runs/{self.id}/recording" if self.recording_mp4_path else None
+        )
+        self.report_pdf_url = (
+            f"/runs/{self.id}/report/pdf" if self.report_pdf_path else None
+        )
         return self
 
     @model_serializer(mode="wrap")

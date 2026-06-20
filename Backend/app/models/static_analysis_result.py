@@ -5,7 +5,17 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func, text
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -32,15 +42,33 @@ class StaticAnalysisResult(Base):
     )
     map_name: Mapped[str] = mapped_column(String(16), nullable=False)
 
-    thing_count_total: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
-    thing_count_enemies: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
-    thing_count_items: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
-    thing_count_keys: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
-    thing_count_weapons: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
-    linedef_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
-    sector_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
-    secret_sector_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
-    vertex_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    thing_count_total: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    thing_count_enemies: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    thing_count_items: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    thing_count_keys: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    thing_count_weapons: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    linedef_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    sector_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    secret_sector_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    vertex_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
     map_width_units: Mapped[int | None] = mapped_column(Integer)
     map_height_units: Mapped[int | None] = mapped_column(Integer)
 
@@ -71,9 +99,13 @@ class StaticAnalysisResult(Base):
         server_default=text("'{}'::jsonb"),
     )
     map_overview_png_path: Mapped[str | None] = mapped_column(Text)
-    analyzed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    analyzed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
-    wad_file: Mapped[WadFile] = relationship("WadFile", back_populates="static_analysis_results")
+    wad_file: Mapped[WadFile] = relationship(
+        "WadFile", back_populates="static_analysis_results"
+    )
     test_runs: Mapped[list[TestRun]] = relationship(
         "TestRun",
         back_populates="static_analysis",

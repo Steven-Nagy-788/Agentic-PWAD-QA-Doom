@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import contextlib
 import os
 import re
 import struct
 import subprocess
 import sys
 
-import vizdoom as vzd
 from fastmcp.exceptions import ToolError
 
 
@@ -72,7 +70,11 @@ def wad_map_start_info(wad_path: str, map_name: str) -> dict:
                     player_one.append(things_offset + pos)
                 elif thing_type == 11:
                     deathmatch.append(things_offset + pos)
-            return {"player_starts": player_starts, "player_one": player_one, "deathmatch": deathmatch}
+            return {
+                "player_starts": player_starts,
+                "player_one": player_one,
+                "deathmatch": deathmatch,
+            }
 
     raise ToolError(f"Map {target} not found in WAD {wad_path!r}")
 
@@ -97,7 +99,9 @@ def list_wad_maps(wad_path: str) -> list[str]:
             if len(entry) != 16:
                 raise ToolError(f"Invalid WAD directory in {wad_path!r}")
             _, _, raw_name = struct.unpack("<ii8s", entry)
-            directory.append(raw_name.rstrip(b"\0").decode("ascii", errors="ignore").upper())
+            directory.append(
+                raw_name.rstrip(b"\0").decode("ascii", errors="ignore").upper()
+            )
 
     for index, name in enumerate(directory[:-1]):
         if _MAP_MARKER_RE.match(name) and directory[index + 1] == "THINGS":
@@ -149,7 +153,15 @@ game.close()
 """
     try:
         result = subprocess.run(
-            [sys.executable, "-c", script, base_wad_path, scenario_wad_path, map_name, screen_resolution],
+            [
+                sys.executable,
+                "-c",
+                script,
+                base_wad_path,
+                scenario_wad_path,
+                map_name,
+                screen_resolution,
+            ],
             capture_output=True,
             text=True,
             timeout=_PREFLIGHT_TIMEOUT_SECONDS,
@@ -161,7 +173,19 @@ game.close()
             stderr_tail = (exc.stderr.strip() or "")[-300:]
         if exc.stdout:
             stderr_tail = (stderr_tail + " " + exc.stdout.strip()[-200:]).strip()
-        if any(kw in (stderr_tail or "").lower() for kw in ("wad", "map", "lump", "texture", "patch", "not found", "error", "traceback")):
+        if any(
+            kw in (stderr_tail or "").lower()
+            for kw in (
+                "wad",
+                "map",
+                "lump",
+                "texture",
+                "patch",
+                "not found",
+                "error",
+                "traceback",
+            )
+        ):
             raise ToolError(
                 f"PWAD_CRASH: Map {map_name.upper()} could not be loaded by ViZDoom "
                 f"(preflight timed out after {exc.timeout:g}s). Stderr: {stderr_tail[:200]}"

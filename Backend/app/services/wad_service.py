@@ -55,7 +55,9 @@ class WadService:
                         if len(header) >= 4:
                             self._validate_binary(header, require_full_header=False)
                     if b"TEXTMAP" in previous_tail + chunk:
-                        raise HTTPException(status.HTTP_400_BAD_REQUEST, "UDMF maps are not supported")
+                        raise HTTPException(
+                            status.HTTP_400_BAD_REQUEST, "UDMF maps are not supported"
+                        )
                     previous_tail = chunk[-6:]
                     digest.update(chunk)
                     staged.write(chunk)
@@ -78,14 +80,21 @@ class WadService:
             map_names = await asyncio.to_thread(detect_map_names, str(stored_path))
         except Exception as exc:
             stored_path.unlink(missing_ok=True)
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Could not parse WAD maps: {exc}") from exc
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, f"Could not parse WAD maps: {exc}"
+            ) from exc
 
         if not map_names:
             stored_path.unlink(missing_ok=True)
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "PWAD contains no supported Doom maps")
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "PWAD contains no supported Doom maps"
+            )
 
         count_results = await asyncio.gather(
-            *(asyncio.to_thread(player_start_counts, str(stored_path), map_name) for map_name in map_names)
+            *(
+                asyncio.to_thread(player_start_counts, str(stored_path), map_name)
+                for map_name in map_names
+            )
         )
         start_counts = dict(zip(map_names, count_results))
         unplayable_maps = [
@@ -124,14 +133,21 @@ class WadService:
     @staticmethod
     def _validate_binary(data: bytes, *, require_full_header: bool = True) -> None:
         if require_full_header and len(data) < 12:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "File is too small to be a WAD")
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "File is too small to be a WAD"
+            )
         if len(data) < 4:
             return
         magic = data[:4]
         if magic == b"IWAD":
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "IWAD files are not accepted; upload a PWAD")
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "IWAD files are not accepted; upload a PWAD",
+            )
         if magic != b"PWAD":
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid WAD header; expected PWAD")
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "Invalid WAD header; expected PWAD"
+            )
 
     async def get(self, wad_id: uuid.UUID) -> WadFile:
         wad = await self.repo.get_by_id(wad_id)
@@ -157,26 +173,40 @@ class WadService:
     async def delete(self, wad_id: uuid.UUID) -> None:
         wad = await self.get(wad_id)
         if await RunRepository(self.db).has_active_for_wad(wad_id):
-            raise HTTPException(status.HTTP_409_CONFLICT, "Cannot delete a WAD while a run is pending or running")
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Cannot delete a WAD while a run is pending or running",
+            )
 
         analyses = await AnalysisRepository(self.db).list_by_wad(wad_id)
-        run_result = await self.db.execute(select(TestRun).where(TestRun.wad_file_id == wad_id))
+        run_result = await self.db.execute(
+            select(TestRun).where(TestRun.wad_file_id == wad_id)
+        )
         runs = list(run_result.scalars().all())
         screenshot_result = await self.db.execute(
-            select(NotableEventScreenshot).where(NotableEventScreenshot.run_id.in_([run.id for run in runs]))
+            select(NotableEventScreenshot).where(
+                NotableEventScreenshot.run_id.in_([run.id for run in runs])
+            )
         )
         settings = get_settings()
         for screenshot in screenshot_result.scalars().all():
-            unlink_if_within(screenshot.screenshot_path, settings.screenshot_storage_dir)
+            unlink_if_within(
+                screenshot.screenshot_path, settings.screenshot_storage_dir
+            )
         for run in runs:
             if run.recording_mp4_path:
                 recording_path = Path(run.recording_mp4_path)
                 unlink_if_within(recording_path, settings.recording_storage_dir)
-                unlink_if_within(recording_path.with_name(f"{recording_path.stem}.source.mp4"), settings.recording_storage_dir)
+                unlink_if_within(
+                    recording_path.with_name(f"{recording_path.stem}.source.mp4"),
+                    settings.recording_storage_dir,
+                )
             await self.db.delete(run)
         for analysis in analyses:
             if analysis.map_overview_png_path:
-                unlink_if_within(analysis.map_overview_png_path, settings.analysis_storage_dir)
+                unlink_if_within(
+                    analysis.map_overview_png_path, settings.analysis_storage_dir
+                )
             await self.db.delete(analysis)
         unlink_if_within(wad.stored_path, settings.wad_storage_dir)
         await self.db.delete(wad)
@@ -203,7 +233,9 @@ class WadService:
 
     async def _maps_for_wad(self, wad: WadFile) -> list[WadMapOut]:
         repo = AnalysisRepository(self.db)
-        metadata = await asyncio.to_thread(map_metadata_for_wad, wad.stored_path, wad.original_filename)
+        metadata = await asyncio.to_thread(
+            map_metadata_for_wad, wad.stored_path, wad.original_filename
+        )
         maps = []
         for map_name in wad.detected_maps or []:
             analysis = await repo.get_by_wad_and_map(wad.id, map_name)
@@ -213,22 +245,38 @@ class WadService:
                 WadMapOut(
                     wad_file_id=wad.id,
                     map_name=map_name,
-                    map_title=analysis.map_title if analysis else map_metadata.get("map_title"),
+                    map_title=analysis.map_title
+                    if analysis
+                    else map_metadata.get("map_title"),
                     map_display_name=(
-                        analysis.map_display_name if analysis else map_metadata.get("map_display_name")
+                        analysis.map_display_name
+                        if analysis
+                        else map_metadata.get("map_display_name")
                     ),
                     map_title_source=(
-                        analysis.map_title_source if analysis else map_metadata.get("map_title_source")
+                        analysis.map_title_source
+                        if analysis
+                        else map_metadata.get("map_title_source")
                     ),
                     iwad_required=wad.iwad_required,
                     analyzed=analysis is not None,
-                    thing_count_enemies=analysis.thing_count_enemies if analysis else None,
+                    thing_count_enemies=analysis.thing_count_enemies
+                    if analysis
+                    else None,
                     thing_count_items=analysis.thing_count_items if analysis else None,
-                    secret_sector_count=analysis.secret_sector_count if analysis else None,
-                    estimated_difficulty=analysis.estimated_difficulty if analysis else None,
-                    spawn_summary_by_skill=analysis.spawn_summary_by_skill if analysis else None,
+                    secret_sector_count=analysis.secret_sector_count
+                    if analysis
+                    else None,
+                    estimated_difficulty=analysis.estimated_difficulty
+                    if analysis
+                    else None,
+                    spawn_summary_by_skill=analysis.spawn_summary_by_skill
+                    if analysis
+                    else None,
                     map_overview_png_url=(
-                        f"/wads/{wad.id}/map-png?map_name={map_name}" if analysis and analysis.map_overview_png_path else None
+                        f"/wads/{wad.id}/map-png?map_name={map_name}"
+                        if analysis and analysis.map_overview_png_path
+                        else None
                     ),
                     map_min_x=bounds.get("min_x") if bounds else None,
                     map_max_x=bounds.get("max_x") if bounds else None,
@@ -240,12 +288,16 @@ class WadService:
             )
         return maps
 
-    async def _map_bounds(self, wad: WadFile, map_name: str, analysis) -> dict[str, int] | None:
+    async def _map_bounds(
+        self, wad: WadFile, map_name: str, analysis
+    ) -> dict[str, int] | None:
         bounds = _analysis_map_bounds(analysis)
         if bounds:
             return bounds
         try:
-            return await asyncio.to_thread(map_bounds_for_wad, wad.stored_path, map_name)
+            return await asyncio.to_thread(
+                map_bounds_for_wad, wad.stored_path, map_name
+            )
         except Exception:
             return None
 
@@ -280,7 +332,9 @@ async def reanalyze_wad_task(wad_id: uuid.UUID) -> None:
         settings = get_settings()
         for analysis in analyses:
             if analysis.map_overview_png_path:
-                unlink_if_within(analysis.map_overview_png_path, settings.analysis_storage_dir)
+                unlink_if_within(
+                    analysis.map_overview_png_path, settings.analysis_storage_dir
+                )
             await db.delete(analysis)
         await db.flush()
         await AnalysisService(db).analyze_wad(wad)

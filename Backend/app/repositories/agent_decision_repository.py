@@ -25,7 +25,9 @@ class AgentDecisionRepository:
         await self.db.refresh(decision)
         return decision
 
-    async def list_by_run(self, run_id: UUID, page: int, page_size: int) -> list[AgentDecision]:
+    async def list_by_run(
+        self, run_id: UUID, page: int, page_size: int
+    ) -> list[AgentDecision]:
         result = await self.db.execute(
             select(AgentDecision)
             .where(AgentDecision.run_id == run_id)

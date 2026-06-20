@@ -4,13 +4,13 @@ import heapq
 import math
 
 
-_CELL_SIZE = 128        # map units per grid cell
+_CELL_SIZE = 128  # map units per grid cell
 _BREADCRUMB_SPACING = 64.0  # min distance between breadcrumbs
-_BREADCRUMB_MAX = 500       # max breadcrumbs per episode
-_KEY_PICKUP_RANGE = 64.0    # max distance to credit a key pickup
+_BREADCRUMB_MAX = 500  # max breadcrumbs per episode
+_KEY_PICKUP_RANGE = 64.0  # max distance to credit a key pickup
 _DOOR_HEIGHT_THRESHOLD = 8  # ceiling - floor < this = possible door
 _DOOR_MAX_SECTOR_SIZE = 256  # sector bounding box diagonal < this = small sector
-_DOOR_DEDUP_RANGE = 128.0   # doors within this range are merged
+_DOOR_DEDUP_RANGE = 128.0  # doors within this range are merged
 
 
 def _cell(x: float, y: float) -> tuple[int, int]:
@@ -137,7 +137,9 @@ class NavigationMemory:
                     duplicate = True
                     break
             if not duplicate:
-                self._doors.append({"x": round(cx, 1), "y": round(cy, 1), "state": state})
+                self._doors.append(
+                    {"x": round(cx, 1), "y": round(cy, 1), "state": state}
+                )
 
     def get_exploration_summary(self, px: float, py: float, pa: float) -> dict:
         """Return navigation intelligence for the current position."""
@@ -183,8 +185,7 @@ class NavigationMemory:
 
         # Nearby doors
         nearby_doors = [
-            d for d in self._doors
-            if math.hypot(px - d["x"], py - d["y"]) < 512
+            d for d in self._doors if math.hypot(px - d["x"], py - d["y"]) < 512
         ]
 
         return {
@@ -205,7 +206,9 @@ class NavigationMemory:
             "walkable_cells_total": None,
         }
 
-    def suggested_turn_delta(self, px: float, py: float, pa: float, max_delta: float = 40.0) -> float:
+    def suggested_turn_delta(
+        self, px: float, py: float, pa: float, max_delta: float = 40.0
+    ) -> float:
         """Return a signed turn toward a nearby unexplored grid cell."""
         suggested = self.get_exploration_summary(px, py, pa).get("suggested_direction")
         target_angles = {
@@ -219,7 +222,9 @@ class NavigationMemory:
         delta = (target_angles[suggested] - pa + 180.0) % 360.0 - 180.0
         return max(-max_delta, min(max_delta, delta))
 
-    def compute_walkable_cells_from_sectors(self, sectors: list[dict] | None = None) -> int:
+    def compute_walkable_cells_from_sectors(
+        self, sectors: list[dict] | None = None
+    ) -> int:
         """Estimate total walkable cells from sector geometry.
 
         Uses sector bounding box area divided by cell size to estimate
@@ -265,7 +270,9 @@ def _point_in_closed_lines(px: float, py: float, lines: list[dict]) -> bool:
     return inside
 
 
-def _point_on_segment(px: float, py: float, x1: float, y1: float, x2: float, y2: float) -> bool:
+def _point_on_segment(
+    px: float, py: float, x1: float, y1: float, x2: float, y2: float
+) -> bool:
     cross = (py - y1) * (x2 - x1) - (px - x1) * (y2 - y1)
     if abs(cross) > 1e-6:
         return False

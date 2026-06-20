@@ -42,13 +42,17 @@ class RecordingService:
         self.width = int(width)
         self.height = int(height)
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        self.writer = cv2.VideoWriter(str(self.source_path), fourcc, self.fps, (width, height))
+        self.writer = cv2.VideoWriter(
+            str(self.source_path), fourcc, self.fps, (width, height)
+        )
         self._needs_transcode = True
         if not self.writer.isOpened():
             self._transcode_errors.append("opencv_video_writer_failed_to_open")
             self.writer = None
 
-    def write_frame(self, frame: np.ndarray | None, game_tick: int | None = None) -> None:
+    def write_frame(
+        self, frame: np.ndarray | None, game_tick: int | None = None
+    ) -> None:
         if frame is None:
             return
         tick = self.record_game_tick(game_tick)
@@ -74,7 +78,9 @@ class RecordingService:
             return None
         if self._first_game_tick is None:
             self._first_game_tick = tick
-        self._last_game_tick = max(tick, self._last_game_tick if self._last_game_tick is not None else tick)
+        self._last_game_tick = max(
+            tick, self._last_game_tick if self._last_game_tick is not None else tick
+        )
         return tick
 
     def save_screenshot(self, frame: np.ndarray, event_id: int) -> Path:
@@ -99,7 +105,9 @@ class RecordingService:
             return self.path if self.path.exists() else None
         return None
 
-    def metadata(self, path: Path | None = None, outcome: str | None = None) -> dict[str, Any]:
+    def metadata(
+        self, path: Path | None = None, outcome: str | None = None
+    ) -> dict[str, Any]:
         output_path = path
         if output_path is None:
             if self.path.exists():
@@ -117,34 +125,54 @@ class RecordingService:
             "fps": self.fps,
             "frame_count": self.frames_written,
             "unique_frame_count": len(self._unique_frame_hashes),
-            "duration_seconds": round(self.frames_written / self.fps, 3) if self.fps else 0,
+            "duration_seconds": round(self.frames_written / self.fps, 3)
+            if self.fps
+            else 0,
             "first_game_tick": self._first_game_tick,
             "last_game_tick": self._last_game_tick,
             "advanced_game_ticks": advanced_ticks,
-            "gameplay_seconds": round(advanced_ticks / 35, 3) if advanced_ticks is not None else None,
+            "gameplay_seconds": round(advanced_ticks / 35, 3)
+            if advanced_ticks is not None
+            else None,
             "quality_status": "unknown",
             "validation_warnings": [],
             "outcome": outcome,
         }
 
-    def validate(self, path: Path | None = None, outcome: str | None = None) -> dict[str, Any]:
+    def validate(
+        self, path: Path | None = None, outcome: str | None = None
+    ) -> dict[str, Any]:
         metadata = self.metadata(path=path, outcome=outcome)
         warnings: list[str] = []
         advanced_ticks = int(metadata.get("advanced_game_ticks") or 0)
-        expected_frames = int((advanced_ticks / 35) * self.fps) if advanced_ticks > 0 else 0
+        expected_frames = (
+            int((advanced_ticks / 35) * self.fps) if advanced_ticks > 0 else 0
+        )
         if outcome == "pwad_crash" and self.frames_written == 0:
             metadata["quality_status"] = "expected_missing"
-            metadata["validation_warnings"] = ["No recording is expected because gameplay did not initialize."]
+            metadata["validation_warnings"] = [
+                "No recording is expected because gameplay did not initialize."
+            ]
             return metadata
         if self.frames_written == 0:
             warnings.append("recording_has_no_frames")
-        if self.width is not None and self.height is not None and (self.width < 640 or self.height < 480):
+        if (
+            self.width is not None
+            and self.height is not None
+            and (self.width < 640 or self.height < 480)
+        ):
             warnings.append("recording_resolution_below_640x480")
-        if advanced_ticks >= 35 and self.frames_written < max(10, int(expected_frames * 0.5)):
+        if advanced_ticks >= 35 and self.frames_written < max(
+            10, int(expected_frames * 0.5)
+        ):
             warnings.append("recording_frame_count_low_for_game_ticks")
-        if advanced_ticks >= 35 and self.frames_written > max(self.min_frames, int(expected_frames * 1.5) + 5):
+        if advanced_ticks >= 35 and self.frames_written > max(
+            self.min_frames, int(expected_frames * 1.5) + 5
+        ):
             warnings.append("recording_frame_count_high_for_game_ticks")
-        if self.frames_written >= 10 and len(self._unique_frame_hashes) < max(3, int(self.frames_written * 0.05)):
+        if self.frames_written >= 10 and len(self._unique_frame_hashes) < max(
+            3, int(self.frames_written * 0.05)
+        ):
             warnings.append("recording_has_too_few_unique_frames")
         if (
             self.frames_written < self.min_frames
@@ -195,7 +223,11 @@ class RecordingService:
             self._transcode_errors.append("ffmpeg_transcode_failed")
             return self.source_path
 
-        if self.path.exists() and self.path.stat().st_size > 0 and self._video_has_frames(self.path):
+        if (
+            self.path.exists()
+            and self.path.stat().st_size > 0
+            and self._video_has_frames(self.path)
+        ):
             self.source_path.unlink(missing_ok=True)
             return self.path
         self._transcode_errors.append("ffmpeg_output_missing_or_invalid")
@@ -221,12 +253,18 @@ class RecordingService:
         return False
 
     def _should_pad_minimum_recording(self) -> bool:
-        if self._last_frame is None or self.frames_written <= 0 or self.frames_written >= self.min_frames:
+        if (
+            self._last_frame is None
+            or self.frames_written <= 0
+            or self.frames_written >= self.min_frames
+        ):
             return False
         if self._first_game_tick is None or self._last_game_tick is None:
             return True
         advanced_ticks = max(0, self._last_game_tick - self._first_game_tick)
-        expected_frames = int((advanced_ticks / 35) * self.fps) if advanced_ticks > 0 else 0
+        expected_frames = (
+            int((advanced_ticks / 35) * self.fps) if advanced_ticks > 0 else 0
+        )
         return self.frames_written < max(10, int(expected_frames * 0.5))
 
     def _should_warn_short_recording(self, expected_frames: int) -> bool:

@@ -52,13 +52,22 @@ def _guard_get_state_spam(
         return
 
     _record_failure_critique(
-        lockstep_state, tick=tick, tool="get_state",
+        lockstep_state,
+        tick=tick,
+        tool="get_state",
         params={},
         reason="Called get_state multiple times consecutively instead of taking action.",
     )
     decision["mcp_tool"] = "explore"
-    decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": True, "turn_before": 180.0}
-    decision["reasoning_summary"] = "OVERRIDE: Consecutive get_state detected. Forced explore with 180° turn to advance gameplay."
+    decision["mcp_params"] = {
+        "max_tics": 80,
+        "stop_on_enemy": False,
+        "stop_on_item": True,
+        "turn_before": 180.0,
+    }
+    decision["reasoning_summary"] = (
+        "OVERRIDE: Consecutive get_state detected. Forced explore with 180° turn to advance gameplay."
+    )
     decision["_decision_source"] = "guard_get_state"
 
 
@@ -74,17 +83,28 @@ def _guard_position_stuck(
     from app.services.run_utils import _record_failure_critique
 
     stuck_counter = lockstep_state.get("position_stuck_counter", 0)
-    if stuck_counter < 2 or decision.get("mcp_tool") not in ("explore", "move_to", "take_action"):
+    if stuck_counter < 2 or decision.get("mcp_tool") not in (
+        "explore",
+        "move_to",
+        "take_action",
+    ):
         return
 
     _record_failure_critique(
-        lockstep_state, tick=tick, tool=decision.get("mcp_tool", "unknown"),
+        lockstep_state,
+        tick=tick,
+        tool=decision.get("mcp_tool", "unknown"),
         params=decision.get("mcp_params", {}),
         reason=f"Agent stuck for {stuck_counter} decisions without meaningful movement. Need different approach.",
     )
     turn_amount = 180.0 if stuck_counter % 2 == 0 else -180.0
     decision["mcp_tool"] = "explore"
-    decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": True, "turn_before": turn_amount}
+    decision["mcp_params"] = {
+        "max_tics": 80,
+        "stop_on_enemy": False,
+        "stop_on_item": True,
+        "turn_before": turn_amount,
+    }
     decision["reasoning_summary"] = (
         f"OVERRIDE: Agent stuck ({stuck_counter} decisions without meaningful movement). "
         f"Your original plan: {decision.get('reasoning_summary', '?')}. "
@@ -103,16 +123,28 @@ def _guard_decision_diversity(
 
     diversity_counter = lockstep_state.get("decision_diversity_counter", 0)
     tool = decision.get("mcp_tool")
-    if diversity_counter < 3 or tool not in ("explore", "move_to", "take_action") or tool in COMBAT_TOOLS:
+    if (
+        diversity_counter < 3
+        or tool not in ("explore", "move_to", "take_action")
+        or tool in COMBAT_TOOLS
+    ):
         return
 
     _record_failure_critique(
-        lockstep_state, tick=tick, tool=tool or "unknown",
+        lockstep_state,
+        tick=tick,
+        tool=tool or "unknown",
         params=decision.get("mcp_params", {}),
         reason=f"Decision loop: {diversity_counter} repeated {tool} calls. Must change strategy.",
     )
     decision["mcp_tool"] = "explore"
-    decision["mcp_params"] = {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": False, "ignore_object_ids": [], "turn_before": 90.0}
+    decision["mcp_params"] = {
+        "max_tics": 80,
+        "stop_on_enemy": False,
+        "stop_on_item": False,
+        "ignore_object_ids": [],
+        "turn_before": 90.0,
+    }
     decision["reasoning_summary"] = (
         f"OVERRIDE: Decision loop detected ({diversity_counter} repeated decisions). "
         f"Your original plan: {decision.get('reasoning_summary', '?')}. "
@@ -158,7 +190,9 @@ def _guard_finish_premature(
 
     # Block premature finish — override with explore
     _record_failure_critique(
-        lockstep_state, tick=tick, tool="finish",
+        lockstep_state,
+        tick=tick,
+        tool="finish",
         params=params,
         reason=(
             f"finish() blocked: coverage={coverage_pct:.1f}% (need 90%), "

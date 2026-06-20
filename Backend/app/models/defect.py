@@ -4,7 +4,20 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, REAL, SmallInteger, String, Text, UniqueConstraint, func, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    REAL,
+    SmallInteger,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,7 +34,9 @@ class Defect(Base):
     __table_args__ = (
         CheckConstraint("severity BETWEEN 1 AND 4"),
         CheckConstraint("priority BETWEEN 1 AND 3"),
-        UniqueConstraint("run_id", "defect_type", "detected_at_tick", name="uq_defects_run_type_tick"),
+        UniqueConstraint(
+            "run_id", "defect_type", "detected_at_tick", name="uq_defects_run_type_tick"
+        ),
         UniqueConstraint("run_id", "fingerprint", name="uq_defects_run_fingerprint"),
         Index("idx_defects_run_id", "run_id"),
         Index("idx_defects_severity", "run_id", "severity"),
@@ -65,8 +80,12 @@ class Defect(Base):
     recommendation: Mapped[str | None] = mapped_column(Text)
     first_seen_tick: Mapped[int | None] = mapped_column(Integer)
     last_seen_tick: Mapped[int | None] = mapped_column(Integer)
-    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    occurrence_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     run: Mapped[TestRun] = relationship(
         "TestRun",
@@ -78,4 +97,6 @@ class Defect(Base):
         back_populates="defects",
         foreign_keys=[report_id],
     )
-    screenshot: Mapped[NotableEventScreenshot | None] = relationship("NotableEventScreenshot")
+    screenshot: Mapped[NotableEventScreenshot | None] = relationship(
+        "NotableEventScreenshot"
+    )

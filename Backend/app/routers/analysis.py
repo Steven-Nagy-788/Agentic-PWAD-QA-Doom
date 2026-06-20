@@ -14,7 +14,9 @@ router = APIRouter(tags=["Analysis"])
 
 
 @router.get("/wads/{wad_id}/analysis", response_model=list[StaticAnalysisOut])
-async def get_analysis(wad_id: UUID, db: AsyncSession = Depends(get_db)) -> list[StaticAnalysisOut]:
+async def get_analysis(
+    wad_id: UUID, db: AsyncSession = Depends(get_db)
+) -> list[StaticAnalysisOut]:
     wad = await WadRepository(db).get_by_id(wad_id)
     if wad is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "WAD not found")
@@ -22,7 +24,9 @@ async def get_analysis(wad_id: UUID, db: AsyncSession = Depends(get_db)) -> list
     await db.commit()
     return [
         StaticAnalysisOut.model_validate(result).model_copy(
-            update={"map_overview_png_url": f"/wads/{wad_id}/map-png?map_name={result.map_name}"}
+            update={
+                "map_overview_png_url": f"/wads/{wad_id}/map-png?map_name={result.map_name}"
+            }
         )
         for result in results
     ]

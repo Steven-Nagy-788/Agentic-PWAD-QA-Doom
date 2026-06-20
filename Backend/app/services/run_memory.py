@@ -37,7 +37,9 @@ class RunMemoryService:
                 cell_events[(cx, cy, event.event_type)] += 1
             if int(event.secret_count or 0) > previous_secret_count:
                 cell_events[(cx, cy, "secret_found")] += 1
-            previous_secret_count = max(previous_secret_count, int(event.secret_count or 0))
+            previous_secret_count = max(
+                previous_secret_count, int(event.secret_count or 0)
+            )
 
         for defect in defects:
             if defect.position_x is None or defect.position_y is None:
@@ -45,9 +47,17 @@ class RunMemoryService:
             cx = round(defect.position_x / CELL_SIZE)
             cy = round(defect.position_y / CELL_SIZE)
             event_type = defect.defect_type
-            if event_type not in {"stuck", "death", "ammo_starvation", "health_deficit", "softlock_navigation"}:
+            if event_type not in {
+                "stuck",
+                "death",
+                "ammo_starvation",
+                "health_deficit",
+                "softlock_navigation",
+            }:
                 continue
-            cell_events[(cx, cy, "stuck" if event_type == "softlock_navigation" else event_type)] += 1
+            cell_events[
+                (cx, cy, "stuck" if event_type == "softlock_navigation" else event_type)
+            ] += 1
 
         now = datetime.now(UTC)
         for (cell_x, cell_y, event_type), count in cell_events.items():
@@ -65,7 +75,13 @@ class RunMemoryService:
                     updated_at=now,
                 )
                 .on_conflict_do_update(
-                    index_elements=["wad_file_id", "map_name", "cell_x", "cell_y", "event_type"],
+                    index_elements=[
+                        "wad_file_id",
+                        "map_name",
+                        "cell_x",
+                        "cell_y",
+                        "event_type",
+                    ],
                     set_={
                         "occurrence_count": WadSpatialMemory.occurrence_count + count,
                         "last_seen_run_id": run_id,
@@ -93,7 +109,9 @@ class RunMemoryService:
         existing = list(existing_result.scalars().all())
         candidates = list(in_run_hypotheses)
         if agent_quality_flags:
-            candidates.extend(str(warning) for warning in agent_quality_flags.get("warnings") or [])
+            candidates.extend(
+                str(warning) for warning in agent_quality_flags.get("warnings") or []
+            )
 
         for hypothesis in candidates:
             if not _is_persistable_hypothesis(hypothesis):
@@ -150,7 +168,9 @@ def _is_persistable_hypothesis(text: str) -> bool:
         return False
     only_speculation = ("maybe", "possibly", "unclear", "hypothesis")
     has_only_speculation = any(marker in lower for marker in only_speculation)
-    has_evidence_anchor = bool(re.search(r"tick \d+|position \(|cell \(|at \(-?\d|\(\s*-?\d", lower))
+    has_evidence_anchor = bool(
+        re.search(r"tick \d+|position \(|cell \(|at \(-?\d|\(\s*-?\d", lower)
+    )
     has_conclusion = any(
         marker in lower
         for marker in (
@@ -184,7 +204,16 @@ def _infer_tag(text: str) -> str:
         return "KEY_LOCATION"
     if "ammo" in lower or "starvation" in lower or "resource" in lower:
         return "RESOURCE_CACHE"
-    if any(term in lower for term in ("visual", "glitch", "missing texture", "hall of mirrors", "hom effect")):
+    if any(
+        term in lower
+        for term in (
+            "visual",
+            "glitch",
+            "missing texture",
+            "hall of mirrors",
+            "hom effect",
+        )
+    ):
         return "VISUAL_GLITCH"
     if "encounter" in lower or "combat" in lower or "monster" in lower:
         return "ENCOUNTER_HOTSPOT"

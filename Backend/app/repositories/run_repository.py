@@ -56,7 +56,9 @@ class RunRepository:
             created_after=created_after,
             created_before=created_before,
         ).options(selectinload(TestRun.static_analysis))
-        result = await self.db.execute(query.order_by(TestRun.created_at.desc()).offset(offset).limit(limit))
+        result = await self.db.execute(
+            query.order_by(TestRun.created_at.desc()).offset(offset).limit(limit)
+        )
         return list(result.scalars().all())
 
     async def count(

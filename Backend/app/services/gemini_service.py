@@ -24,7 +24,14 @@ LOW_VALUE_TEXTURE_TERMS = (
     "cut off",
     "seam",
 )
-CRITICAL_TEXTURE_TERMS = ("hom", "hall of mirrors", "missing texture", "medusa", "z-fighting", "z fighting")
+CRITICAL_TEXTURE_TERMS = (
+    "hom",
+    "hall of mirrors",
+    "missing texture",
+    "medusa",
+    "z-fighting",
+    "z fighting",
+)
 
 logger = logging.getLogger(__name__)
 _gemini_sem: asyncio.Semaphore | None = None
@@ -47,9 +54,9 @@ def is_low_value_texture_defect(defect: Mapping[str, Any]) -> bool:
         return False
     if defect_type in LOW_VALUE_TEXTURE_DEFECT_TYPES:
         return True
-    return ("texture" in text or "floor" in text or "wall" in text or "pillar" in text) and any(
-        term in text for term in LOW_VALUE_TEXTURE_TERMS
-    )
+    return (
+        "texture" in text or "floor" in text or "wall" in text or "pillar" in text
+    ) and any(term in text for term in LOW_VALUE_TEXTURE_TERMS)
 
 
 class GeminiService:
@@ -166,9 +173,18 @@ class GeminiService:
         response = await self._generate_content("Return ok.", {})
         return {"model": self.llm_model, "response": response.text or ""}
 
-    async def decide(self, system_prompt: str, llm_input: dict[str, Any], screenshot_png: bytes | None = None, map_layout_png: bytes | None = None) -> tuple[dict[str, Any], dict[str, int]]:
+    async def decide(
+        self,
+        system_prompt: str,
+        llm_input: dict[str, Any],
+        screenshot_png: bytes | None = None,
+        map_layout_png: bytes | None = None,
+    ) -> tuple[dict[str, Any], dict[str, int]]:
         if not self.settings.gemini_api_key:
-            return self._fallback_decision(llm_input, "Gemini API key is not configured; using deterministic fallback."), {}
+            return self._fallback_decision(
+                llm_input,
+                "Gemini API key is not configured; using deterministic fallback.",
+            ), {}
         return await self._call_with_retry(
             system_prompt,
             llm_input,
@@ -210,6 +226,7 @@ class GeminiService:
         try:
             from google import genai
             from google.genai import types
+
             client = genai.Client(api_key=self.settings.gemini_api_key)
             async_client = getattr(client, "aio", None)
             parts = [
@@ -236,7 +253,11 @@ class GeminiService:
                 return None
             try:
                 data = json.loads(text)
-                if isinstance(data, dict) and "defect_type" in data and not is_low_value_texture_defect(data):
+                if (
+                    isinstance(data, dict)
+                    and "defect_type" in data
+                    and not is_low_value_texture_defect(data)
+                ):
                     return data
             except (json.JSONDecodeError, ValueError):
                 pass
@@ -244,7 +265,11 @@ class GeminiService:
             if extracted:
                 try:
                     data = json.loads(extracted)
-                    if isinstance(data, dict) and "defect_type" in data and not is_low_value_texture_defect(data):
+                    if (
+                        isinstance(data, dict)
+                        and "defect_type" in data
+                        and not is_low_value_texture_defect(data)
+                    ):
                         return data
                 except (json.JSONDecodeError, ValueError):
                     pass
@@ -265,19 +290,33 @@ class GeminiService:
         await _throttle_local_rate(self.rate_limit_calls_per_minute)
         for attempt in range(3):
             try:
-                response, token_usage = await self._call_gemini(system_prompt, llm_input, screenshot_png=screenshot_png, map_layout_png=map_layout_png)
+                response, token_usage = await self._call_gemini(
+                    system_prompt,
+                    llm_input,
+                    screenshot_png=screenshot_png,
+                    map_layout_png=map_layout_png,
+                )
                 _record_api_call()
                 return parser(response), token_usage
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
-                logger.warning("Gemini API call attempt %d/3 failed: %s", attempt + 1, last_error)
+                logger.warning(
+                    "Gemini API call attempt %d/3 failed: %s", attempt + 1, last_error
+                )
                 if _is_rate_limit(exc) and attempt < 2:
                     wait = min(_retry_delay_seconds(exc), 60.0)
-                    logger.info("Rate limited, retrying in %.1fs (attempt %d/3)", wait, attempt + 2)
+                    logger.info(
+                        "Rate limited, retrying in %.1fs (attempt %d/3)",
+                        wait,
+                        attempt + 2,
+                    )
                     await asyncio.sleep(wait)
                     continue
                 if attempt < 2:
-                    logger.info("Non-rate-limit error, retrying in 5s (attempt %d/3)", attempt + 2)
+                    logger.info(
+                        "Non-rate-limit error, retrying in 5s (attempt %d/3)",
+                        attempt + 2,
+                    )
                     await asyncio.sleep(5.0)
                     continue
         logger.warning("All 3 Gemini API attempts failed, using deterministic fallback")
@@ -288,17 +327,40 @@ class GeminiService:
         )
         return fallback_result, fallback_tokens
 
-    async def _call_gemini(self, system_prompt: str, llm_input: dict, screenshot_png: bytes | None = None, map_layout_png: bytes | None = None) -> tuple[str, dict[str, int]]:
-        response = await self._generate_content(system_prompt, llm_input, screenshot_png=screenshot_png, map_layout_png=map_layout_png)
+    async def _call_gemini(
+        self,
+        system_prompt: str,
+        llm_input: dict,
+        screenshot_png: bytes | None = None,
+        map_layout_png: bytes | None = None,
+    ) -> tuple[str, dict[str, int]]:
+        response = await self._generate_content(
+            system_prompt,
+            llm_input,
+            screenshot_png=screenshot_png,
+            map_layout_png=map_layout_png,
+        )
         token_usage: dict[str, int] = {}
         if hasattr(response, "usage_metadata") and response.usage_metadata:
             token_usage = {
-                "prompt_tokens": getattr(response.usage_metadata, "prompt_token_count", 0) or 0,
-                "completion_tokens": getattr(response.usage_metadata, "candidates_token_count", 0) or 0,
+                "prompt_tokens": getattr(
+                    response.usage_metadata, "prompt_token_count", 0
+                )
+                or 0,
+                "completion_tokens": getattr(
+                    response.usage_metadata, "candidates_token_count", 0
+                )
+                or 0,
             }
         return response.text or "", token_usage
 
-    async def _generate_content(self, system_prompt: str, llm_input: dict, screenshot_png: bytes | None = None, map_layout_png: bytes | None = None) -> Any:
+    async def _generate_content(
+        self,
+        system_prompt: str,
+        llm_input: dict,
+        screenshot_png: bytes | None = None,
+        map_layout_png: bytes | None = None,
+    ) -> Any:
         try:
             from google import genai
             from google.genai import types
@@ -306,7 +368,11 @@ class GeminiService:
             raise RuntimeError("google-genai is not installed") from exc
 
         config_cls = getattr(types, "GenerateContentConfig", None)
-        config = config_cls(system_instruction=system_prompt) if config_cls is not None else None
+        config = (
+            config_cls(system_instruction=system_prompt)
+            if config_cls is not None
+            else None
+        )
         user_content = f"CURRENT STATE JSON:\n{json.dumps(llm_input, default=str)}"
         if config is None:
             user_content = f"{system_prompt}\n\n{user_content}"
@@ -321,9 +387,17 @@ class GeminiService:
                 if has_images:
                     parts = [types.Part.from_text(text=user_content)]
                     if map_layout_png is not None:
-                        parts.append(types.Part.from_bytes(data=map_layout_png, mime_type="image/png"))
+                        parts.append(
+                            types.Part.from_bytes(
+                                data=map_layout_png, mime_type="image/png"
+                            )
+                        )
                     if screenshot_png is not None:
-                        parts.append(types.Part.from_bytes(data=screenshot_png, mime_type="image/png"))
+                        parts.append(
+                            types.Part.from_bytes(
+                                data=screenshot_png, mime_type="image/png"
+                            )
+                        )
                     kwargs = {
                         "model": self.llm_model,
                         "contents": types.Content(parts=parts, role="user"),
@@ -338,9 +412,17 @@ class GeminiService:
                 if has_images:
                     parts = [types.Part.from_text(text=user_content)]
                     if map_layout_png is not None:
-                        parts.append(types.Part.from_bytes(data=map_layout_png, mime_type="image/png"))
+                        parts.append(
+                            types.Part.from_bytes(
+                                data=map_layout_png, mime_type="image/png"
+                            )
+                        )
                     if screenshot_png is not None:
-                        parts.append(types.Part.from_bytes(data=screenshot_png, mime_type="image/png"))
+                        parts.append(
+                            types.Part.from_bytes(
+                                data=screenshot_png, mime_type="image/png"
+                            )
+                        )
                     kwargs = {
                         "model": self.llm_model,
                         "contents": types.Content(parts=parts, role="user"),
@@ -386,7 +468,7 @@ class GeminiService:
                 elif ch == "}":
                     depth -= 1
                     if depth == 0:
-                        candidates.append(text[start:pos+1])
+                        candidates.append(text[start : pos + 1])
                         i = pos + 1
                         break
                 pos += 1
@@ -443,18 +525,46 @@ class GeminiService:
             "_decision_source": "gemini",
         }
 
-    def _fallback_decision(self, llm_input: dict[str, Any], reason: str) -> dict[str, Any]:
-        objects = [obj for obj in llm_input.get("scene_objects", []) if isinstance(obj, dict)]
-        same_run = llm_input.get("same_run_memory") if isinstance(llm_input.get("same_run_memory"), dict) else {}
-        milestones = same_run.get("older_milestones") if isinstance(same_run.get("older_milestones"), dict) else {}
-        navigation_info = llm_input.get("navigation") if isinstance(llm_input.get("navigation"), dict) else {}
-        completed_object_ids = {str(key) for key in (milestones.get("completed_targets") or {})}
-        failed_object_ids = {str(key) for key in (milestones.get("failed_targets") or {})}
-        weapon_state = llm_input.get("weapon_state") if isinstance(llm_input.get("weapon_state"), dict) else {}
+    def _fallback_decision(
+        self, llm_input: dict[str, Any], reason: str
+    ) -> dict[str, Any]:
+        objects = [
+            obj for obj in llm_input.get("scene_objects", []) if isinstance(obj, dict)
+        ]
+        same_run = (
+            llm_input.get("same_run_memory")
+            if isinstance(llm_input.get("same_run_memory"), dict)
+            else {}
+        )
+        milestones = (
+            same_run.get("older_milestones")
+            if isinstance(same_run.get("older_milestones"), dict)
+            else {}
+        )
+        navigation_info = (
+            llm_input.get("navigation")
+            if isinstance(llm_input.get("navigation"), dict)
+            else {}
+        )
+        completed_object_ids = {
+            str(key) for key in (milestones.get("completed_targets") or {})
+        }
+        failed_object_ids = {
+            str(key) for key in (milestones.get("failed_targets") or {})
+        }
+        weapon_state = (
+            llm_input.get("weapon_state")
+            if isinstance(llm_input.get("weapon_state"), dict)
+            else {}
+        )
         best_weapon = weapon_state.get("best_viable_weapon")
         usable_attack_ammo = _number(weapon_state.get("usable_attack_ammo"), 0)
         selected_ammo = _number(weapon_state.get("selected_weapon_ammo"), 0)
-        usable_weapons = weapon_state.get("usable_weapons") if isinstance(weapon_state.get("usable_weapons"), list) else []
+        usable_weapons = (
+            weapon_state.get("usable_weapons")
+            if isinstance(weapon_state.get("usable_weapons"), list)
+            else []
+        )
         if selected_ammo <= 0 and usable_attack_ammo > 0 and best_weapon is not None:
             return {
                 "reasoning_summary": f"{reason} The selected weapon is empty but weapon {best_weapon} is usable, so switching before combat.",
@@ -466,11 +576,20 @@ class GeminiService:
         visible_monsters = [
             obj
             for obj in objects
-            if obj.get("type") == "monster" and obj.get("is_visible") and obj.get("id") is not None
+            if obj.get("type") == "monster"
+            and obj.get("is_visible")
+            and obj.get("id") is not None
         ]
         if visible_monsters:
-            target = min(visible_monsters, key=lambda obj: float(obj.get("distance") or 999999))
-            tool = "strafe_and_shoot" if target.get("attack_type") == "hitscan" or float(target.get("distance") or 0) < 350 else "aim_and_shoot"
+            target = min(
+                visible_monsters, key=lambda obj: float(obj.get("distance") or 999999)
+            )
+            tool = (
+                "strafe_and_shoot"
+                if target.get("attack_type") == "hitscan"
+                or float(target.get("distance") or 0) < 350
+                else "aim_and_shoot"
+            )
             return {
                 "reasoning_summary": f"{reason} Visible {target.get('name', 'monster')} selected for combat.",
                 "mcp_tool": tool,
@@ -482,12 +601,16 @@ class GeminiService:
         visible_pickups = [
             obj
             for obj in objects
-            if obj.get("type") in {"item", "ammo", "weapon", "key"} and obj.get("is_visible") and obj.get("id") is not None
+            if obj.get("type") in {"item", "ammo", "weapon", "key"}
+            and obj.get("is_visible")
+            and obj.get("id") is not None
             and str(obj.get("id")) not in completed_object_ids
             and str(obj.get("id")) not in failed_object_ids
         ]
         if visible_pickups:
-            target = min(visible_pickups, key=lambda obj: float(obj.get("distance") or 999999))
+            target = min(
+                visible_pickups, key=lambda obj: float(obj.get("distance") or 999999)
+            )
             return {
                 "reasoning_summary": f"{reason} Visible {target.get('name', 'pickup')} selected for collection.",
                 "mcp_tool": "move_to",
@@ -505,12 +628,20 @@ class GeminiService:
                 "_decision_source": "deterministic_fallback",
             }
 
-        unexplored_direction = navigation_info.get("unexplored_direction") if isinstance(navigation_info, dict) else None
+        unexplored_direction = (
+            navigation_info.get("unexplored_direction")
+            if isinstance(navigation_info, dict)
+            else None
+        )
         if unexplored_direction:
             return {
                 "reasoning_summary": f"{reason} Navigation info indicates unexplored area to the {unexplored_direction}, exploring toward it.",
                 "mcp_tool": "explore",
-                "mcp_params": {"max_tics": 80, "stop_on_enemy": True, "stop_on_item": True},
+                "mcp_params": {
+                    "max_tics": 80,
+                    "stop_on_enemy": True,
+                    "stop_on_item": True,
+                },
                 "observed_issue": None,
                 "_decision_source": "deterministic_fallback",
             }
@@ -535,14 +666,20 @@ async def _throttle_local_rate(max_calls: int) -> None:
     if len(_api_call_timestamps) >= max_calls:
         oldest = _api_call_timestamps[0]
         wait = window - (now - oldest) + 1.0
-        logger.info("Local rate limiter: %d calls in last 60s, waiting %.1fs", len(_api_call_timestamps), wait)
+        logger.info(
+            "Local rate limiter: %d calls in last 60s, waiting %.1fs",
+            len(_api_call_timestamps),
+            wait,
+        )
         await asyncio.sleep(wait)
 
 
 def _record_api_call() -> None:
     global _api_call_timestamps
     _api_call_timestamps.append(time.monotonic())
-    _api_call_timestamps = [t for t in _api_call_timestamps if time.monotonic() - t < 60.0]
+    _api_call_timestamps = [
+        t for t in _api_call_timestamps if time.monotonic() - t < 60.0
+    ]
 
 
 def estimate_llm_cost_usd(
@@ -553,7 +690,9 @@ def estimate_llm_cost_usd(
     output_cost_per_million: float,
 ) -> float:
     input_cost = max(0, int(prompt_tokens or 0)) * input_cost_per_million / 1_000_000
-    output_cost = max(0, int(completion_tokens or 0)) * output_cost_per_million / 1_000_000
+    output_cost = (
+        max(0, int(completion_tokens or 0)) * output_cost_per_million / 1_000_000
+    )
     return input_cost + output_cost
 
 

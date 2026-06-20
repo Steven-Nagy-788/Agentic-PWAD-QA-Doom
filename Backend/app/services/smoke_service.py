@@ -10,7 +10,9 @@ from app.services.collector_service import normalize_variables
 
 
 class SmokeService:
-    def __init__(self, *, llm_model: str | None = None, model_source: str = "environment") -> None:
+    def __init__(
+        self, *, llm_model: str | None = None, model_source: str = "environment"
+    ) -> None:
         self.settings = get_settings()
         self.llm_model = llm_model or self.settings.llm_model
         self.model_source = model_source
@@ -30,17 +32,27 @@ class SmokeService:
                 stages.append(stage3)
                 mcp_client = stage3.get("_mcp_client")
             else:
-                stages.append(self._skip_stage("Start game (MCP via Doom)", "Skipped: MCP not reachable"))
+                stages.append(
+                    self._skip_stage(
+                        "Start game (MCP via Doom)", "Skipped: MCP not reachable"
+                    )
+                )
 
             if mcp_client is not None:
                 stages.append(await self._stage_get_state(mcp_client))
             else:
-                stages.append(self._skip_stage("Get game state", "Skipped: game not started"))
+                stages.append(
+                    self._skip_stage("Get game state", "Skipped: game not started")
+                )
             gemini_skipped = bool(gemini_stage.get("detail", {}).get("skipped"))
             if gemini_stage["pass"] and not gemini_skipped:
                 stages.append(await self._stage_test_gemini())
             else:
-                stages.append(self._skip_stage("Test Gemini API", "Skipped: GEMINI_API_KEY is not set"))
+                stages.append(
+                    self._skip_stage(
+                        "Test Gemini API", "Skipped: GEMINI_API_KEY is not set"
+                    )
+                )
         finally:
             stages.append(await self._stage_cleanup(mcp_client))
 
@@ -57,8 +69,19 @@ class SmokeService:
             result = await probe_mcp_sse_url()
             reachable = result.get("reachable", False)
             if not reachable:
-                return _fail(label, start, f"MCP not reachable: {result.get('error', 'unknown error')}")
-            return _pass(label, start, {"latency_ms": result.get("latency_ms"), "status_code": result.get("status_code")})
+                return _fail(
+                    label,
+                    start,
+                    f"MCP not reachable: {result.get('error', 'unknown error')}",
+                )
+            return _pass(
+                label,
+                start,
+                {
+                    "latency_ms": result.get("latency_ms"),
+                    "status_code": result.get("status_code"),
+                },
+            )
         except Exception as exc:
             return _fail(label, start, str(exc))
 
@@ -66,8 +89,16 @@ class SmokeService:
         label = "Gemini API key configured"
         start = time.monotonic()
         if not self.settings.gemini_api_key:
-            return _pass(label, start, {"skipped": "GEMINI_API_KEY is not set; deterministic fallback mode is available."})
-        return _pass(label, start, {"model": self.llm_model, "model_source": self.model_source})
+            return _pass(
+                label,
+                start,
+                {
+                    "skipped": "GEMINI_API_KEY is not set; deterministic fallback mode is available."
+                },
+            )
+        return _pass(
+            label, start, {"model": self.llm_model, "model_source": self.model_source}
+        )
 
     async def _stage_start_game(self) -> dict[str, Any]:
         label = "Start game (Freedoom MAP01 via MCP)"
@@ -98,11 +129,15 @@ class SmokeService:
             state, screenshot = await client.get_state()
             has_screenshot = screenshot is not None
             variables = normalize_variables(state) if isinstance(state, dict) else {}
-            return _pass(label, start, {
-                "has_screenshot": has_screenshot,
-                "player_health": variables.get("health"),
-                "player_ammo": variables.get("usable_attack_ammo"),
-            })
+            return _pass(
+                label,
+                start,
+                {
+                    "has_screenshot": has_screenshot,
+                    "player_health": variables.get("health"),
+                    "player_ammo": variables.get("usable_attack_ammo"),
+                },
+            )
         except Exception as exc:
             return _fail(label, start, str(exc))
 
@@ -112,7 +147,14 @@ class SmokeService:
         try:
             service = GeminiService(llm_model=self.llm_model)
             result = await service.probe_model()
-            return _pass(label, start, {"model": result.get("model"), "response_preview": result.get("response", "")[:100]})
+            return _pass(
+                label,
+                start,
+                {
+                    "model": result.get("model"),
+                    "response_preview": result.get("response", "")[:100],
+                },
+            )
         except Exception as exc:
             return _fail(label, start, str(exc))
 
@@ -138,7 +180,9 @@ class SmokeService:
         }
 
 
-def _pass(label: str, start: float, detail: dict[str, Any] | None = None) -> dict[str, Any]:
+def _pass(
+    label: str, start: float, detail: dict[str, Any] | None = None
+) -> dict[str, Any]:
     return {
         "label": label,
         "pass": True,

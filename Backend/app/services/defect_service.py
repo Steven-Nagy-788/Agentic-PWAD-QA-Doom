@@ -10,7 +10,14 @@ import cv2
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Defect, GameEvent, NotableEventScreenshot, StaticAnalysisResult, TestRun, WadHypothesis
+from app.models import (
+    Defect,
+    GameEvent,
+    NotableEventScreenshot,
+    StaticAnalysisResult,
+    TestRun,
+    WadHypothesis,
+)
 from app.repositories.defect_repository import DefectRepository
 from app.services.gemini_service import is_low_value_texture_defect
 from app.services.analysis_service import selected_skill_spawn_summary
@@ -33,19 +40,27 @@ _RESOURCE_STOP_REASONS = {
 
 
 class DefectService:
-    def __init__(self, db: AsyncSession, gemini_service: GeminiService | None = None) -> None:
+    def __init__(
+        self, db: AsyncSession, gemini_service: GeminiService | None = None
+    ) -> None:
         self.db = db
         self.repo = DefectRepository(db)
         self.gemini = gemini_service
 
     async def detect_for_run(self, run: TestRun) -> None:
         await self._pwad_crash(run)
-        analysis = await self.db.get(StaticAnalysisResult, run.static_analysis_id) if run.static_analysis_id else None
+        analysis = (
+            await self.db.get(StaticAnalysisResult, run.static_analysis_id)
+            if run.static_analysis_id
+            else None
+        )
         await self._voodoo_dolls(run, analysis)
         await self._difficulty_spawn_mismatch(run, analysis)
         await self._static_resource_balance(run, analysis)
         result = await self.db.execute(
-            select(GameEvent).where(GameEvent.run_id == run.id).order_by(GameEvent.tick_number, GameEvent.id)
+            select(GameEvent)
+            .where(GameEvent.run_id == run.id)
+            .order_by(GameEvent.tick_number, GameEvent.id)
         )
         events = list(result.scalars().all())
         await self._vision_defects(run.id)
@@ -81,11 +96,15 @@ class DefectService:
             )
         )
 
-    async def _voodoo_dolls(self, run: TestRun, analysis: StaticAnalysisResult | None) -> None:
+    async def _voodoo_dolls(
+        self, run: TestRun, analysis: StaticAnalysisResult | None
+    ) -> None:
         if analysis is None:
             return
         features = {}
-        if hasattr(analysis, "spawn_summary_by_skill") and isinstance(analysis.spawn_summary_by_skill, dict):
+        if hasattr(analysis, "spawn_summary_by_skill") and isinstance(
+            analysis.spawn_summary_by_skill, dict
+        ):
             features = analysis.spawn_summary_by_skill.get("_map_features", {})
         if not features.get("voodoo_doll_risk"):
             return
@@ -111,7 +130,9 @@ class DefectService:
             )
         )
 
-    async def _difficulty_spawn_mismatch(self, run: TestRun, analysis: StaticAnalysisResult | None) -> None:
+    async def _difficulty_spawn_mismatch(
+        self, run: TestRun, analysis: StaticAnalysisResult | None
+    ) -> None:
         if analysis is None:
             return
         skill_summary = selected_skill_spawn_summary(analysis, run.difficulty_level)
@@ -125,7 +146,9 @@ class DefectService:
             return
         hidden_parts = []
         if spawned_enemies < raw_enemies:
-            hidden_parts.append(f"{raw_enemies - spawned_enemies} of {raw_enemies} enemies")
+            hidden_parts.append(
+                f"{raw_enemies - spawned_enemies} of {raw_enemies} enemies"
+            )
         if spawned_items < raw_items:
             hidden_parts.append(f"{raw_items - spawned_items} of {raw_items} items")
         severity = 2 if raw_enemies and spawned_enemies < raw_enemies else 3
@@ -148,11 +171,17 @@ class DefectService:
             )
         )
 
-    async def _static_resource_balance(self, run: TestRun, analysis: StaticAnalysisResult | None) -> None:
+    async def _static_resource_balance(
+        self, run: TestRun, analysis: StaticAnalysisResult | None
+    ) -> None:
         if analysis is None:
             return
-        ammo_val = float(analysis.ammo_ratio) if analysis.ammo_ratio is not None else 1.0
-        health_val = float(analysis.health_ratio) if analysis.health_ratio is not None else 1.0
+        ammo_val = (
+            float(analysis.ammo_ratio) if analysis.ammo_ratio is not None else 1.0
+        )
+        health_val = (
+            float(analysis.health_ratio) if analysis.health_ratio is not None else 1.0
+        )
         if ammo_val >= 0.5 and health_val >= 0.2:
             return
         if ammo_val < 0.5:
@@ -182,7 +211,9 @@ class DefectService:
             )
         if health_val < 0.2:
             armor_points_raw = getattr(analysis, "total_armor_pickup_pts", 0)
-            armor_points = armor_points_raw if isinstance(armor_points_raw, (int, float)) else 0
+            armor_points = (
+                armor_points_raw if isinstance(armor_points_raw, (int, float)) else 0
+            )
             await self.repo.create(
                 Defect(
                     run_id=run.id,
@@ -216,7 +247,9 @@ class DefectService:
         if self.gemini is None or not self.gemini.settings.gemini_api_key:
             return
         result = await self.db.execute(
-            select(NotableEventScreenshot).where(NotableEventScreenshot.run_id == run_id)
+            select(NotableEventScreenshot).where(
+                NotableEventScreenshot.run_id == run_id
+            )
         )
         screenshots: list[NotableEventScreenshot] = list(result.scalars().all())
         if not screenshots:
@@ -236,7 +269,9 @@ class DefectService:
         except Exception as exc:
             logger.warning("Visual defect analysis failed for run %s: %s", run_id, exc)
             return
-        path_to_screenshot_id: dict[str, UUID] = {s.screenshot_path: s.id for s in screenshots}
+        path_to_screenshot_id: dict[str, UUID] = {
+            s.screenshot_path: s.id for s in screenshots
+        }
         for vd in visual_defects:
             if is_low_value_texture_defect(vd):
                 continue
@@ -254,7 +289,11 @@ class DefectService:
                     description=str(vd.get("description", "")),
                     detected_at_tick=0,
                     screenshot_id=screenshot_id,
-                    recommendation=str(vd.get("recommendation", "Review the screenshot for visual issues.")),
+                    recommendation=str(
+                        vd.get(
+                            "recommendation", "Review the screenshot for visual issues."
+                        )
+                    ),
                 )
             )
 
@@ -262,7 +301,9 @@ class DefectService:
         buckets: dict[tuple[int, int], list[GameEvent]] = defaultdict(list)
         for event in events:
             if event.event_type == "death":
-                buckets[(round(event.player_x / 50), round(event.player_y / 50))].append(event)
+                buckets[
+                    (round(event.player_x / 50), round(event.player_y / 50))
+                ].append(event)
         for group in buckets.values():
             if len(group) > 1:
                 first = group[0]
@@ -310,7 +351,9 @@ class DefectService:
             )
 
     async def _health_deficit(self, run_id: UUID, events: list[GameEvent]) -> None:
-        episodes = _streak_episodes(events, lambda event: event.health < 10, minimum_length=15)
+        episodes = _streak_episodes(
+            events, lambda event: event.health < 10, minimum_length=15
+        )
         for episode in episodes:
             first = episode[0]
             await self.repo.create(
@@ -333,8 +376,13 @@ class DefectService:
 
     async def _softlock(self, run: TestRun, events: list[GameEvent]) -> None:
         stuck_events = [event for event in events if event.event_type == "stuck"]
-        if run.outcome in {"stuck", "timeout", "inconclusive_agent_stall"} and len(stuck_events) >= 3:
-            confirmed_stuck = [event for event in stuck_events if _is_confirmed_map_stuck_event(event)]
+        if (
+            run.outcome in {"stuck", "timeout", "inconclusive_agent_stall"}
+            and len(stuck_events) >= 3
+        ):
+            confirmed_stuck = [
+                event for event in stuck_events if _is_confirmed_map_stuck_event(event)
+            ]
             if len(confirmed_stuck) >= 3:
                 first = confirmed_stuck[0]
                 await self.repo.create(
@@ -376,9 +424,13 @@ class DefectService:
 
         if run.outcome != "timeout" or len(events) < 10:
             return
-        tail = events[-min(30, len(events)):]
-        moved = max(event.player_x for event in tail) - min(event.player_x for event in tail)
-        moved += max(event.player_y for event in tail) - min(event.player_y for event in tail)
+        tail = events[-min(30, len(events)) :]
+        moved = max(event.player_x for event in tail) - min(
+            event.player_x for event in tail
+        )
+        moved += max(event.player_y for event in tail) - min(
+            event.player_y for event in tail
+        )
         if moved < 20:
             first = tail[0]
             if _has_agent_or_resource_limitation(tail):
@@ -446,12 +498,15 @@ class DefectService:
         if not run.wad_file_id:
             return
         result = await self.db.execute(
-            select(WadHypothesis).where(
+            select(WadHypothesis)
+            .where(
                 WadHypothesis.wad_file_id == run.wad_file_id,
                 WadHypothesis.map_name == run.map_name,
                 WadHypothesis.confidence >= 0.6,
                 WadHypothesis.confirmed_at.is_(None),
-            ).order_by(WadHypothesis.confidence.desc()).limit(5)
+            )
+            .order_by(WadHypothesis.confidence.desc())
+            .limit(5)
         )
         hypotheses = list(result.scalars().all())
         for hyp in hypotheses:
@@ -477,18 +532,25 @@ class DefectService:
                 )
             )
             from datetime import UTC, datetime as _dt
+
             hyp.confirmed_at = _dt.now(UTC)
 
     async def _link_screenshots_to_defects(self, run_id: UUID) -> None:
         screenshot_result = await self.db.execute(
-            select(NotableEventScreenshot).where(NotableEventScreenshot.run_id == run_id)
+            select(NotableEventScreenshot).where(
+                NotableEventScreenshot.run_id == run_id
+            )
         )
-        screenshots: list[NotableEventScreenshot] = list(screenshot_result.scalars().all())
+        screenshots: list[NotableEventScreenshot] = list(
+            screenshot_result.scalars().all()
+        )
         if not screenshots:
             return
         event_to_screenshot = {s.game_event_id: s.id for s in screenshots}
         events_result = await self.db.execute(
-            select(GameEvent.id, GameEvent.tick_number).where(GameEvent.run_id == run_id)
+            select(GameEvent.id, GameEvent.tick_number).where(
+                GameEvent.run_id == run_id
+            )
         )
         tick_to_event: dict[int, int] = {}
         for row in events_result:
@@ -529,14 +591,25 @@ def _event_usable_attack_ammo(event: GameEvent) -> int:
     action_taken = getattr(event, "action_taken", None)
     if isinstance(action_taken, dict):
         resource_state = action_taken.get("resource_state")
-        if isinstance(resource_state, dict) and resource_state.get("usable_attack_ammo") is not None:
+        if (
+            isinstance(resource_state, dict)
+            and resource_state.get("usable_attack_ammo") is not None
+        ):
             return _safe_int(resource_state.get("usable_attack_ammo"))
         mcp_output = action_taken.get("mcp_output")
         if isinstance(mcp_output, dict):
             weapon_state = mcp_output.get("weapon_state")
-            if isinstance(weapon_state, dict) and weapon_state.get("usable_attack_ammo") is not None:
+            if (
+                isinstance(weapon_state, dict)
+                and weapon_state.get("usable_attack_ammo") is not None
+            ):
                 return _safe_int(weapon_state.get("usable_attack_ammo"))
-    return int(event.ammo_bullets or 0) + int(event.ammo_shells or 0) + int(event.ammo_rockets or 0) + int(event.ammo_cells or 0)
+    return (
+        int(event.ammo_bullets or 0)
+        + int(event.ammo_shells or 0)
+        + int(event.ammo_rockets or 0)
+        + int(event.ammo_cells or 0)
+    )
 
 
 def _is_confirmed_map_stuck_event(event: GameEvent) -> bool:
@@ -547,11 +620,18 @@ def _is_confirmed_map_stuck_event(event: GameEvent) -> bool:
     if not isinstance(summary, dict):
         output = action_taken.get("mcp_output")
         summary = output.get("action_summary") if isinstance(output, dict) else {}
-    stop_reason = str(summary.get("stop_reason") or action_taken.get("mcp_stop_reason") or "")
-    tool = str(action_taken.get("mcp_executed_tool") or action_taken.get("mcp_tool") or "")
+    stop_reason = str(
+        summary.get("stop_reason") or action_taken.get("mcp_stop_reason") or ""
+    )
+    tool = str(
+        action_taken.get("mcp_executed_tool") or action_taken.get("mcp_tool") or ""
+    )
     if stop_reason in {"stuck", "arrival_blocked"}:
         return True
-    if stop_reason in _RESOURCE_STOP_REASONS or str(getattr(event, "event_type", "")) == "resource_recovery":
+    if (
+        stop_reason in _RESOURCE_STOP_REASONS
+        or str(getattr(event, "event_type", "")) == "resource_recovery"
+    ):
         return False
     if tool == "take_action" and stop_reason in {"tics_complete", ""}:
         return False
@@ -587,7 +667,11 @@ def _safe_int(value: object) -> int:
 
 
 def _coverage_percent(run: TestRun) -> float:
-    metrics = run.progress_metrics if isinstance(getattr(run, "progress_metrics", None), dict) else {}
+    metrics = (
+        run.progress_metrics
+        if isinstance(getattr(run, "progress_metrics", None), dict)
+        else {}
+    )
     value = metrics.get("coverage_percent")
     try:
         return float(value)

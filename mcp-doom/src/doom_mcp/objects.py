@@ -175,7 +175,6 @@ OBJECT_INFO: dict[str, dict] = {
         "typical_hp": 100,
         "description": "Programmable marine NPC. Attack varies by variant.",
     },
-
     # === PROJECTILES (dodge these) ===
     "DoomImpBall": {
         "type": "projectile",
@@ -249,7 +248,6 @@ OBJECT_INFO: dict[str, dict] = {
         "typical_hp": 0,
         "description": "BFG projectile. 100 damage + spray. Run.",
     },
-
     # === HEALTH ===
     "HealthBonus": {
         "type": "item",
@@ -315,7 +313,6 @@ OBJECT_INFO: dict[str, dict] = {
         "typical_hp": 0,
         "description": "AVOID. Looks like HealthBonus but deals 30 damage on pickup.",
     },
-
     # === ARMOR ===
     "ArmorBonus": {
         "type": "item",
@@ -341,7 +338,6 @@ OBJECT_INFO: dict[str, dict] = {
         "typical_hp": 0,
         "description": "200 armor, absorbs 1/2 damage. High priority.",
     },
-
     # === AMMO ===
     "Clip": {
         "type": "ammo",
@@ -407,7 +403,6 @@ OBJECT_INFO: dict[str, dict] = {
         "typical_hp": 0,
         "description": "+100 cells (plasma/BFG).",
     },
-
     # === WEAPONS ===
     "Chainsaw": {
         "type": "weapon",
@@ -465,7 +460,6 @@ OBJECT_INFO: dict[str, dict] = {
         "typical_hp": 0,
         "description": "Devastating area damage. 40 cells per shot. Best weapon.",
     },
-
     # === PLAYER ===
     "DoomPlayer": {
         "type": "player",
@@ -475,7 +469,6 @@ OBJECT_INFO: dict[str, dict] = {
         "typical_hp": 100,
         "description": "The player (self or other player in multiplayer).",
     },
-
     # === EFFECTS (ignore) ===
     "Blood": {
         "type": "decoration",
@@ -509,7 +502,6 @@ OBJECT_INFO: dict[str, dict] = {
         "typical_hp": 0,
         "description": "Invisible waypoint. Ignore.",
     },
-
     # === KEYS ===
     "BlueCard": {
         "type": "key",
@@ -559,7 +551,6 @@ OBJECT_INFO: dict[str, dict] = {
         "typical_hp": 0,
         "description": "Yellow skull key. Opens yellow-locked doors. Pick up.",
     },
-
     # === POWERUPS ===
     "Backpack": {
         "type": "item",
@@ -609,7 +600,6 @@ OBJECT_INFO: dict[str, dict] = {
         "typical_hp": 0,
         "description": "Invulnerability. 30 seconds of no damage. Highest priority.",
     },
-
     # === INTERACTIVE OBJECTS ===
     "ExplosiveBarrel": {
         "type": "hazard",
@@ -619,7 +609,6 @@ OBJECT_INFO: dict[str, dict] = {
         "typical_hp": 20,
         "description": "Exploding barrel. Shoot near enemies for splash damage. Don't stand near it.",
     },
-
     # === DECORATIONS (all ignorable) ===
     "BigTree": _DECORATION,
     "Column": _DECORATION,

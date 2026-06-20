@@ -95,7 +95,7 @@ def test_executor_retreats_on_low_health(manager):
 
 def test_objective_queue_priority(async_basic):
     """Objectives are dequeued by priority (highest first)."""
-    result_low = async_basic.set_objective("explore", priority=1)
+    async_basic.set_objective("explore", priority=1)
     result_high = async_basic.set_objective("retreat", priority=10)
 
     queue = result_high["queue"]

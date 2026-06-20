@@ -15,7 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.models import StaticAnalysisResult, WadFile
 from app.repositories.analysis_repository import AnalysisRepository
-from app.services.analysis_constants import ENEMY_TYPES, ITEM_TYPES, KEY_TYPES, WEAPON_TYPES
+from app.services.analysis_constants import (
+    ENEMY_TYPES,
+    ITEM_TYPES,
+    KEY_TYPES,
+    WEAPON_TYPES,
+)
 
 
 MAPINFO_LUMPS = {"MAPINFO", "UMAPINFO"}
@@ -36,16 +41,22 @@ def detect_map_names(wad_path: str) -> list[str]:
     return sorted(names)
 
 
-def map_metadata_for_wad(wad_path: str, original_filename: str) -> dict[str, dict[str, str | None]]:
+def map_metadata_for_wad(
+    wad_path: str, original_filename: str
+) -> dict[str, dict[str, str | None]]:
     """Return UI-facing map title/display metadata keyed by map name."""
     titles = _parse_map_titles(wad_path)
     metadata: dict[str, dict[str, str | None]] = {}
-    fallback_prefix = Path(original_filename or Path(wad_path).name).stem or Path(wad_path).stem
+    fallback_prefix = (
+        Path(original_filename or Path(wad_path).name).stem or Path(wad_path).stem
+    )
     for map_name in detect_map_names(wad_path):
         title_info = titles.get(map_name.upper())
         title = title_info[0] if title_info else None
         source = title_info[1] if title_info else "fallback_filename"
-        display = f"{map_name} - {title}" if title else f"{fallback_prefix} - {map_name}"
+        display = (
+            f"{map_name} - {title}" if title else f"{fallback_prefix} - {map_name}"
+        )
         metadata[map_name] = {
             "map_title": title,
             "map_display_name": display,
@@ -58,7 +69,13 @@ def _parse_map_titles(wad_path: str) -> dict[str, tuple[str, str]]:
     titles: dict[str, tuple[str, str]] = {}
     for lump_name, text in _read_text_lumps(wad_path).items():
         titles.update(_parse_block_mapinfo_titles(text, lump_name))
-        titles.update({key: value for key, value in _parse_inline_mapinfo_titles(text, lump_name).items() if key not in titles})
+        titles.update(
+            {
+                key: value
+                for key, value in _parse_inline_mapinfo_titles(text, lump_name).items()
+                if key not in titles
+            }
+        )
     return titles
 
 
@@ -75,7 +92,9 @@ def _read_text_lumps(wad_path: str) -> dict[str, str]:
         entry_offset = directory_offset + index * 16
         if entry_offset + 16 > len(data):
             break
-        lump_offset, lump_size, raw_name = struct.unpack_from("<ii8s", data, entry_offset)
+        lump_offset, lump_size, raw_name = struct.unpack_from(
+            "<ii8s", data, entry_offset
+        )
         name = raw_name.rstrip(b"\0").decode("ascii", errors="ignore").upper()
         if name not in MAPINFO_LUMPS or lump_size <= 0:
             continue
@@ -86,7 +105,9 @@ def _read_text_lumps(wad_path: str) -> dict[str, str]:
 
 def _parse_block_mapinfo_titles(text: str, source: str) -> dict[str, tuple[str, str]]:
     titles: dict[str, tuple[str, str]] = {}
-    pattern = re.compile(r"\bmap\s+([A-Za-z0-9_]+)\s*\{(?P<body>.*?)\}", re.IGNORECASE | re.DOTALL)
+    pattern = re.compile(
+        r"\bmap\s+([A-Za-z0-9_]+)\s*\{(?P<body>.*?)\}", re.IGNORECASE | re.DOTALL
+    )
     for match in pattern.finditer(text):
         map_name = match.group(1).upper()
         if not MAP_NAME_RE.match(map_name):
@@ -99,7 +120,9 @@ def _parse_block_mapinfo_titles(text: str, source: str) -> dict[str, tuple[str, 
         )
         if not title_match:
             continue
-        title = _clean_title(next(group for group in title_match.groups() if group is not None))
+        title = _clean_title(
+            next(group for group in title_match.groups() if group is not None)
+        )
         if title:
             titles[map_name] = (title, source.lower())
     return titles
@@ -115,7 +138,9 @@ def _parse_inline_mapinfo_titles(text: str, source: str) -> dict[str, tuple[str,
         map_name = match.group(1).upper()
         if not MAP_NAME_RE.match(map_name):
             continue
-        title = _clean_title(next(group for group in match.groups()[1:] if group is not None))
+        title = _clean_title(
+            next(group for group in match.groups()[1:] if group is not None)
+        )
         if title:
             titles[map_name] = (title, source.lower())
     return titles
@@ -140,7 +165,9 @@ def player_start_counts(wad_path: str, map_name: str) -> dict[str, int]:
     editor = MapEditor(wad.maps[map_name])
     return {
         "player_one": sum(1 for thing in editor.things if int(thing.type) == 1),
-        "player_starts": sum(1 for thing in editor.things if int(thing.type) in {1, 2, 3, 4}),
+        "player_starts": sum(
+            1 for thing in editor.things if int(thing.type) in {1, 2, 3, 4}
+        ),
         "deathmatch": sum(1 for thing in editor.things if int(thing.type) == 11),
     }
 
@@ -167,11 +194,17 @@ def thing_spawns_at_skill(thing: Any, difficulty: int) -> bool:
     return True
 
 
-def selected_skill_spawn_summary(analysis: StaticAnalysisResult | None, difficulty: int) -> dict[str, Any]:
+def selected_skill_spawn_summary(
+    analysis: StaticAnalysisResult | None, difficulty: int
+) -> dict[str, Any]:
     if analysis is None:
         return {}
     summaries = analysis.spawn_summary_by_skill or {}
-    summary = summaries.get(str(difficulty)) or summaries.get(int(difficulty)) if isinstance(summaries, dict) else None
+    summary = (
+        summaries.get(str(difficulty)) or summaries.get(int(difficulty))
+        if isinstance(summaries, dict)
+        else None
+    )
     if isinstance(summary, dict):
         return summary
     return {
@@ -208,11 +241,15 @@ class AnalysisService:
             results.append(await self.analyze_map(wad_file, map_name))
         return results
 
-    async def analyze_map(self, wad_file: WadFile, map_name: str) -> StaticAnalysisResult:
+    async def analyze_map(
+        self, wad_file: WadFile, map_name: str
+    ) -> StaticAnalysisResult:
         map_name = map_name.upper()
         existing = await self.repo.get_by_wad_and_map(wad_file.id, map_name)
 
-        analysis_fields = await asyncio.to_thread(self._build_analysis_fields, wad_file, map_name, existing)
+        analysis_fields = await asyncio.to_thread(
+            self._build_analysis_fields, wad_file, map_name, existing
+        )
         analysis = StaticAnalysisResult(**analysis_fields)
         return await self.repo.upsert(analysis)
 
@@ -227,11 +264,17 @@ class AnalysisService:
             raise ValueError(f"Map {map_name} not found in WAD")
 
         editor = MapEditor(wad.maps[map_name])
-        metadata = map_metadata_for_wad(wad_file.stored_path, wad_file.original_filename).get(map_name, {})
+        metadata = map_metadata_for_wad(
+            wad_file.stored_path, wad_file.original_filename
+        ).get(map_name, {})
 
         thing_counts = Counter(int(thing.type) for thing in editor.things)
-        enemy_breakdown, total_monster_hp, hitscanner_count = self._enemy_breakdown(thing_counts)
-        item_breakdown, health_pts, armor_pts, ammo_score = self._item_breakdown(thing_counts)
+        enemy_breakdown, total_monster_hp, hitscanner_count = self._enemy_breakdown(
+            thing_counts
+        )
+        item_breakdown, health_pts, armor_pts, ammo_score = self._item_breakdown(
+            thing_counts
+        )
         spawn_summary_by_skill = self._spawn_summary_by_skill(editor)
         map_features = self._extract_map_features(editor, thing_counts)
         map_bounds = self._map_bounds_from_editor(editor)
@@ -244,10 +287,18 @@ class AnalysisService:
             map_height = None
 
         enemy_count = sum(item["count"] for item in enemy_breakdown.values())
-        hitscanner_percent = round((hitscanner_count / enemy_count) * 100, 2) if enemy_count else 0.0
-        health_ratio = round(health_pts / total_monster_hp, 4) if total_monster_hp else 0.0
-        ammo_ratio = round(ammo_score / total_monster_hp, 4) if total_monster_hp else 0.0
-        estimated_difficulty = self._difficulty(enemy_count, hitscanner_percent, health_ratio, ammo_ratio)
+        hitscanner_percent = (
+            round((hitscanner_count / enemy_count) * 100, 2) if enemy_count else 0.0
+        )
+        health_ratio = (
+            round(health_pts / total_monster_hp, 4) if total_monster_hp else 0.0
+        )
+        ammo_ratio = (
+            round(ammo_score / total_monster_hp, 4) if total_monster_hp else 0.0
+        )
+        estimated_difficulty = self._difficulty(
+            enemy_count, hitscanner_percent, health_ratio, ammo_ratio
+        )
         overview_path = self._render_overview(wad_file.id, map_name, editor)
 
         analysis_fields: dict[str, Any] = dict(
@@ -255,12 +306,19 @@ class AnalysisService:
             map_name=map_name,
             thing_count_total=len(editor.things),
             thing_count_enemies=enemy_count,
-            thing_count_items=sum(1 for thing_type in thing_counts for _ in range(thing_counts[thing_type]) if thing_type in ITEM_TYPES),
+            thing_count_items=sum(
+                1
+                for thing_type in thing_counts
+                for _ in range(thing_counts[thing_type])
+                if thing_type in ITEM_TYPES
+            ),
             thing_count_keys=sum(thing_counts[key] for key in KEY_TYPES),
             thing_count_weapons=sum(thing_counts[key] for key in WEAPON_TYPES),
             linedef_count=len(editor.linedefs),
             sector_count=len(editor.sectors),
-            secret_sector_count=sum(1 for sector in editor.sectors if int(sector.type) == 9),
+            secret_sector_count=sum(
+                1 for sector in editor.sectors if int(sector.type) == 9
+            ),
             vertex_count=len(editor.vertexes),
             map_width_units=map_width,
             map_height_units=map_height,
@@ -274,9 +332,13 @@ class AnalysisService:
             enemy_breakdown=enemy_breakdown,
             item_breakdown=item_breakdown,
             map_title=metadata.get("map_title"),
-            map_display_name=metadata.get("map_display_name") or f"{wad_file.original_filename} - {map_name}",
+            map_display_name=metadata.get("map_display_name")
+            or f"{wad_file.original_filename} - {map_name}",
             map_title_source=metadata.get("map_title_source") or "fallback_filename",
-            spawn_summary_by_skill={**spawn_summary_by_skill, "_map_features": map_features},
+            spawn_summary_by_skill={
+                **spawn_summary_by_skill,
+                "_map_features": map_features,
+            },
             map_overview_png_path=str(overview_path),
         )
         if existing is not None:
@@ -292,13 +354,20 @@ class AnalysisService:
                 continue
             name, hp, is_hitscanner = ENEMY_TYPES[thing_type]
             total = count * hp
-            breakdown[name] = {"count": count, "hp": hp, "total_hp": total, "hitscanner": is_hitscanner}
+            breakdown[name] = {
+                "count": count,
+                "hp": hp,
+                "total_hp": total,
+                "hitscanner": is_hitscanner,
+            }
             total_hp += total
             if is_hitscanner:
                 hitscanners += count
         return breakdown, total_hp, hitscanners
 
-    def _item_breakdown(self, counts: Counter[int]) -> tuple[dict[str, Any], int, int, int]:
+    def _item_breakdown(
+        self, counts: Counter[int]
+    ) -> tuple[dict[str, Any], int, int, int]:
         breakdown: dict[str, Any] = {}
         health_pts = 0
         armor_pts = 0
@@ -308,7 +377,12 @@ class AnalysisService:
                 continue
             name, value, category = ITEM_TYPES[thing_type]
             total = count * value
-            breakdown[name] = {"count": count, "value": value, "total": total, "category": category}
+            breakdown[name] = {
+                "count": count,
+                "value": value,
+                "total": total,
+                "category": category,
+            }
             if category == "health":
                 health_pts += total
             elif category == "armor":
@@ -325,17 +399,31 @@ class AnalysisService:
                 for thing in editor.things
                 if thing_spawns_at_skill(thing, difficulty)
             )
-            enemy_breakdown, total_monster_hp, hitscanner_count = self._enemy_breakdown(counts)
-            item_breakdown, health_pts, armor_pts, ammo_score = self._item_breakdown(counts)
+            enemy_breakdown, total_monster_hp, hitscanner_count = self._enemy_breakdown(
+                counts
+            )
+            item_breakdown, health_pts, armor_pts, ammo_score = self._item_breakdown(
+                counts
+            )
             enemy_count = sum(item["count"] for item in enemy_breakdown.values())
-            hitscanner_percent = round((hitscanner_count / enemy_count) * 100, 2) if enemy_count else 0.0
-            health_ratio = round(health_pts / total_monster_hp, 4) if total_monster_hp else 0.0
-            ammo_ratio = round(ammo_score / total_monster_hp, 4) if total_monster_hp else 0.0
+            hitscanner_percent = (
+                round((hitscanner_count / enemy_count) * 100, 2) if enemy_count else 0.0
+            )
+            health_ratio = (
+                round(health_pts / total_monster_hp, 4) if total_monster_hp else 0.0
+            )
+            ammo_ratio = (
+                round(ammo_score / total_monster_hp, 4) if total_monster_hp else 0.0
+            )
             summaries[str(difficulty)] = {
                 "difficulty_level": difficulty,
                 "thing_count_total": sum(counts.values()),
                 "thing_count_enemies": enemy_count,
-                "thing_count_items": sum(count for thing_type, count in counts.items() if thing_type in ITEM_TYPES),
+                "thing_count_items": sum(
+                    count
+                    for thing_type, count in counts.items()
+                    if thing_type in ITEM_TYPES
+                ),
                 "thing_count_keys": sum(counts[key] for key in KEY_TYPES),
                 "thing_count_weapons": sum(counts[key] for key in WEAPON_TYPES),
                 "total_monster_hp": total_monster_hp,
@@ -344,26 +432,79 @@ class AnalysisService:
                 "hitscanner_percent": hitscanner_percent,
                 "health_ratio": health_ratio,
                 "ammo_ratio": ammo_ratio,
-                "estimated_difficulty": self._difficulty(enemy_count, hitscanner_percent, health_ratio, ammo_ratio),
+                "estimated_difficulty": self._difficulty(
+                    enemy_count, hitscanner_percent, health_ratio, ammo_ratio
+                ),
                 "enemy_breakdown": enemy_breakdown,
                 "item_breakdown": item_breakdown,
             }
         return summaries
 
     @staticmethod
-    def _extract_map_features(editor: MapEditor, thing_counts: Counter[int]) -> dict[str, Any]:
-        door_specials = {1, 26, 31, 32, 33, 34, 46, 61, 62, 90, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118}
+    def _extract_map_features(
+        editor: MapEditor, thing_counts: Counter[int]
+    ) -> dict[str, Any]:
+        door_specials = {
+            1,
+            26,
+            31,
+            32,
+            33,
+            34,
+            46,
+            61,
+            62,
+            90,
+            103,
+            104,
+            105,
+            106,
+            107,
+            108,
+            109,
+            110,
+            111,
+            112,
+            113,
+            114,
+            115,
+            116,
+            117,
+            118,
+        }
         key_lock_specials = {32, 33, 34, 103, 106, 109}
-        lift_specials = {10, 14, 62, 66, 67, 68, 69, 70, 87, 88, 95, 100, 121, 122, 123, 124, 125, 126, 127, 128}
+        lift_specials = {
+            10,
+            14,
+            62,
+            66,
+            67,
+            68,
+            69,
+            70,
+            87,
+            88,
+            95,
+            100,
+            121,
+            122,
+            123,
+            124,
+            125,
+            126,
+            127,
+            128,
+        }
         exit_specials = {52, 53, 54, 55, 56, 57, 58, 59, 197, 198}
-        teleporter_specials = {10, 125, 126, 127}
         # Thing 14 is a teleport destination. Thing 39 is a yellow key card.
         teleporter_things = {14}
 
         door_count = 0
         locked_door_count = 0
         lift_count = 0
-        teleporter_count = sum(thing_counts[t] for t in teleporter_things if t in thing_counts)
+        teleporter_count = sum(
+            thing_counts[t] for t in teleporter_things if t in thing_counts
+        )
         exit_count = 0
 
         red_key_count = thing_counts.get(13, 0) + thing_counts.get(38, 0)
@@ -455,7 +596,9 @@ class AnalysisService:
         return "easy"
 
     def _render_overview(self, wad_id: UUID, map_name: str, editor: MapEditor) -> Path:
-        output = self.settings.analysis_storage_dir / f"{wad_id}_{map_name}_overview.png"
+        output = (
+            self.settings.analysis_storage_dir / f"{wad_id}_{map_name}_overview.png"
+        )
         output.parent.mkdir(parents=True, exist_ok=True)
         size = 1024
         image = Image.new("RGB", (size, size), "black")
@@ -469,7 +612,9 @@ class AnalysisService:
         ys = [int(vertex.y) for vertex in vertices]
         min_x, max_x = min(xs), max(xs)
         min_y, max_y = min(ys), max(ys)
-        scale = min((size - 40) / max(max_x - min_x, 1), (size - 40) / max(max_y - min_y, 1))
+        scale = min(
+            (size - 40) / max(max_x - min_x, 1), (size - 40) / max(max_y - min_y, 1)
+        )
 
         def point(index: int) -> tuple[int, int]:
             vertex = vertices[index]
@@ -478,8 +623,14 @@ class AnalysisService:
             return x, y
 
         for linedef in editor.linedefs:
-            color = (255, 80, 80) if getattr(linedef, "secret", False) else (190, 190, 190)
-            draw.line([point(int(linedef.vx_a)), point(int(linedef.vx_b))], fill=color, width=2)
+            color = (
+                (255, 80, 80) if getattr(linedef, "secret", False) else (190, 190, 190)
+            )
+            draw.line(
+                [point(int(linedef.vx_a)), point(int(linedef.vx_b))],
+                fill=color,
+                width=2,
+            )
 
         image.save(output)
         return output
@@ -488,4 +639,6 @@ class AnalysisService:
         if not path:
             return False
         overview = Path(path)
-        return overview.exists() and overview.parent == self.settings.analysis_storage_dir
+        return (
+            overview.exists() and overview.parent == self.settings.analysis_storage_dir
+        )

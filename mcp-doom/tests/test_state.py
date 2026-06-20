@@ -1,6 +1,5 @@
 """Unit tests for state extraction utilities."""
 
-import math
 
 import numpy as np
 

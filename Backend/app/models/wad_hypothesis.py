@@ -15,7 +15,14 @@ if TYPE_CHECKING:
     from app.models.wad_file import WadFile
 
 
-HYPOTHESIS_TAGS = {"BLOCKED_PATH", "KEY_LOCATION", "RESOURCE_CACHE", "VISUAL_GLITCH", "ENCOUNTER_HOTSPOT", "NAVIGATION_GAP"}
+HYPOTHESIS_TAGS = {
+    "BLOCKED_PATH",
+    "KEY_LOCATION",
+    "RESOURCE_CACHE",
+    "VISUAL_GLITCH",
+    "ENCOUNTER_HOTSPOT",
+    "NAVIGATION_GAP",
+}
 
 
 class WadHypothesis(Base):
@@ -29,12 +36,16 @@ class WadHypothesis(Base):
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     wad_file_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("wad_files.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=True),
+        ForeignKey("wad_files.id", ondelete="CASCADE"),
+        nullable=False,
     )
     map_name: Mapped[str] = mapped_column(String(16), nullable=False)
     tag: Mapped[str] = mapped_column(String(32), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    confidence: Mapped[float] = mapped_column(REAL, nullable=False, server_default=text("0.5"))
+    confidence: Mapped[float] = mapped_column(
+        REAL, nullable=False, server_default=text("0.5")
+    )
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     refuted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_seen_run_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -44,7 +55,10 @@ class WadHypothesis(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
     wad_file: Mapped[WadFile] = relationship("WadFile")

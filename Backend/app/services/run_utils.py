@@ -24,6 +24,7 @@ _PROFILE_ALIASES: dict[str, str] = {
 
 def get_behavior_profile(run: Any | None):
     from app.core.behavior_profiles import get_profile
+
     if run and getattr(run, "behavior_profile", None):
         name = _PROFILE_ALIASES.get(run.behavior_profile, run.behavior_profile)
         try:
@@ -41,7 +42,9 @@ def _ensure_aware(value: datetime | None) -> datetime | None:
     return value
 
 
-def _bounded_int(value: Any, default: int, lower: int = 0, upper: int | None = None) -> int:
+def _bounded_int(
+    value: Any, default: int, lower: int = 0, upper: int | None = None
+) -> int:
     try:
         parsed = int(float(value))
     except (TypeError, ValueError):
@@ -74,7 +77,11 @@ def _json_safe(value: Any) -> Any:
 
 
 def _summary(value: Any) -> str:
-    text = json.dumps(_json_safe(value), default=str) if isinstance(value, (dict, list)) else str(value)
+    text = (
+        json.dumps(_json_safe(value), default=str)
+        if isinstance(value, (dict, list))
+        else str(value)
+    )
     return text if len(text) <= 1000 else text[:1000] + "..."
 
 
@@ -90,7 +97,11 @@ def _compact_mcp_output(value: Any) -> Any:
     state, _ = normalize_mcp_state(value)
     if not isinstance(state, dict):
         return _summary(value)
-    compact = {key: val for key, val in state.items() if key not in {"telemetry_frames", "depth", "sectors"}}
+    compact = {
+        key: val
+        for key, val in state.items()
+        if key not in {"telemetry_frames", "depth", "sectors"}
+    }
     if isinstance(compact.get("objects"), list):
         compact["objects"] = compact["objects"][:12]
     if "action_summary" in state:
@@ -99,17 +110,40 @@ def _compact_mcp_output(value: Any) -> Any:
 
 
 def _compact_state_for_llm(state: dict[str, Any]) -> dict[str, Any]:
-    compact = {key: value for key, value in state.items() if key not in {"screenshot_png", "sectors", "depth"}}
+    compact = {
+        key: value
+        for key, value in state.items()
+        if key not in {"screenshot_png", "sectors", "depth"}
+    }
     variables = compact.get("game_variables")
     if isinstance(variables, dict):
         variable_names = {
-            "HEALTH", "ARMOR", "POSITION_X", "POSITION_Y", "POSITION_Z", "ANGLE",
-            "SELECTED_WEAPON", "SELECTED_WEAPON_AMMO", "KILLCOUNT", "ITEMCOUNT",
-            "SECRETCOUNT", "AMMO0", "AMMO1", "AMMO2", "AMMO3", "AMMO4", "AMMO5",
-            "AMMO6", "AMMO7", "AMMO8", "AMMO9",
+            "HEALTH",
+            "ARMOR",
+            "POSITION_X",
+            "POSITION_Y",
+            "POSITION_Z",
+            "ANGLE",
+            "SELECTED_WEAPON",
+            "SELECTED_WEAPON_AMMO",
+            "KILLCOUNT",
+            "ITEMCOUNT",
+            "SECRETCOUNT",
+            "AMMO0",
+            "AMMO1",
+            "AMMO2",
+            "AMMO3",
+            "AMMO4",
+            "AMMO5",
+            "AMMO6",
+            "AMMO7",
+            "AMMO8",
+            "AMMO9",
         }
         compact["game_variables"] = {
-            key: value for key, value in variables.items() if str(key).upper() in variable_names
+            key: value
+            for key, value in variables.items()
+            if str(key).upper() in variable_names
         }
     if isinstance(compact.get("weapon_state"), dict):
         compact["weapon_state"] = _compact_weapon_state_for_llm(compact["weapon_state"])
@@ -118,7 +152,10 @@ def _compact_state_for_llm(state: dict[str, Any]) -> dict[str, Any]:
         for obj in compact["objects"]:
             if not isinstance(obj, dict):
                 continue
-            if obj.get("type") in {"player", "decoration", "projectile"} or obj.get("is_visible") is False:
+            if (
+                obj.get("type") in {"player", "decoration", "projectile"}
+                or obj.get("is_visible") is False
+            ):
                 continue
             dist = float(obj.get("distance") or 999999)
             if obj.get("type") == "monster":
@@ -176,16 +213,32 @@ def _compact_weapon_state_for_llm(state: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
-def _compact_context_for_llm(context: dict[str, Any], *, list_limit: int = 5) -> dict[str, Any]:
+def _compact_context_for_llm(
+    context: dict[str, Any], *, list_limit: int = 5
+) -> dict[str, Any]:
     compact: dict[str, Any] = {}
     for key, value in context.items():
-        if key in {"objects", "visible_objects", "weapon_state", "game_variables", "tic", "tick"}:
+        if key in {
+            "objects",
+            "visible_objects",
+            "weapon_state",
+            "game_variables",
+            "tic",
+            "tick",
+        }:
             continue
         if key == "threats" and isinstance(value, list):
             compact[key] = [
                 {
                     threat_key: threat.get(threat_key)
-                    for threat_key in ("id", "name", "type", "distance", "attack_type", "is_visible")
+                    for threat_key in (
+                        "id",
+                        "name",
+                        "type",
+                        "distance",
+                        "attack_type",
+                        "is_visible",
+                    )
                     if threat_key in threat
                 }
                 if isinstance(threat, dict)
@@ -267,8 +320,16 @@ def _build_ascii_map_grid(
 
     # Place objects on the grid
     for obj in objects:
-        ox = float(obj.get("position_x") or obj.get("distance", 0) * math.cos(math.radians(float(obj.get("angle_to_aim") or 0))))
-        oy = float(obj.get("position_y") or obj.get("distance", 0) * math.sin(math.radians(float(obj.get("angle_to_aim") or 0))))
+        ox = float(
+            obj.get("position_x")
+            or obj.get("distance", 0)
+            * math.cos(math.radians(float(obj.get("angle_to_aim") or 0)))
+        )
+        oy = float(
+            obj.get("position_y")
+            or obj.get("distance", 0)
+            * math.sin(math.radians(float(obj.get("angle_to_aim") or 0)))
+        )
         # Use position_x/y if available (they are in the raw state, not always in compact)
         # Fallback: use angle_to_aim + distance from player
         if not obj.get("position_x"):
@@ -291,16 +352,20 @@ def _build_ascii_map_grid(
                 grid[gy][gx] = "K"
 
     # Place doors from navigation info
-    for door in (navigation_info.get("nearby_doors") or []):
+    for door in navigation_info.get("nearby_doors") or []:
         dx = float(door.get("x") or 0)
         dy = float(door.get("y") or 0)
         gx = int(math.floor(dx / CELL_SIZE)) - player_cell_x + half
         gy = half - (int(math.floor(dy / CELL_SIZE)) - player_cell_y)
-        if 0 <= gx < grid_w and 0 <= gy < grid_h and grid[gy][gx] not in ("P", "E", "I", "W", "K"):
+        if (
+            0 <= gx < grid_w
+            and 0 <= gy < grid_h
+            and grid[gy][gx] not in ("P", "E", "I", "W", "K")
+        ):
             grid[gy][gx] = "D"
 
     # Place known keys
-    for key_loc in (navigation_info.get("known_key_locations") or []):
+    for key_loc in navigation_info.get("known_key_locations") or []:
         kx = float(key_loc.get("x") or 0)
         ky = float(key_loc.get("y") or 0)
         gx = int(math.floor(kx / CELL_SIZE)) - player_cell_x + half
@@ -328,12 +393,14 @@ def _record_failure_critique(
 ) -> None:
     """Record a Reflexion-style failure critique for the LLM to learn from."""
     critiques: list[dict] = lockstep_state.setdefault("failure_critiques", [])
-    critiques.append({
-        "tick": tick,
-        "action": tool,
-        "params_summary": str(params)[:200],
-        "critique": reason,
-    })
+    critiques.append(
+        {
+            "tick": tick,
+            "action": tool,
+            "params_summary": str(params)[:200],
+            "critique": reason,
+        }
+    )
     if len(critiques) > _MAX_FAILURE_CRITIQUES:
         lockstep_state["failure_critiques"] = critiques[-_MAX_FAILURE_CRITIQUES:]
 
@@ -351,7 +418,8 @@ def _determine_agent_phase(
     """
     health = int(float(variables.get("health") or 100))
     visible_threats = [
-        t for t in (threat_assessment.get("threats") or [])
+        t
+        for t in (threat_assessment.get("threats") or [])
         if isinstance(t, dict) and t.get("is_visible") is not False
     ]
     threat_level = str(threat_assessment.get("threat_level") or "none")
@@ -372,7 +440,8 @@ def _determine_agent_phase(
 
     # Collecting: nearby items/ammo/health/weapons with no immediate threats
     nearby_items = [
-        o for o in objects
+        o
+        for o in objects
         if o.get("type") in ("ammo", "item", "health", "armor", "weapon")
         and (o.get("distance") or 9999) < 512
     ]
@@ -400,7 +469,8 @@ def _build_action_recommendations(
     variables = normalize_variables(state)
     health = int(float(variables.get("health") or 100))
     visible_threats = [
-        t for t in (threat_assessment.get("threats") or [])
+        t
+        for t in (threat_assessment.get("threats") or [])
         if isinstance(t, dict) and t.get("is_visible") is not False
     ]
     coverage_percent = lockstep_state.get("coverage_percent", 0)
@@ -409,62 +479,92 @@ def _build_action_recommendations(
     # Rule 1: Critical health → find health
     if health < 25:
         nearby_health = [
-            o for o in (state.get("objects") or [])
+            o
+            for o in (state.get("objects") or [])
             if o.get("type") == "health" and o.get("distance", 9999) < 800
         ]
         if nearby_health:
             closest = min(nearby_health, key=lambda o: o.get("distance", 9999))
-            recommendations.append({
-                "tool": "move_to",
-                "reason": f"Critical health ({health}HP) — move to {closest.get('name')} at {closest.get('distance')}u",
-                "params": {"object_id": closest.get("id"), "max_tics": 100},
-            })
+            recommendations.append(
+                {
+                    "tool": "move_to",
+                    "reason": f"Critical health ({health}HP) — move to {closest.get('name')} at {closest.get('distance')}u",
+                    "params": {"object_id": closest.get("id"), "max_tics": 100},
+                }
+            )
         else:
-            recommendations.append({
-                "tool": "explore",
-                "reason": f"Critical health ({health}HP) — search for health pickups",
-                "params": {"max_tics": 100, "stop_on_enemy": False, "stop_on_item": True},
-            })
+            recommendations.append(
+                {
+                    "tool": "explore",
+                    "reason": f"Critical health ({health}HP) — search for health pickups",
+                    "params": {
+                        "max_tics": 100,
+                        "stop_on_enemy": False,
+                        "stop_on_item": True,
+                    },
+                }
+            )
 
     # Rule 2: Visible enemy at combat range → engage
     elif visible_threats:
         closest_threat = min(visible_threats, key=lambda t: t.get("distance", 9999))
         dist = closest_threat.get("distance", 9999)
         if dist < 500:
-            recommendations.append({
-                "tool": "strafe_and_shoot",
-                "reason": f"Enemy {closest_threat.get('name')} at {dist}u — in range",
-                "params": {
-                    "object_id": closest_threat.get("id"),
-                    "direction": "auto",
-                    "shots": 5,
-                },
-            })
+            recommendations.append(
+                {
+                    "tool": "strafe_and_shoot",
+                    "reason": f"Enemy {closest_threat.get('name')} at {dist}u — in range",
+                    "params": {
+                        "object_id": closest_threat.get("id"),
+                        "direction": "auto",
+                        "shots": 5,
+                    },
+                }
+            )
 
     # Rule 3: Stuck → break loop
     if stuck_counter >= 2:
-        recommendations.append({
-            "tool": "explore",
-            "reason": f"Stuck for {stuck_counter} decisions — break fixation",
-            "params": {"max_tics": 80, "stop_on_enemy": False, "stop_on_item": True, "turn_before": 180.0},
-        })
+        recommendations.append(
+            {
+                "tool": "explore",
+                "reason": f"Stuck for {stuck_counter} decisions — break fixation",
+                "params": {
+                    "max_tics": 80,
+                    "stop_on_enemy": False,
+                    "stop_on_item": True,
+                    "turn_before": 180.0,
+                },
+            }
+        )
 
     # Rule 4: Low coverage + no threats → explore aggressively
     elif coverage_percent < 30 and not visible_threats:
-        recommendations.append({
-            "tool": "explore",
-            "reason": f"Coverage {coverage_percent}% — explore new areas",
-            "params": {"max_tics": 200, "stop_on_enemy": True, "stop_on_item": True},
-        })
+        recommendations.append(
+            {
+                "tool": "explore",
+                "reason": f"Coverage {coverage_percent}% — explore new areas",
+                "params": {
+                    "max_tics": 200,
+                    "stop_on_enemy": True,
+                    "stop_on_item": True,
+                },
+            }
+        )
 
     # Rule 5: Danger zone ahead → cautious approach
     danger_zones = (cross_run_context or {}).get("danger_zones", [])
     if danger_zones and not recommendations:
-        recommendations.append({
-            "tool": "explore",
-            "reason": f"Danger zone {danger_zones[0].get('distance_cells', '?')} cells ahead — proceed cautiously",
-            "params": {"max_tics": 60, "stop_on_enemy": True, "stop_on_item": False},
-        })
+        recommendations.append(
+            {
+                "tool": "explore",
+                "reason": f"Danger zone {danger_zones[0].get('distance_cells', '?')} cells ahead — proceed cautiously",
+                "params": {
+                    "max_tics": 60,
+                    "stop_on_enemy": True,
+                    "stop_on_item": False,
+                },
+            }
+        )
 
     return recommendations[:3]
 
@@ -505,11 +605,17 @@ def _build_llm_input(
             continue
         obj_type = obj.get("type", "")
         if obj_type == "monster":
-            enemy_distances.append({"name": obj.get("name"), "distance": dist, "id": obj.get("id")})
+            enemy_distances.append(
+                {"name": obj.get("name"), "distance": dist, "id": obj.get("id")}
+            )
         elif obj_type in ("ammo", "item", "health", "armor"):
-            item_distances.append({"name": obj.get("name"), "distance": dist, "id": obj.get("id")})
+            item_distances.append(
+                {"name": obj.get("name"), "distance": dist, "id": obj.get("id")}
+            )
         elif obj_type == "weapon":
-            weapon_distances.append({"name": obj.get("name"), "distance": dist, "id": obj.get("id")})
+            weapon_distances.append(
+                {"name": obj.get("name"), "distance": dist, "id": obj.get("id")}
+            )
     enemy_distances.sort(key=lambda x: x["distance"])
     item_distances.sort(key=lambda x: x["distance"])
     weapon_distances.sort(key=lambda x: x["distance"])
@@ -520,7 +626,9 @@ def _build_llm_input(
         "nearest_weapon": weapon_distances[0] if weapon_distances else None,
         "enemy_count": len(enemy_distances),
         "melee_range_threshold": 128,
-        "in_melee_range": (enemy_distances[0]["distance"] <= 128) if enemy_distances else False,
+        "in_melee_range": (enemy_distances[0]["distance"] <= 128)
+        if enemy_distances
+        else False,
     }
 
     # Compass: convert angle to cardinal direction
@@ -544,7 +652,9 @@ def _build_llm_input(
                 "items": variables.get("item_count"),
                 "secrets": variables.get("secret_count"),
             },
-            "weapon_state": _compact_weapon_state_for_llm(state.get("weapon_state") or {}),
+            "weapon_state": _compact_weapon_state_for_llm(
+                state.get("weapon_state") or {}
+            ),
             "scene_objects": objects[:8],
             "threat_summary": {
                 "threat_level": threat_assessment.get("threat_level"),
@@ -557,26 +667,41 @@ def _build_llm_input(
                     for threat in visible_threats
                 ],
                 "occluded_threat_count": occluded_count,
-                "incoming_projectile_count": threat_assessment.get("incoming_projectile_count", 0),
+                "incoming_projectile_count": threat_assessment.get(
+                    "incoming_projectile_count", 0
+                ),
             },
             "navigation": _compact_context_for_llm(navigation_info, list_limit=8),
             "coverage": {
                 "visited_cells_count": visited_count,
                 "total_map_cells_estimate": total_cells,
                 "coverage_percent": round(visited_count / max(total_cells, 1) * 100, 1),
-                "new_cells_last_5_decisions": int(lockstep_state.get("new_cells_last_5_decisions") or 0),
+                "new_cells_last_5_decisions": int(
+                    lockstep_state.get("new_cells_last_5_decisions") or 0
+                ),
                 "unvisited_quadrants": _compute_unvisited_quadrants(lockstep_state),
                 "warning": coverage_warning,
             },
             "navigation_hints": {
-                "suggested_turn_degrees": navigation_info.get("suggested_turn_delta", 0),
-                "facing_unexplored": navigation_info.get("suggested_direction") is not None,
-                "recent_stuck_events": int(lockstep_state.get("position_stuck_counter") or 0),
-                "consecutive_same_tool": int(lockstep_state.get("consecutive_get_state") or 0),
+                "suggested_turn_degrees": navigation_info.get(
+                    "suggested_turn_delta", 0
+                ),
+                "facing_unexplored": navigation_info.get("suggested_direction")
+                is not None,
+                "recent_stuck_events": int(
+                    lockstep_state.get("position_stuck_counter") or 0
+                ),
+                "consecutive_same_tool": int(
+                    lockstep_state.get("consecutive_get_state") or 0
+                ),
                 "frontier_cells": _compute_frontier_cells(lockstep_state, variables),
                 "danger_zones_ahead": (cross_run_context or {}).get("danger_zones", []),
-                "previous_run_hypotheses": (cross_run_context or {}).get("hypotheses", []),
-                "previous_run_outcomes": (cross_run_context or {}).get("run_summaries", []),
+                "previous_run_hypotheses": (cross_run_context or {}).get(
+                    "hypotheses", []
+                ),
+                "previous_run_outcomes": (cross_run_context or {}).get(
+                    "run_summaries", []
+                ),
             },
             "distance_context": distance_context,
             "agent_phase": _determine_agent_phase(
@@ -587,7 +712,11 @@ def _build_llm_input(
             ),
             "same_run_memory": _build_same_run_memory(lockstep_state),
             "action_recommendations": _build_action_recommendations(
-                state, threat_assessment, navigation_info, lockstep_state, cross_run_context
+                state,
+                threat_assessment,
+                navigation_info,
+                lockstep_state,
+                cross_run_context,
             ),
         }
     )
@@ -613,7 +742,9 @@ def _build_same_run_memory(
             "recent_actions": recent,
             "aggregates": _build_ledger_aggregates(all_actions, state),
             "budget": _build_budget_summary(state),
-            "failure_critiques": list(state.get("failure_critiques") or [])[-_MAX_FAILURE_CRITIQUES:],
+            "failure_critiques": list(state.get("failure_critiques") or [])[
+                -_MAX_FAILURE_CRITIQUES:
+            ],
         }
         if _serialized_size(projected) <= char_limit:
             return projected
@@ -626,10 +757,14 @@ def _serialized_size(value: Any) -> int:
     return len(json.dumps(value, separators=(",", ":"), default=str))
 
 
-def _minimal_ledger_projection(actions: list[dict[str, Any]], state: LockstepState) -> dict[str, Any]:
+def _minimal_ledger_projection(
+    actions: list[dict[str, Any]], state: LockstepState
+) -> dict[str, Any]:
     """Keep every older action represented by deterministic counts under extreme pressure."""
     tool_counts = dict(Counter(str(item.get("tool") or "unknown") for item in actions))
-    stop_counts = dict(Counter(str(item.get("stop_reason") or "unknown") for item in actions))
+    stop_counts = dict(
+        Counter(str(item.get("stop_reason") or "unknown") for item in actions)
+    )
     return {
         "older_milestones": {
             "compacted_action_count": len(actions),
@@ -645,11 +780,17 @@ def _minimal_ledger_projection(actions: list[dict[str, Any]], state: LockstepSta
     }
 
 
-def _build_older_milestones(actions: list[dict[str, Any]], state: LockstepState) -> dict[str, Any]:
+def _build_older_milestones(
+    actions: list[dict[str, Any]], state: LockstepState
+) -> dict[str, Any]:
     return {
         "compacted_action_count": len(actions),
-        "tool_counts": dict(Counter(str(item.get("tool") or "unknown") for item in actions)),
-        "stop_reason_counts": dict(Counter(str(item.get("stop_reason") or "unknown") for item in actions)),
+        "tool_counts": dict(
+            Counter(str(item.get("tool") or "unknown") for item in actions)
+        ),
+        "stop_reason_counts": dict(
+            Counter(str(item.get("stop_reason") or "unknown") for item in actions)
+        ),
         "completed_targets": _tail_dict(state.get("completed_object_ids"), 24),
         "failed_targets": _tail_dict(state.get("failed_object_ids"), 24),
         "checkpoints": list(state.get("checkpoints") or [])[-12:],
@@ -657,13 +798,21 @@ def _build_older_milestones(actions: list[dict[str, Any]], state: LockstepState)
     }
 
 
-def _build_ledger_aggregates(actions: list[dict[str, Any]], state: LockstepState) -> dict[str, Any]:
+def _build_ledger_aggregates(
+    actions: list[dict[str, Any]], state: LockstepState
+) -> dict[str, Any]:
     combat_attempts = state.get("combat_attempts") or {}
     return {
         "total_actions": len(actions),
-        "tool_counts": dict(Counter(str(item.get("tool") or "unknown") for item in actions)),
-        "stop_reason_counts": dict(Counter(str(item.get("stop_reason") or "unknown") for item in actions)),
-        "combat": _build_combat_summary(combat_attempts) if combat_attempts else _combat_summary_from_actions(actions),
+        "tool_counts": dict(
+            Counter(str(item.get("tool") or "unknown") for item in actions)
+        ),
+        "stop_reason_counts": dict(
+            Counter(str(item.get("stop_reason") or "unknown") for item in actions)
+        ),
+        "combat": _build_combat_summary(combat_attempts)
+        if combat_attempts
+        else _combat_summary_from_actions(actions),
         "progress_score": int(state.get("progress_score") or 0),
         "meaningful_progress_events": int(state.get("meaningful_progress_events") or 0),
         "runtime_warnings": list(state.get("quality_warnings") or [])[-8:],
@@ -737,7 +886,9 @@ def _build_budget_summary(state: LockstepState) -> dict[str, Any]:
     decisions = list(state.get("decision_history") or [])
     if not decisions:
         return {
-            "decisions_made": 0, "avg_ticks_per_decision": 0, "estimated_decisions_remaining": 0,
+            "decisions_made": 0,
+            "avg_ticks_per_decision": 0,
+            "estimated_decisions_remaining": 0,
         }
     first = decisions[0]
     last = decisions[-1]
@@ -780,7 +931,12 @@ def _record_decision_in_history(
     result = "success"
     if stop_reason in ("stuck", "arrival_blocked", "target_not_visible"):
         result = "blocked"
-    elif stop_reason in ("out_of_ammo", "no_usable_weapon", "no_target", "weapon_switch_failed"):
+    elif stop_reason in (
+        "out_of_ammo",
+        "no_usable_weapon",
+        "no_target",
+        "weapon_switch_failed",
+    ):
         result = "failed"
     elif stop_reason in ("max_tics",):
         result = "timeout"
@@ -814,7 +970,13 @@ def _record_decision_in_history(
         },
         "combat": {
             key: action_summary.get(key)
-            for key in ("weapon_used", "shots_fired", "hits_landed", "kills", "ammo_spent")
+            for key in (
+                "weapon_used",
+                "shots_fired",
+                "hits_landed",
+                "kills",
+                "ammo_spent",
+            )
             if action_summary.get(key) is not None
         },
         "state_delta": _state_delta(state_before, state_after),
@@ -834,7 +996,16 @@ def _compact_params(params: dict) -> dict[str, Any]:
     if "actions" in params:
         return {"actions": params["actions"]}
     out = {}
-    for key in ("object_id", "max_tics", "tics", "shots", "weapon_slot", "direction", "use", "backpedal"):
+    for key in (
+        "object_id",
+        "max_tics",
+        "tics",
+        "shots",
+        "weapon_slot",
+        "direction",
+        "use",
+        "backpedal",
+    ):
         if key in params:
             out[key] = params[key]
     return out
@@ -860,8 +1031,17 @@ def _state_delta(
     before = normalize_variables(state_before)
     after = normalize_variables(state_after)
     delta: dict[str, Any] = {}
-    for key in ("health", "armor", "ammo_total", "kill_count", "item_count", "secret_count"):
-        change = _bounded_float(after.get(key), 0.0) - _bounded_float(before.get(key), 0.0)
+    for key in (
+        "health",
+        "armor",
+        "ammo_total",
+        "kill_count",
+        "item_count",
+        "secret_count",
+    ):
+        change = _bounded_float(after.get(key), 0.0) - _bounded_float(
+            before.get(key), 0.0
+        )
         if change:
             delta[key] = round(change, 1)
     return delta
@@ -869,9 +1049,9 @@ def _state_delta(
 
 def _extract_key_finding(tool: str, stop_reason: str | None, params: dict) -> str:
     if stop_reason == "item_found":
-        return f"found item"
+        return "found item"
     if stop_reason == "enemy_spotted":
-        return f"spotted enemy"
+        return "spotted enemy"
     if stop_reason == "arrived":
         obj = params.get("object_id")
         return f"reached object {obj}" if obj else "arrived"
@@ -964,7 +1144,19 @@ def _update_combat_log(
         return
     attempts = dict(lockstep_state.get("combat_attempts") or {})
     key = str(object_id)
-    existing = attempts.get(key, {"id": object_id, "name": "unknown", "weapon": weapon, "shots": 0, "hits": 0, "killed": False, "distance": distance, "damage_dealt": 0})
+    existing = attempts.get(
+        key,
+        {
+            "id": object_id,
+            "name": "unknown",
+            "weapon": weapon,
+            "shots": 0,
+            "hits": 0,
+            "killed": False,
+            "distance": distance,
+            "damage_dealt": 0,
+        },
+    )
     existing["shots"] += shots
     existing["hits"] += hits
     existing["damage_dealt"] += damage_dealt
@@ -984,7 +1176,9 @@ def _record_checkpoint(
     event: str,
 ) -> None:
     checkpoints = list(lockstep_state.get("checkpoints") or [])
-    checkpoints.append({"tick": tick, "event": event[:80], "pos": {"x": round(x, 1), "y": round(y, 1)}})
+    checkpoints.append(
+        {"tick": tick, "event": event[:80], "pos": {"x": round(x, 1), "y": round(y, 1)}}
+    )
     lockstep_state["checkpoints"] = checkpoints[-15:]
 
 
@@ -1065,15 +1259,23 @@ def _track_visited_cell(state: dict[str, Any], lockstep_state: LockstepState) ->
     y = float(variables.get("y") or 0)
     if x == 0 and y == 0:
         raw_vars = state.get("game_variables") or state.get("variables") or {}
-        x = float(raw_vars.get("POSITION_X", raw_vars.get("position_x", raw_vars.get("x", 0))) or 0)
-        y = float(raw_vars.get("POSITION_Y", raw_vars.get("position_y", raw_vars.get("y", 0))) or 0)
+        x = float(
+            raw_vars.get("POSITION_X", raw_vars.get("position_x", raw_vars.get("x", 0)))
+            or 0
+        )
+        y = float(
+            raw_vars.get("POSITION_Y", raw_vars.get("position_y", raw_vars.get("y", 0)))
+            or 0
+        )
     cell_key = f"{round(x / CELL_SIZE)},{round(y / CELL_SIZE)}"
     visited = lockstep_state.get("visited_cells") or {}
     was_new = cell_key not in visited
     visited[cell_key] = visited.get(cell_key, 0) + 1
     lockstep_state["visited_cells"] = dict(list(visited.items())[-200:])
     if was_new:
-        lockstep_state["_new_cells_current"] = lockstep_state.get("_new_cells_current", 0) + 1
+        lockstep_state["_new_cells_current"] = (
+            lockstep_state.get("_new_cells_current", 0) + 1
+        )
 
 
 def _tail_dict(value: Any, limit: int) -> dict[str, Any]:
@@ -1108,9 +1310,14 @@ def _hypothesis_category_key(text: str) -> str:
     lower = text.lower()
     if any(kw in lower for kw in ("softlock", "progression", "unreachable", "stuck")):
         return "PROGRESSION"
-    if any(kw in lower for kw in ("blocked", "collision", "gap", "sealed", "non-interactive")):
+    if any(
+        kw in lower
+        for kw in ("blocked", "collision", "gap", "sealed", "non-interactive")
+    ):
         return "GEOMETRY"
-    if any(kw in lower for kw in ("ammo", "starvation", "health", "resource", "weapon")):
+    if any(
+        kw in lower for kw in ("ammo", "starvation", "health", "resource", "weapon")
+    ):
         return "RESOURCE_BALANCE"
     if any(kw in lower for kw in ("encounter", "combat", "monster", "hitscanner")):
         return "ENCOUNTER_DESIGN"
@@ -1140,7 +1347,11 @@ def _merge_hypotheses(
     kills = 0
     has_runtime_state = isinstance(state, dict)
     if has_runtime_state:
-        variables = state.get("game_variables") if isinstance(state.get("game_variables"), dict) else state
+        variables = (
+            state.get("game_variables")
+            if isinstance(state.get("game_variables"), dict)
+            else state
+        )
         kills = int(variables.get("KILLS") or 0)
 
     repetition_counts = dict(lockstep_state.get("hypothesis_repetition_counts") or {})
@@ -1155,7 +1366,12 @@ def _merge_hypotheses(
 
         category = _hypothesis_category_key(text)
 
-        if has_runtime_state and category == "PROGRESSION" and kills < 2 and visited_count < 5:
+        if (
+            has_runtime_state
+            and category == "PROGRESSION"
+            and kills < 2
+            and visited_count < 5
+        ):
             continue
 
         repetition_counts[category] = repetition_counts.get(category, 0) + 1
@@ -1204,7 +1420,11 @@ def _extract_sector_ids(value: Any) -> list[int]:
     for key in ("visited_sector_ids", "explored_sectors"):
         if isinstance(value.get(key), list):
             candidates.extend(value[key])
-    variables = value.get("game_variables") if isinstance(value.get("game_variables"), dict) else {}
+    variables = (
+        value.get("game_variables")
+        if isinstance(value.get("game_variables"), dict)
+        else {}
+    )
     for key in ("current_sector_id", "sector_id", "player_sector_id", "sector_index"):
         if variables.get(key) is not None:
             candidates.append(variables.get(key))
@@ -1292,7 +1512,11 @@ def _compute_frontier_cells(
 def _factual_game_tic(state: dict[str, Any], lockstep_state: dict[str, Any]) -> int:
     previous = lockstep_state.get("last_tick")
     last_tick = int(previous) if previous is not None else -1
-    variables = state.get("game_variables") if isinstance(state.get("game_variables"), dict) else {}
+    variables = (
+        state.get("game_variables")
+        if isinstance(state.get("game_variables"), dict)
+        else {}
+    )
     raw_tick = state.get("tic", variables.get("TIC"))
     factual_tick = _bounded_int(raw_tick, default=max(last_tick, 0), lower=0)
     lockstep_state["last_tick"] = max(last_tick, factual_tick)
@@ -1308,7 +1532,9 @@ def _state_report_call(state: dict[str, Any]) -> dict[str, Any]:
             {
                 **_compact_state_for_llm(state),
                 "action_summary": {
-                    "stop_reason": "episode_finished" if state.get("episode_finished") else "state_report",
+                    "stop_reason": "episode_finished"
+                    if state.get("episode_finished")
+                    else "state_report",
                     "executor_control": False,
                     "lockstep_control": True,
                 },
@@ -1337,7 +1563,9 @@ def _pwad_crash_fields(exc: Exception, stage: str) -> dict[str, Any]:
     raw_error = str(exc)
     summary = "PWAD crashed or failed to initialize under the configured ViZDoom/Freedoom test environment."
     if stage == "gameplay":
-        summary = "PWAD runtime crashed or disconnected during the automated playthrough."
+        summary = (
+            "PWAD runtime crashed or disconnected during the automated playthrough."
+        )
     return {
         "failure_category": PWAD_CRASH_CATEGORY,
         "failure_stage": stage,
@@ -1357,7 +1585,9 @@ def _infrastructure_failure_fields(exc: Exception, stage: str) -> dict[str, Any]
     elif stage == "mcp_tool_timeout":
         summary = "mcp-doom stopped responding during an MCP tool call."
     else:
-        summary = "The test infrastructure failed before the PWAD result could be classified."
+        summary = (
+            "The test infrastructure failed before the PWAD result could be classified."
+        )
     return {
         "failure_category": INFRASTRUCTURE_CATEGORY,
         "failure_stage": stage,
@@ -1371,11 +1601,16 @@ def _infrastructure_failure_fields(exc: Exception, stage: str) -> dict[str, Any]
 
 
 def _normalize_take_action_params(params: dict[str, Any]) -> dict[str, Any]:
-    from app.services.run_constants import TAKE_ACTION_BINARY_BUTTONS, TAKE_ACTION_BUTTONS
+    from app.services.run_constants import (
+        TAKE_ACTION_BINARY_BUTTONS,
+        TAKE_ACTION_BUTTONS,
+    )
 
     actions_source = params.get("actions")
     if not isinstance(actions_source, dict):
-        actions_source = {key: value for key, value in params.items() if key in TAKE_ACTION_BUTTONS}
+        actions_source = {
+            key: value for key, value in params.items() if key in TAKE_ACTION_BUTTONS
+        }
 
     actions: dict[str, float | int] = {}
     for key, value in actions_source.items():
@@ -1396,7 +1631,10 @@ def _normalize_take_action_params(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _bound_mcp_tool_params(tool: str, params: dict[str, Any]) -> dict[str, Any]:
-    from app.services.run_constants import COMPOUND_TELEMETRY_TOOLS, EXPLORE_MAX_TICS_UPPER
+    from app.services.run_constants import (
+        COMPOUND_TELEMETRY_TOOLS,
+        EXPLORE_MAX_TICS_UPPER,
+    )
 
     if tool == "explore":
         params["max_tics"] = _bounded_int(
@@ -1410,16 +1648,27 @@ def _bound_mcp_tool_params(tool: str, params: dict[str, Any]) -> dict[str, Any]:
         if "stop_on_item" in params:
             params["stop_on_item"] = bool(params["stop_on_item"])
         if "turn_before" in params:
-            params["turn_before"] = round(max(-360.0, min(360.0, _bounded_float(params.get("turn_before"), 0.0))), 1)
+            params["turn_before"] = round(
+                max(-360.0, min(360.0, _bounded_float(params.get("turn_before"), 0.0))),
+                1,
+            )
     elif tool in {"aim_and_shoot", "strafe_and_shoot"}:
-        params["max_tics"] = _bounded_int(params.get("max_tics"), default=90, lower=10, upper=120)
+        params["max_tics"] = _bounded_int(
+            params.get("max_tics"), default=90, lower=10, upper=120
+        )
         if "shots" in params:
-            params["shots"] = _bounded_int(params.get("shots"), default=5, lower=1, upper=8)
+            params["shots"] = _bounded_int(
+                params.get("shots"), default=5, lower=1, upper=8
+            )
         if tool == "strafe_and_shoot":
             direction = str(params.get("direction") or "auto").lower()
-            params["direction"] = direction if direction in {"left", "right", "auto"} else "auto"
+            params["direction"] = (
+                direction if direction in {"left", "right", "auto"} else "auto"
+            )
     elif tool == "move_to":
-        params["max_tics"] = _bounded_int(params.get("max_tics"), default=140, lower=20, upper=180)
+        params["max_tics"] = _bounded_int(
+            params.get("max_tics"), default=140, lower=20, upper=180
+        )
         if "use" in params:
             params["use"] = bool(params["use"])
         if "stop_on_enemy" in params:
@@ -1429,15 +1678,25 @@ def _bound_mcp_tool_params(tool: str, params: dict[str, Any]) -> dict[str, Any]:
         if "backpedal" in params:
             params["backpedal"] = bool(params["backpedal"])
     elif tool == "select_weapon":
-        params["weapon_slot"] = _bounded_int(params.get("weapon_slot"), default=2, lower=0, upper=9)
-        params["max_tics"] = _bounded_int(params.get("max_tics"), default=20, lower=1, upper=40)
+        params["weapon_slot"] = _bounded_int(
+            params.get("weapon_slot"), default=2, lower=0, upper=9
+        )
+        params["max_tics"] = _bounded_int(
+            params.get("max_tics"), default=20, lower=1, upper=40
+        )
     if tool in COMPOUND_TELEMETRY_TOOLS and "telemetry_stride" in params:
-        params["telemetry_stride"] = _bounded_int(params.get("telemetry_stride"), default=1, lower=1, upper=10)
+        params["telemetry_stride"] = _bounded_int(
+            params.get("telemetry_stride"), default=1, lower=1, upper=10
+        )
     return params
 
 
 def _normalize_mcp_params(tool: str, params: dict[str, Any]) -> dict[str, Any]:
-    from app.services.run_constants import OBJECT_ID_ALIASES, OBJECT_ID_TOOLS, TOOL_PARAM_ALLOWLIST
+    from app.services.run_constants import (
+        OBJECT_ID_ALIASES,
+        OBJECT_ID_TOOLS,
+        TOOL_PARAM_ALLOWLIST,
+    )
 
     if tool == "step":
         return params
@@ -1468,7 +1727,9 @@ def _compute_dynamic_throttle(
 ) -> float:
     variables = normalize_variables(state)
     objects = state.get("objects") or []
-    visible_monsters = [o for o in objects if o.get("type") == "monster" and o.get("is_visible")]
+    visible_monsters = [
+        o for o in objects if o.get("type") == "monster" and o.get("is_visible")
+    ]
     health = float(variables.get("health", 100))
     ammo_total = float(variables.get("ammo_total", 0))
 
@@ -1507,11 +1768,13 @@ def generate_map_layout_png(
     if not base_overview_path:
         return None
     from pathlib import Path
+
     path = Path(base_overview_path)
     if not path.exists():
         return None
     try:
         from PIL import Image, ImageDraw
+
         image = Image.open(path).convert("RGBA")
         draw = ImageDraw.Draw(image, "RGBA")
         width, height = image.size
@@ -1537,9 +1800,14 @@ def generate_map_layout_png(
             max_y += 1
 
         margin = 20
+
         def project(x: float, y: float) -> tuple[int, int]:
             px = int(margin + ((x - min_x) / (max_x - min_x)) * (width - 2 * margin))
-            py = int(height - margin - ((y - min_y) / (max_y - min_y)) * (height - 2 * margin))
+            py = int(
+                height
+                - margin
+                - ((y - min_y) / (max_y - min_y)) * (height - 2 * margin)
+            )
             return px, py
 
         # Draw position trail
@@ -1552,14 +1820,25 @@ def generate_map_layout_png(
 
         # Draw current position (bright cyan)
         cx, cy = project(current_x, current_y)
-        draw.ellipse((cx - 8, cy - 8, cx + 8, cy + 8), fill=(8, 145, 178, 230), outline=(255, 255, 255, 220), width=2)
+        draw.ellipse(
+            (cx - 8, cy - 8, cx + 8, cy + 8),
+            fill=(8, 145, 178, 230),
+            outline=(255, 255, 255, 220),
+            width=2,
+        )
 
         # Draw start marker if we have positions
         if trail_points:
             sx, sy = trail_points[0]
-            draw.ellipse((sx - 6, sy - 6, sx + 6, sy + 6), fill=(22, 163, 74, 200), outline=(255, 255, 255, 200), width=2)
+            draw.ellipse(
+                (sx - 6, sy - 6, sx + 6, sy + 6),
+                fill=(22, 163, 74, 200),
+                outline=(255, 255, 255, 200),
+                width=2,
+            )
 
         from io import BytesIO
+
         buffer = BytesIO()
         image.save(buffer, format="PNG")
         return buffer.getvalue()
@@ -1577,4 +1856,6 @@ def _estimate_total_map_cells(analysis: Any) -> int | None:
         return None
     if parsed_width <= 0 or parsed_height <= 0:
         return None
-    return max(1, math.ceil(parsed_width / CELL_SIZE) * math.ceil(parsed_height / CELL_SIZE))
+    return max(
+        1, math.ceil(parsed_width / CELL_SIZE) * math.ceil(parsed_height / CELL_SIZE)
+    )

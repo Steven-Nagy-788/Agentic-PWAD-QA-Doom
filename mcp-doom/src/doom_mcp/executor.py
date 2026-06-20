@@ -167,7 +167,9 @@ class AutonomousExecutor:
         self._stop_flag.clear()
         self._paused.set()
         self._thread = threading.Thread(
-            target=self._run_loop, name="doom-executor", daemon=True,
+            target=self._run_loop,
+            name="doom-executor",
+            daemon=True,
         )
         self._thread.start()
 
@@ -214,8 +216,12 @@ class AutonomousExecutor:
             self._objectives.append(objective)
             self._objectives.sort(key=lambda o: o.priority, reverse=True)
         if replace:
-            self._log_event(0, "objectives_cleared", "Objective queue replaced by director")
-        self._log_event(0, "objective_set", f"{objective.type.value} priority={objective.priority}")
+            self._log_event(
+                0, "objectives_cleared", "Objective queue replaced by director"
+            )
+        self._log_event(
+            0, "objective_set", f"{objective.type.value} priority={objective.priority}"
+        )
 
     def clear_objectives(self) -> None:
         with self._director_lock:
@@ -272,7 +278,10 @@ class AutonomousExecutor:
             xs = [p[0] for p in self._position_history]
             ys = [p[1] for p in self._position_history]
             spread = math.hypot(max(xs) - min(xs), max(ys) - min(ys))
-            recent_position = {"x": self._position_history[-1][0], "y": self._position_history[-1][1]}
+            recent_position = {
+                "x": self._position_history[-1][0],
+                "y": self._position_history[-1][1],
+            }
         else:
             spread = 0.0
             recent_position = None
@@ -308,7 +317,7 @@ class AutonomousExecutor:
             for e in snapshot
         ]
         # Cursor-based: return events since last call
-        new_events = result[self._event_cursor:]
+        new_events = result[self._event_cursor :]
         self._event_cursor = len(result)
         return new_events
 
@@ -333,7 +342,9 @@ class AutonomousExecutor:
                 self._consecutive_errors += 1
                 self._log_event(0, "error", str(e))
                 if self._consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
-                    self._log_event(0, "error", "Too many consecutive errors, executor stopping")
+                    self._log_event(
+                        0, "error", "Too many consecutive errors, executor stopping"
+                    )
                     self._state = ExecutorState.IDLE
                     return
                 time.sleep(0.1)
@@ -392,7 +403,9 @@ class AutonomousExecutor:
             armor = self._game.get_game_variable(vzd.GameVariable.ARMOR)
             ammo = self._game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO)
             weapon = self._game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)
-            attack_ready = bool(self._game.get_game_variable(vzd.GameVariable.ATTACK_READY))
+            attack_ready = bool(
+                self._game.get_game_variable(vzd.GameVariable.ATTACK_READY)
+            )
             dead = bool(self._game.get_game_variable(vzd.GameVariable.DEAD))
 
             if dead:
@@ -406,10 +419,21 @@ class AutonomousExecutor:
         items = self._classify_items(objects, px, py)
 
         return _TickSnapshot(
-            px=px, py=py, pz=pz, pa=pa,
-            health=health, armor=armor, ammo=ammo, weapon=weapon,
-            attack_ready=attack_ready, dead=dead, tic=tic,
-            threats=threats, items=items, depth=depth, objects=objects,
+            px=px,
+            py=py,
+            pz=pz,
+            pa=pa,
+            health=health,
+            armor=armor,
+            ammo=ammo,
+            weapon=weapon,
+            attack_ready=attack_ready,
+            dead=dead,
+            tic=tic,
+            threats=threats,
+            items=items,
+            depth=depth,
+            objects=objects,
         )
 
     def _get_strategy_copy(self) -> Strategy:
@@ -458,11 +482,19 @@ class AutonomousExecutor:
                     if self._objectives:
                         self._objectives[0].tics_active += 1
                         # Timeout check
-                        if objective.timeout_tics > 0 and self._objectives[0].tics_active >= objective.timeout_tics:
+                        if (
+                            objective.timeout_tics > 0
+                            and self._objectives[0].tics_active
+                            >= objective.timeout_tics
+                        ):
                             expired = self._objectives.pop(0)
-                            objective = self._objectives[0] if self._objectives else None
+                            objective = (
+                                self._objectives[0] if self._objectives else None
+                            )
                 if expired is not None:
-                    self._log_event(snap.tic, "objective_failed", f"Timeout: {expired.type.value}")
+                    self._log_event(
+                        snap.tic, "objective_failed", f"Timeout: {expired.type.value}"
+                    )
 
                 if objective is not None:
                     state_map = {
@@ -482,13 +514,16 @@ class AutonomousExecutor:
                 self._state = self._default_state(snap, strategy)
 
         if self._state != old_state:
-            self._log_event(snap.tic, "state_change", f"{old_state.value} -> {self._state.value}")
+            self._log_event(
+                snap.tic, "state_change", f"{old_state.value} -> {self._state.value}"
+            )
 
     def _default_state(self, snap: _TickSnapshot, strategy: Strategy) -> ExecutorState:
         # Health low + health items nearby -> COLLECTING
         if snap.health <= strategy.health_collect_threshold:
             health_items = [
-                i for i in snap.items
+                i
+                for i in snap.items
                 if i["category"] == "health" and i["distance"] <= strategy.collect_range
             ]
             if health_items:
@@ -497,13 +532,19 @@ class AutonomousExecutor:
         # Ammo low + ammo nearby -> COLLECTING
         if snap.ammo <= strategy.ammo_switch_threshold:
             ammo_items = [
-                i for i in snap.items
-                if i["category"] in {"ammo", "weapon"} and i["distance"] <= strategy.collect_range
+                i
+                for i in snap.items
+                if i["category"] in {"ammo", "weapon"}
+                and i["distance"] <= strategy.collect_range
             ]
             if ammo_items:
                 return ExecutorState.COLLECTING
 
-        key_items = [i for i in snap.items if i["category"] == "key" and i["distance"] <= strategy.collect_range]
+        key_items = [
+            i
+            for i in snap.items
+            if i["category"] == "key" and i["distance"] <= strategy.collect_range
+        ]
         if key_items:
             return ExecutorState.COLLECTING
 
@@ -513,9 +554,15 @@ class AutonomousExecutor:
         for item in snap.items:
             if item["distance"] > strategy.collect_range:
                 continue
-            if snap.ammo <= strategy.ammo_switch_threshold and item["category"] in {"ammo", "weapon"}:
+            if snap.ammo <= strategy.ammo_switch_threshold and item["category"] in {
+                "ammo",
+                "weapon",
+            }:
                 return True
-            if snap.health <= strategy.health_collect_threshold and item["category"] == "health":
+            if (
+                snap.health <= strategy.health_collect_threshold
+                and item["category"] == "health"
+            ):
                 return True
             if item["category"] == "key":
                 return True
@@ -531,7 +578,10 @@ class AutonomousExecutor:
         if len(self._position_history) > _STUCK_WINDOW:
             self._position_history.pop(0)
 
-        if self._is_stuck() and self._state not in (ExecutorState.IDLE, ExecutorState.FIGHTING):
+        if self._is_stuck() and self._state not in (
+            ExecutorState.IDLE,
+            ExecutorState.FIGHTING,
+        ):
             return self._stuck_recovery_action(snap)
 
         if self._state == ExecutorState.FIGHTING:
@@ -617,11 +667,11 @@ class AutonomousExecutor:
             h, w = snap.depth.shape
             band_h = max(h // 6, 1)
             mid = h // 2
-            band = snap.depth[mid - band_h:mid + band_h, :]
+            band = snap.depth[mid - band_h : mid + band_h, :]
             third = w // 3
             left_score = float(band[:, :third].mean())
-            center_score = float(band[:, third:2*third].mean())
-            right_score = float(band[:, 2*third:].mean())
+            center_score = float(band[:, third : 2 * third].mean())
+            right_score = float(band[:, 2 * third :].mean())
 
             if center_score < _WALL_CLOSE:
                 if abs(left_score - right_score) > 3:
@@ -657,7 +707,9 @@ class AutonomousExecutor:
 
         # Prioritize critical resources before incidental pickups.
         target_item = None
-        candidates = [item for item in snap.items if item["distance"] <= strategy.collect_range]
+        candidates = [
+            item for item in snap.items if item["distance"] <= strategy.collect_range
+        ]
         if not candidates:
             candidates = snap.items
 
@@ -744,7 +796,11 @@ class AutonomousExecutor:
                                 if self._objectives:
                                     completed = self._objectives.pop(0)
                             if completed is not None:
-                                self._log_event(snap.tic, "objective_complete", f"{completed.type.value}")
+                                self._log_event(
+                                    snap.tic,
+                                    "objective_complete",
+                                    f"{completed.type.value}",
+                                )
                             return self._build_action([])
                         break
 
@@ -765,7 +821,9 @@ class AutonomousExecutor:
                 if self._objectives:
                     completed = self._objectives.pop(0)
             if completed is not None:
-                self._log_event(snap.tic, "objective_complete", f"{completed.type.value}")
+                self._log_event(
+                    snap.tic, "objective_complete", f"{completed.type.value}"
+                )
             return self._build_action([])
 
         clamped = max(-_MAX_TURN_SPEED, min(_MAX_TURN_SPEED, angle))
@@ -838,14 +896,16 @@ class AutonomousExecutor:
             if obj["name"] == "Archvile":
                 score += 100
 
-            threats.append({
-                "id": obj["id"],
-                "name": obj["name"],
-                "distance": round(dist, 1),
-                "angle_to_aim": round(obj["angle_to_aim"], 1),
-                "attack_type": info["attack"],
-                "priority_score": round(score, 1),
-            })
+            threats.append(
+                {
+                    "id": obj["id"],
+                    "name": obj["name"],
+                    "distance": round(dist, 1),
+                    "angle_to_aim": round(obj["angle_to_aim"], 1),
+                    "attack_type": info["attack"],
+                    "priority_score": round(score, 1),
+                }
+            )
 
         threats.sort(key=lambda t: t["priority_score"], reverse=True)
         return threats
@@ -863,7 +923,17 @@ class AutonomousExecutor:
 
             # Categorize
             name = obj["name"].lower()
-            if any(h in name for h in ("health", "medikit", "stimpack", "soulsphere", "megasphere", "berserk")):
+            if any(
+                h in name
+                for h in (
+                    "health",
+                    "medikit",
+                    "stimpack",
+                    "soulsphere",
+                    "megasphere",
+                    "berserk",
+                )
+            ):
                 category = "health"
             elif info["type"] == "ammo" or "ammo" in name:
                 category = "ammo"
@@ -874,13 +944,15 @@ class AutonomousExecutor:
             else:
                 category = "other"
 
-            items.append({
-                "id": obj["id"],
-                "name": obj["name"],
-                "distance": round(dist, 1),
-                "angle_to_aim": round(obj["angle_to_aim"], 1),
-                "category": category,
-            })
+            items.append(
+                {
+                    "id": obj["id"],
+                    "name": obj["name"],
+                    "distance": round(dist, 1),
+                    "angle_to_aim": round(obj["angle_to_aim"], 1),
+                    "category": category,
+                }
+            )
 
         return items
 

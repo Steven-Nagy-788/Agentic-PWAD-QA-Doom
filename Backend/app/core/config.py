@@ -28,7 +28,10 @@ class Settings(BaseSettings):
     postgres_password: str = ""
     database_url: str | None = None
 
-    storage_dir: Path = Field(default=Path("storage"), validation_alias=AliasChoices("STORAGE_BASE", "STORAGE_DIR"))
+    storage_dir: Path = Field(
+        default=Path("storage"),
+        validation_alias=AliasChoices("STORAGE_BASE", "STORAGE_DIR"),
+    )
     wad_storage_dir: Path | None = None
     report_storage_dir: Path | None = None
     recording_storage_dir: Path | None = None
@@ -77,7 +80,14 @@ class Settings(BaseSettings):
             return value
         if value is None:
             return False
-        return str(value).strip().lower() in {"1", "true", "yes", "on", "debug", "development"}
+        return str(value).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+            "debug",
+            "development",
+        }
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -144,26 +154,48 @@ class Settings(BaseSettings):
                 f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
                 f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
             )
-        self.database_url = self.database_url.replace("postgresql+psycopg://", "postgresql+asyncpg://")
-        if not self.database_url.startswith(("postgresql+asyncpg://", "sqlite+aiosqlite://")):
-            raise ValueError("DATABASE_URL must be an async SQLAlchemy URL, for example postgresql+asyncpg://...")
+        self.database_url = self.database_url.replace(
+            "postgresql+psycopg://", "postgresql+asyncpg://"
+        )
+        if not self.database_url.startswith(
+            ("postgresql+asyncpg://", "sqlite+aiosqlite://")
+        ):
+            raise ValueError(
+                "DATABASE_URL must be an async SQLAlchemy URL, for example postgresql+asyncpg://..."
+            )
 
         if self.max_run_ticks < self.default_run_ticks:
-            raise ValueError("MAX_RUN_TICKS must be greater than or equal to DEFAULT_RUN_TICKS")
+            raise ValueError(
+                "MAX_RUN_TICKS must be greater than or equal to DEFAULT_RUN_TICKS"
+            )
 
         if self.debug or self.app_env.lower() in {"dev", "development", "local"}:
-            self.cors_origins = list(dict.fromkeys([*self.cors_origins, "http://localhost:3000", "http://127.0.0.1:3000"]))
+            self.cors_origins = list(
+                dict.fromkeys(
+                    [
+                        *self.cors_origins,
+                        "http://localhost:3000",
+                        "http://127.0.0.1:3000",
+                    ]
+                )
+            )
 
         self.storage_dir = self._resolve_path(self.storage_dir)
-        self.wad_storage_dir = self._resolve_path(self.wad_storage_dir or self.storage_dir / "wads")
-        self.report_storage_dir = self._resolve_path(self.report_storage_dir or self.storage_dir / "reports")
+        self.wad_storage_dir = self._resolve_path(
+            self.wad_storage_dir or self.storage_dir / "wads"
+        )
+        self.report_storage_dir = self._resolve_path(
+            self.report_storage_dir or self.storage_dir / "reports"
+        )
         self.recording_storage_dir = self._resolve_path(
             self.recording_storage_dir or self.storage_dir / "recordings"
         )
         self.screenshot_storage_dir = self._resolve_path(
             self.screenshot_storage_dir or self.storage_dir / "screenshots"
         )
-        self.analysis_storage_dir = self._resolve_path(self.analysis_storage_dir or self.storage_dir / "analysis")
+        self.analysis_storage_dir = self._resolve_path(
+            self.analysis_storage_dir or self.storage_dir / "analysis"
+        )
 
         for path in (
             self.storage_dir,

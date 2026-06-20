@@ -4,7 +4,20 @@ import uuid
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, REAL, String, Text, UniqueConstraint, func, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    REAL,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -18,7 +31,9 @@ if TYPE_CHECKING:
 class AgentDecision(Base):
     __tablename__ = "agent_decisions"
     __table_args__ = (
-        UniqueConstraint("run_id", "sequence_number", name="uq_agent_decisions_run_sequence"),
+        UniqueConstraint(
+            "run_id", "sequence_number", name="uq_agent_decisions_run_sequence"
+        ),
         Index("idx_agent_decisions_run_id", "run_id"),
         Index("idx_agent_decisions_run_id_sequence", "run_id", "sequence_number"),
     )
@@ -40,7 +55,9 @@ class AgentDecision(Base):
         BigInteger,
         ForeignKey("game_events.id", ondelete="SET NULL"),
     )
-    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'started'"))
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'started'")
+    )
     error_message: Mapped[str | None] = mapped_column(Text)
     llm_input_summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     llm_decision: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
@@ -60,14 +77,22 @@ class AgentDecision(Base):
     llm_input_tokens: Mapped[int | None] = mapped_column(Integer)
     llm_output_tokens: Mapped[int | None] = mapped_column(Integer)
     llm_cost_estimate_usd: Mapped[float | None] = mapped_column(REAL)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     run: Mapped[TestRun] = relationship("TestRun", back_populates="agent_decisions")
-    game_event: Mapped[GameEvent | None] = relationship("GameEvent", foreign_keys=[game_event_id])
+    game_event: Mapped[GameEvent | None] = relationship(
+        "GameEvent", foreign_keys=[game_event_id]
+    )
 
     @property
     def validation_rejection(self) -> str | None:
         output = self.mcp_output if isinstance(self.mcp_output, dict) else {}
-        summary = output.get("action_summary") if isinstance(output.get("action_summary"), dict) else {}
+        summary = (
+            output.get("action_summary")
+            if isinstance(output.get("action_summary"), dict)
+            else {}
+        )
         value = summary.get("validation_error")
         return str(value) if value else None

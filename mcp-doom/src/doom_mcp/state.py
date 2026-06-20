@@ -68,8 +68,11 @@ def extract_objects(
         dy = obj.position_y - player_y
         distance = math.hypot(dx, dy)
         rel_angle = _relative_angle(
-            player_x, player_y, player_angle,
-            obj.position_x, obj.position_y,
+            player_x,
+            player_y,
+            player_angle,
+            obj.position_x,
+            obj.position_y,
         )
 
         info = get_object_info(obj.name)
@@ -143,16 +146,18 @@ def extract_depth_as_stats(depth_buffer: np.ndarray) -> dict:
 
     regions = {
         "far_left": depth_buffer[0:mid_h, 0:third_w],
-        "far_center": depth_buffer[0:mid_h, third_w:2*third_w],
-        "far_right": depth_buffer[0:mid_h, 2*third_w:w],
+        "far_center": depth_buffer[0:mid_h, third_w : 2 * third_w],
+        "far_right": depth_buffer[0:mid_h, 2 * third_w : w],
         "near_left": depth_buffer[mid_h:h, 0:third_w],
-        "near_center": depth_buffer[mid_h:h, third_w:2*third_w],
-        "near_right": depth_buffer[mid_h:h, 2*third_w:w],
+        "near_center": depth_buffer[mid_h:h, third_w : 2 * third_w],
+        "near_right": depth_buffer[mid_h:h, 2 * third_w : w],
     }
 
     cx, cy = w // 2, h // 2
     margin_x, margin_y = max(w // 20, 1), max(h // 20, 1)
-    crosshair = depth_buffer[cy-margin_y:cy+margin_y, cx-margin_x:cx+margin_x]
+    crosshair = depth_buffer[
+        cy - margin_y : cy + margin_y, cx - margin_x : cx + margin_x
+    ]
 
     result = {}
     for name, region in regions.items():

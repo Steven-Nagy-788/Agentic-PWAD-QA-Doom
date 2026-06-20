@@ -44,8 +44,7 @@ def get_scenario_config_path(scenario_name: str) -> str:
     scenario_name = scenario_name.lower()
     if scenario_name not in SCENARIOS:
         raise ValueError(
-            f"Unknown scenario {scenario_name!r}. "
-            f"Available: {sorted(SCENARIOS.keys())}"
+            f"Unknown scenario {scenario_name!r}. Available: {sorted(SCENARIOS.keys())}"
         )
     cfg_file = SCENARIOS[scenario_name]["cfg"]
     return os.path.join(vzd.scenarios_path, cfg_file)

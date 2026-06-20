@@ -15,9 +15,9 @@ import vizdoom as vzd
 from fastmcp.exceptions import ToolError
 
 from . import game_setup as _game_setup
-from .actions import BUTTON_NAMES, names_to_action_list
+from .actions import BUTTON_NAMES
 from .combat_constants import ATTACK_URGENCY, THREAT_WEIGHTS
-from .executor import AutonomousExecutor, ExecutorState, Objective, ObjectiveType
+from .executor import AutonomousExecutor, Objective, ObjectiveType
 from .game_setup import (
     list_wad_maps,
     next_map,
@@ -43,13 +43,13 @@ _MONSTER_RANGE = 4000.0  # units - monsters within this range are included
 
 # Compound action constants
 _MAP_EXIT_REWARD = 100.0
-_WALL_CLOSE = 15.0        # depth buffer units (0-255 scale) - imminent collision
-_WALL_NEAR = 40.0         # depth buffer units - start turning
-_STUCK_WINDOW = 20        # tics to check for stuck
-_STUCK_THRESHOLD = 15.0   # map units - min spread to not be stuck
-_ARRIVE_DISTANCE = 64.0   # map units - close enough for move_to
-_ENEMY_ALERT_DIST = 800.0 # map units - enemy proximity alert
-_AIM_TOLERANCE = 3.0      # degrees - close enough to fire
+_WALL_CLOSE = 15.0  # depth buffer units (0-255 scale) - imminent collision
+_WALL_NEAR = 40.0  # depth buffer units - start turning
+_STUCK_WINDOW = 20  # tics to check for stuck
+_STUCK_THRESHOLD = 15.0  # map units - min spread to not be stuck
+_ARRIVE_DISTANCE = 64.0  # map units - close enough for move_to
+_ENEMY_ALERT_DIST = 800.0  # map units - enemy proximity alert
+_AIM_TOLERANCE = 3.0  # degrees - close enough to fire
 
 # Backward-compatible aliases for tests and external debugging snippets.
 _next_map = next_map
@@ -68,7 +68,9 @@ def assert_wad_loadable(
     original_timeout = _game_setup._PREFLIGHT_TIMEOUT_SECONDS
     _game_setup._PREFLIGHT_TIMEOUT_SECONDS = _PREFLIGHT_TIMEOUT_SECONDS
     try:
-        _game_setup.assert_wad_loadable(base_wad_path, scenario_wad_path, map_name, screen_resolution)
+        _game_setup.assert_wad_loadable(
+            base_wad_path, scenario_wad_path, map_name, screen_resolution
+        )
     finally:
         _game_setup._PREFLIGHT_TIMEOUT_SECONDS = original_timeout
 
@@ -107,7 +109,9 @@ def _filter_objects(objects: list[dict]) -> list[dict]:
                 slim["screen_x"] = obj["screen_x"]
                 slim["screen_y"] = obj["screen_y"]
             filtered.append(slim)
-    filtered.sort(key=lambda obj: (not obj.get("is_visible", False), obj.get("distance", 999999)))
+    filtered.sort(
+        key=lambda obj: (not obj.get("is_visible", False), obj.get("distance", 999999))
+    )
     return filtered
 
 
@@ -236,7 +240,7 @@ def _direct_weapon_button_slot(button_name: str) -> int | None:
     upper = button_name.upper()
     if not upper.startswith(prefix):
         return None
-    suffix = upper[len(prefix):]
+    suffix = upper[len(prefix) :]
     if not suffix.isdigit():
         return None
     slot = int(suffix)
@@ -259,7 +263,9 @@ def _requested_direct_weapon_slot(actions: dict[str, float] | None) -> int | Non
     return None
 
 
-def _without_direct_weapon_buttons(actions: dict[str, float] | None) -> dict[str, float] | None:
+def _without_direct_weapon_buttons(
+    actions: dict[str, float] | None,
+) -> dict[str, float] | None:
     if not actions:
         return actions
     return {
@@ -296,17 +302,13 @@ class GameManager:
 
     def _require_running(self) -> vzd.DoomGame:
         if self._game is None:
-            raise ToolError(
-                "No game is running. Call start_game first."
-            )
+            raise ToolError("No game is running. Call start_game first.")
         return self._game
 
     def _require_episode(self) -> vzd.DoomGame:
         game = self._require_running()
         if game.is_episode_finished():
-            raise ToolError(
-                "Episode is finished. Call new_episode to start a new one."
-            )
+            raise ToolError("Episode is finished. Call new_episode to start a new one.")
         return game
 
     @contextmanager
@@ -399,8 +401,10 @@ class GameManager:
         shutil.copy2(wad_path, runtime_path)
 
         with open(runtime_path, "r+b") as runtime_wad:
-            chosen_start = player_one_starts[0] if player_one_starts else (
-                player_starts[0] if player_starts else deathmatch_starts[0]
+            chosen_start = (
+                player_one_starts[0]
+                if player_one_starts
+                else (player_starts[0] if player_starts else deathmatch_starts[0])
             )
             runtime_wad.seek(chosen_start + 6)
             runtime_wad.write(struct.pack("<h", 1))
@@ -417,7 +421,9 @@ class GameManager:
 
         self._runtime_wad_path = runtime_path
         self._start_normalization = {
-            "mode": "deathmatch_to_player_one" if chosen_start in deathmatch_starts else "multiple_player_starts_to_player_one",
+            "mode": "deathmatch_to_player_one"
+            if chosen_start in deathmatch_starts
+            else "multiple_player_starts_to_player_one",
             "player_one_starts": len(player_one_starts),
             "deathmatch_starts": len(deathmatch_starts),
         }
@@ -433,7 +439,9 @@ class GameManager:
     def _weapon_state(self, game: vzd.DoomGame) -> dict:
         """Return normalized weapon inventory and combat resource state."""
         selected_weapon = int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON))
-        selected_ammo = int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO))
+        selected_ammo = int(
+            game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO)
+        )
         weapons = []
         usable_weapons = []
         usable_ranged_weapons = []
@@ -483,12 +491,18 @@ class GameManager:
             best_viable_weapon = max(usable_melee_weapons)
 
         usable_attack_ammo = max(
-            (weapon["effective_ammo"] for weapon in weapons if weapon["slot"] in usable_ranged_weapons),
+            (
+                weapon["effective_ammo"]
+                for weapon in weapons
+                if weapon["slot"] in usable_ranged_weapons
+            ),
             default=0,
         )
         return {
             "selected_weapon": selected_weapon,
-            "selected_weapon_name": _WEAPON_NAMES.get(selected_weapon, f"weapon{selected_weapon}"),
+            "selected_weapon_name": _WEAPON_NAMES.get(
+                selected_weapon, f"weapon{selected_weapon}"
+            ),
             "selected_weapon_ammo": selected_ammo,
             "weapon_inventory": weapons,
             "usable_weapons": usable_weapons,
@@ -564,11 +578,15 @@ class GameManager:
             nxt = next_map(self._current_map)
             if nxt and level_completed:
                 result["next_map"] = nxt
-                result["hint"] = "Level completed! Call new_episode() to advance to next map."
+                result["hint"] = (
+                    "Level completed! Call new_episode() to advance to next map."
+                )
             elif dead:
                 result["hint"] = "You died. Call new_episode() to retry this map."
             else:
-                result["hint"] = "Episode ended before map completion, likely because the tick budget expired."
+                result["hint"] = (
+                    "Episode ended before map completion, likely because the tick budget expired."
+                )
         return result
 
     def _level_completed(self, game: vzd.DoomGame) -> bool:
@@ -624,7 +642,9 @@ class GameManager:
         # Validate button names
         for name in button_names:
             if name.upper() not in BUTTON_NAMES:
-                raise ToolError(f"Unknown button {name!r}. Valid: {sorted(BUTTON_NAMES.keys())}")
+                raise ToolError(
+                    f"Unknown button {name!r}. Valid: {sorted(BUTTON_NAMES.keys())}"
+                )
 
         # Validate variable names
         for name in variable_names:
@@ -647,7 +667,11 @@ class GameManager:
 
         if wad is not None or scenario_wad is not None:
             # Load IWAD
-            base_iwad = wad if wad is not None else os.environ.get("DOOM_DEFAULT_IWAD", "freedoom1")
+            base_iwad = (
+                wad
+                if wad is not None
+                else os.environ.get("DOOM_DEFAULT_IWAD", "freedoom1")
+            )
             base_path = self._resolve_wad_path(base_iwad)
             game.set_doom_game_path(base_path)
 
@@ -659,8 +683,12 @@ class GameManager:
                         f"PWAD not found: {scenario_wad!r}. Provide an absolute path to a .wad file."
                     )
                 try:
-                    scenario_wad = self._prepare_single_player_wad(scenario_wad, map_name)
-                    assert_wad_loadable(base_path, scenario_wad, map_name, screen_resolution)
+                    scenario_wad = self._prepare_single_player_wad(
+                        scenario_wad, map_name
+                    )
+                    assert_wad_loadable(
+                        base_path, scenario_wad, map_name, screen_resolution
+                    )
                 except Exception:
                     if self._runtime_wad_path is not None:
                         with contextlib.suppress(OSError):
@@ -738,7 +766,9 @@ class GameManager:
         self._game = game
         self._buttons = resolved_buttons
         self._variable_names = resolved_variable_names
-        self._scenario_name = scenario if wad is None else f"{wad}:{map_name or 'default'}"
+        self._scenario_name = (
+            scenario if wad is None else f"{wad}:{map_name or 'default'}"
+        )
         self._wad = wad
         self._current_map = map_name
         self._async = async_player
@@ -794,7 +824,10 @@ class GameManager:
 
     def list_wad_maps(self, wad_path: str) -> dict:
         """List supported Doom map markers in a WAD file."""
-        return {"wad_path": os.path.abspath(os.path.expanduser(wad_path)), "maps": list_wad_maps(wad_path)}
+        return {
+            "wad_path": os.path.abspath(os.path.expanduser(wad_path)),
+            "maps": list_wad_maps(wad_path),
+        }
 
     def new_episode(self, recording_path: str | None = None) -> dict:
         """Start a new episode. In campaign mode, auto-advances on level completion.
@@ -849,9 +882,13 @@ class GameManager:
             if game.is_episode_finished():
                 return self._finished_state(game)
 
-            return self._extract_full_state(game, include_sectors=include_sectors, include_depth=include_depth)
+            return self._extract_full_state(
+                game, include_sectors=include_sectors, include_depth=include_depth
+            )
 
-    def _build_action_list(self, actions: dict[str, float] | None = None) -> list[float]:
+    def _build_action_list(
+        self, actions: dict[str, float] | None = None
+    ) -> list[float]:
         """Convert an action dict to a ViZDoom action list. Skips unknown buttons silently."""
         action_list = [0.0] * len(self._buttons)
         if not actions:
@@ -864,7 +901,9 @@ class GameManager:
             action_list[button_index[upper]] = float(value)
         return action_list
 
-    def _make_action(self, game: vzd.DoomGame, action: list[float], tics: int = 1) -> float:
+    def _make_action(
+        self, game: vzd.DoomGame, action: list[float], tics: int = 1
+    ) -> float:
         """make_action wrapper for compound action loops.
 
         In ASYNC_PLAYER mode, make_action applies the PREVIOUS call's action
@@ -875,14 +914,14 @@ class GameManager:
         so the game state reflects our action before we read it again.
         """
         if self._async:
-            game.make_action(action, 1)        # queue our action, apply prev
+            game.make_action(action, 1)  # queue our action, apply prev
             for _ in range(tics - 1):
                 if game.is_episode_finished():
                     break
-                game.make_action(action, 1)    # keep applying for multi-tic
+                game.make_action(action, 1)  # keep applying for multi-tic
             if not game.is_episode_finished():
                 noop = [0.0] * len(self._buttons)
-                game.make_action(noop, 1)      # flush: applies our action
+                game.make_action(noop, 1)  # flush: applies our action
             reward = game.get_last_reward()
             self._record_telemetry_tick(game, max(1, tics))
             return reward
@@ -894,7 +933,10 @@ class GameManager:
         if self._telemetry_frames is None:
             return
         self._telemetry_tics += max(1, tics)
-        if self._telemetry_tics % self._telemetry_stride != 0 and not game.is_episode_finished():
+        if (
+            self._telemetry_tics % self._telemetry_stride != 0
+            and not game.is_episode_finished()
+        ):
             return
         sample = self._telemetry_sample(game)
         if sample is not None:
@@ -950,8 +992,7 @@ class GameManager:
                 upper = name.upper()
                 if upper not in BUTTON_NAMES:
                     raise ToolError(
-                        f"Unknown button {name!r}. "
-                        f"Valid: {sorted(BUTTON_NAMES.keys())}"
+                        f"Unknown button {name!r}. Valid: {sorted(BUTTON_NAMES.keys())}"
                     )
                 if upper not in button_index:
                     raise ToolError(
@@ -967,13 +1008,19 @@ class GameManager:
                 tics_used = 0
                 weapon_switch_summary = None
                 if requested_weapon_slot is not None:
-                    before_weapon = int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON))
-                    success, switch_tics = self._select_weapon_slot(game, requested_weapon_slot)
+                    before_weapon = int(
+                        game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)
+                    )
+                    success, switch_tics = self._select_weapon_slot(
+                        game, requested_weapon_slot
+                    )
                     tics_used += switch_tics
                     weapon_switch_summary = {
                         "requested_weapon": requested_weapon_slot,
                         "previous_weapon": before_weapon,
-                        "selected_weapon": int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)),
+                        "selected_weapon": int(
+                            game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)
+                        ),
                         "success": success,
                         "tics": switch_tics,
                     }
@@ -984,7 +1031,11 @@ class GameManager:
                     tics_used += 1
                 self._clear_action(game)
                 summary = {
-                    "stop_reason": "player_died" if self._is_dead(game) else "episode_finished" if game.is_episode_finished() else "tics_complete",
+                    "stop_reason": "player_died"
+                    if self._is_dead(game)
+                    else "episode_finished"
+                    if game.is_episode_finished()
+                    else "tics_complete",
                     "tics": tics_used,
                     "actions": actions or {},
                 }
@@ -996,7 +1047,9 @@ class GameManager:
                     result["action_summary"] = summary
                     return self._attach_telemetry(result)
 
-                result = self._extract_full_state(game, include_sectors=include_sectors, include_depth=include_depth)
+                result = self._extract_full_state(
+                    game, include_sectors=include_sectors, include_depth=include_depth
+                )
                 result["reward"] = reward
                 result["action_summary"] = summary
                 return self._attach_telemetry(result)
@@ -1016,7 +1069,9 @@ class GameManager:
         with self._with_executor_paused():
             with self._game_lock:
                 before = self._weapon_state(game)
-                success, tics_used = self._select_weapon_slot(game, slot, max_tics=max_tics)
+                success, tics_used = self._select_weapon_slot(
+                    game, slot, max_tics=max_tics
+                )
                 after = self._weapon_state(game)
                 summary = {
                     "requested_weapon": slot,
@@ -1043,7 +1098,9 @@ class GameManager:
             state = game.get_state()
             px, py, pa = self._get_player_pos(game)
             return {
-                "objects": extract_objects(state, player_x=px, player_y=py, player_angle=pa),
+                "objects": extract_objects(
+                    state, player_x=px, player_y=py, player_angle=pa
+                ),
             }
 
     def get_map(self) -> bytes | None:
@@ -1061,14 +1118,17 @@ class GameManager:
         buttons = []
         for b in self._buttons:
             is_delta = b.name in DELTA_BUTTONS
-            buttons.append({
-                "name": b.name,
-                "type": "delta" if is_delta else "binary",
-                "description": (
-                    "Numeric value in degrees (multiplied by tics)"
-                    if is_delta else "1 to press, 0 to release"
-                ),
-            })
+            buttons.append(
+                {
+                    "name": b.name,
+                    "type": "delta" if is_delta else "binary",
+                    "description": (
+                        "Numeric value in degrees (multiplied by tics)"
+                        if is_delta
+                        else "1 to press, 0 to release"
+                    ),
+                }
+            )
         return {
             "buttons": buttons,
             "usage": (
@@ -1091,7 +1151,9 @@ class GameManager:
     # Compound action helpers
     # ------------------------------------------------------------------
 
-    def _select_weapon_slot(self, game: vzd.DoomGame, weapon_slot: int, max_tics: int = 40) -> tuple[bool, int]:
+    def _select_weapon_slot(
+        self, game: vzd.DoomGame, weapon_slot: int, max_tics: int = 40
+    ) -> tuple[bool, int]:
         """Select a weapon slot with SELECT_WEAPONn when configured, otherwise cycle."""
         slot = max(0, min(9, int(weapon_slot)))
         if slot in _SLOT_WEAPON_PREFERENCE:
@@ -1104,7 +1166,10 @@ class GameManager:
             return True, 0
 
         def _check_selected() -> bool:
-            return int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON)) in valid_ids
+            return (
+                int(game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON))
+                in valid_ids
+            )
 
         button_names = {button.name for button in self._buttons}
         direct_button = f"SELECT_WEAPON{target}"
@@ -1141,7 +1206,9 @@ class GameManager:
         for _ in range(max(1, int(max_tics))):
             if game.is_episode_finished():
                 break
-            self._make_action(game, self._build_action_list({"SELECT_NEXT_WEAPON": 1}), 1)
+            self._make_action(
+                game, self._build_action_list({"SELECT_NEXT_WEAPON": 1}), 1
+            )
             tics_used += 1
             if _check_selected():
                 self._clear_action(game)
@@ -1181,7 +1248,9 @@ class GameManager:
             switch_summary["to_weapon"] = int(best_weapon)
             success, tics_used = self._select_weapon_slot(game, int(best_weapon))
             after = self._weapon_state(game)
-            switch_summary["success"] = success and int(after["selected_weapon"]) == int(best_weapon)
+            switch_summary["success"] = success and int(
+                after["selected_weapon"]
+            ) == int(best_weapon)
             switch_summary["selected_weapon_after"] = after["selected_weapon"]
             switch_summary["selected_weapon_ammo_after"] = after["selected_weapon_ammo"]
             if switch_summary["success"] and int(after["selected_weapon_ammo"]) > 0:
@@ -1198,7 +1267,9 @@ class GameManager:
             switch_summary["to_weapon"] = int(best_weapon)
             success, tics_used = self._select_weapon_slot(game, int(best_weapon))
             after = self._weapon_state(game)
-            switch_summary["success"] = success and int(after["selected_weapon"]) == int(best_weapon)
+            switch_summary["success"] = success and int(
+                after["selected_weapon"]
+            ) == int(best_weapon)
             switch_summary["selected_weapon_after"] = after["selected_weapon"]
             switch_summary["selected_weapon_ammo_after"] = after["selected_weapon_ammo"]
             if switch_summary["success"]:
@@ -1206,7 +1277,11 @@ class GameManager:
             return False, "weapon_switch_failed", switch_summary, tics_used
 
         if selected in _MELEE_WEAPON_SLOTS:
-            reason = "melee_target_out_of_range" if target_dist > _MELEE_RANGE else "melee_weapon_ready"
+            reason = (
+                "melee_target_out_of_range"
+                if target_dist > _MELEE_RANGE
+                else "melee_weapon_ready"
+            )
             return target_dist <= _MELEE_RANGE, reason, switch_summary, 0
         if before.get("usable_melee_weapons"):
             return False, "no_usable_ranged_weapon", switch_summary, 0
@@ -1232,7 +1307,10 @@ class GameManager:
             game.set_action(self._build_action_list())
 
     def _compound_result(
-        self, game: vzd.DoomGame, summary: dict, stop_reason: str,
+        self,
+        game: vzd.DoomGame,
+        summary: dict,
+        stop_reason: str,
     ) -> dict:
         """Build a compound action result with state + summary."""
         summary["stop_reason"] = stop_reason
@@ -1313,48 +1391,90 @@ class GameManager:
 
                 while tics_used < max_tics and summary["shots_fired"] < shots:
                     if game.is_episode_finished() or self._is_dead(game):
-                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
-                        reason = "player_died" if self._is_dead(game) else "episode_finished"
+                        self._update_combat_summary(
+                            game,
+                            summary,
+                            initial_killcount,
+                            initial_hitcount,
+                            initial_attack_ammo,
+                        )
+                        reason = (
+                            "player_died" if self._is_dead(game) else "episode_finished"
+                        )
                         return self._compound_result(game, summary, reason)
 
                     # Find target
                     target = self._find_object_by_id(game, object_id)
                     if target is None:
                         # Target gone - check if we killed it
-                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
+                        self._update_combat_summary(
+                            game,
+                            summary,
+                            initial_killcount,
+                            initial_hitcount,
+                            initial_attack_ammo,
+                        )
                         kills = summary["kills"]
                         reason = "target_killed" if kills > 0 else "target_lost"
                         return self._compound_result(game, summary, reason)
                     if not target.get("is_visible"):
-                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
-                        return self._compound_result(game, summary, "target_not_visible")
+                        self._update_combat_summary(
+                            game,
+                            summary,
+                            initial_killcount,
+                            initial_hitcount,
+                            initial_attack_ammo,
+                        )
+                        return self._compound_result(
+                            game, summary, "target_not_visible"
+                        )
 
-                    ready, weapon_reason, switch_summary, switch_tics = self._ensure_attack_capable_weapon(
-                        game,
-                        target.get("distance"),
+                    ready, weapon_reason, switch_summary, switch_tics = (
+                        self._ensure_attack_capable_weapon(
+                            game,
+                            target.get("distance"),
+                        )
                     )
                     tics_used += switch_tics
                     if switch_summary.get("attempted"):
                         summary["weapon_switch"] = switch_summary
                         initial_attack_ammo = self._current_usable_attack_ammo(game)
                     if not ready:
-                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
+                        self._update_combat_summary(
+                            game,
+                            summary,
+                            initial_killcount,
+                            initial_hitcount,
+                            initial_attack_ammo,
+                        )
                         return self._compound_result(game, summary, weapon_reason)
 
                     angle = target["angle_to_aim"]
 
                     # Check ammo
-                    current_ammo = game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO)
+                    current_ammo = game.get_game_variable(
+                        vzd.GameVariable.SELECTED_WEAPON_AMMO
+                    )
                     if current_ammo <= 0 and not self._selected_weapon_is_melee(game):
-                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
-                        return self._compound_result(game, summary, "selected_weapon_empty")
+                        self._update_combat_summary(
+                            game,
+                            summary,
+                            initial_killcount,
+                            initial_hitcount,
+                            initial_attack_ammo,
+                        )
+                        return self._compound_result(
+                            game, summary, "selected_weapon_empty"
+                        )
 
                     # Clamp turn to avoid overshooting
                     clamped = max(-45.0, min(45.0, angle))
 
                     if abs(angle) > _AIM_TOLERANCE:
                         # Turn to face target
-                        action = self._build_action_list({"TURN_LEFT_RIGHT_DELTA": clamped})
+                        action = self._build_action_list(
+                            {"TURN_LEFT_RIGHT_DELTA": clamped}
+                        )
                         self._make_action(game, action, 1)
                         tics_used += 1
                     elif not game.get_game_variable(vzd.GameVariable.ATTACK_READY):
@@ -1363,10 +1483,12 @@ class GameManager:
                         tics_used += 1
                     else:
                         # Fire! Include small re-aim
-                        action = self._build_action_list({
-                            "ATTACK": 1,
-                            "TURN_LEFT_RIGHT_DELTA": angle,
-                        })
+                        action = self._build_action_list(
+                            {
+                                "ATTACK": 1,
+                                "TURN_LEFT_RIGHT_DELTA": angle,
+                            }
+                        )
                         self._make_action(game, action, 1)
                         tics_used += 1
                         summary["shots_fired"] += 1
@@ -1380,9 +1502,17 @@ class GameManager:
                             self._make_action(game, self._build_action_list(), 1)
                             tics_used += 1
 
-                self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
+                self._update_combat_summary(
+                    game,
+                    summary,
+                    initial_killcount,
+                    initial_hitcount,
+                    initial_attack_ammo,
+                )
 
-                reason = "shots_complete" if summary["shots_fired"] >= shots else "max_tics"
+                reason = (
+                    "shots_complete" if summary["shots_fired"] >= shots else "max_tics"
+                )
                 return self._compound_result(game, summary, reason)
 
     def move_to(
@@ -1436,8 +1566,12 @@ class GameManager:
                 while tics_used < max_tics:
                     if game.is_episode_finished() or self._is_dead(game):
                         cx, cy = self._get_position(game)
-                        summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
-                        reason = "player_died" if self._is_dead(game) else "episode_finished"
+                        summary["distance_moved"] = round(
+                            math.hypot(cx - start_x, cy - start_y), 1
+                        )
+                        reason = (
+                            "player_died" if self._is_dead(game) else "episode_finished"
+                        )
                         return self._compound_result(game, summary, reason)
 
                     # Track position for stuck detection + nav memory
@@ -1452,7 +1586,9 @@ class GameManager:
                     target = self._find_object_by_id(game, object_id)
                     if target is None:
                         cx, cy = self._get_position(game)
-                        summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
+                        summary["distance_moved"] = round(
+                            math.hypot(cx - start_x, cy - start_y), 1
+                        )
                         if summary.get("target_type") in _PICKUP_TYPES:
                             summary["collected"] = True
                             return self._compound_result(game, summary, "arrived")
@@ -1460,13 +1596,17 @@ class GameManager:
 
                     distance = target["distance"]
                     angle = target["angle_to_aim"]
-                    summary["target_type"] = target.get("type") or summary.get("target_type")
+                    summary["target_type"] = target.get("type") or summary.get(
+                        "target_type"
+                    )
                     summary["distance_remaining"] = round(distance, 1)
 
                     # Arrived?
                     if distance < _ARRIVE_DISTANCE:
                         cx, cy = self._get_position(game)
-                        summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
+                        summary["distance_moved"] = round(
+                            math.hypot(cx - start_x, cy - start_y), 1
+                        )
                         if summary.get("target_type") in _PICKUP_TYPES:
                             for _ in range(8):
                                 if game.is_episode_finished() or self._is_dead(game):
@@ -1474,20 +1614,33 @@ class GameManager:
                                 current = self._find_object_by_id(game, object_id)
                                 if current is None:
                                     summary["collected"] = True
-                                    return self._compound_result(game, summary, "arrived")
-                                angle = max(-20.0, min(20.0, float(current.get("angle_to_aim") or 0.0)))
-                                action = self._build_action_list({
-                                    "TURN_LEFT_RIGHT_DELTA": angle,
-                                    "MOVE_FORWARD_BACKWARD_DELTA": 18,
-                                })
+                                    return self._compound_result(
+                                        game, summary, "arrived"
+                                    )
+                                angle = max(
+                                    -20.0,
+                                    min(
+                                        20.0, float(current.get("angle_to_aim") or 0.0)
+                                    ),
+                                )
+                                action = self._build_action_list(
+                                    {
+                                        "TURN_LEFT_RIGHT_DELTA": angle,
+                                        "MOVE_FORWARD_BACKWARD_DELTA": 18,
+                                    }
+                                )
                                 self._make_action(game, action, 1)
                                 tics_used += 1
                             current = self._find_object_by_id(game, object_id)
                             if current is None:
                                 summary["collected"] = True
                                 return self._compound_result(game, summary, "arrived")
-                            summary["distance_remaining"] = round(float(current.get("distance") or distance), 1)
-                            return self._compound_result(game, summary, "pickup_not_collected")
+                            summary["distance_remaining"] = round(
+                                float(current.get("distance") or distance), 1
+                            )
+                            return self._compound_result(
+                                game, summary, "pickup_not_collected"
+                            )
                         if use:
                             action = self._build_action_list({"USE": 1})
                             self._make_action(game, action, 1)
@@ -1500,22 +1653,32 @@ class GameManager:
                         state = game.get_state()
                         if state is not None:
                             px, py, pa = self._get_player_pos(game)
-                            all_objs = extract_objects(state, player_x=px, player_y=py, player_angle=pa)
+                            all_objs = extract_objects(
+                                state, player_x=px, player_y=py, player_angle=pa
+                            )
 
                             for obj in all_objs:
                                 if obj["id"] == object_id:
                                     continue
                                 info = get_object_info(obj["name"])
-                                if info["type"] == "monster" and obj["distance"] < _ENEMY_ALERT_DIST and obj["is_visible"]:
+                                if (
+                                    info["type"] == "monster"
+                                    and obj["distance"] < _ENEMY_ALERT_DIST
+                                    and obj["is_visible"]
+                                ):
                                     cx, cy = self._get_position(game)
-                                    summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
+                                    summary["distance_moved"] = round(
+                                        math.hypot(cx - start_x, cy - start_y), 1
+                                    )
                                     summary["threat_object"] = {
                                         "id": obj["id"],
                                         "name": obj["name"],
                                         "distance": obj["distance"],
                                         "angle_to_aim": obj["angle_to_aim"],
                                     }
-                                    return self._compound_result(game, summary, "enemy_nearby")
+                                    return self._compound_result(
+                                        game, summary, "enemy_nearby"
+                                    )
 
                     # Stuck detection
                     if len(position_history) >= _STUCK_WINDOW:
@@ -1524,7 +1687,9 @@ class GameManager:
                             stuck_recoveries += 1
                             if stuck_recoveries > 3:
                                 cx, cy = self._get_position(game)
-                                summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
+                                summary["distance_moved"] = round(
+                                    math.hypot(cx - start_x, cy - start_y), 1
+                                )
                                 return self._compound_result(game, summary, "stuck")
                             # Strafe + turn recovery - alternate directions
                             strafe_dir = 20.0 if stuck_recoveries % 2 == 1 else -20.0
@@ -1532,19 +1697,23 @@ class GameManager:
                             for _ in range(3):
                                 if game.is_episode_finished():
                                     break
-                                action = self._build_action_list({
-                                    "MOVE_LEFT_RIGHT_DELTA": strafe_dir,
-                                    "TURN_LEFT_RIGHT_DELTA": turn_amount,
-                                })
+                                action = self._build_action_list(
+                                    {
+                                        "MOVE_LEFT_RIGHT_DELTA": strafe_dir,
+                                        "TURN_LEFT_RIGHT_DELTA": turn_amount,
+                                    }
+                                )
                                 self._make_action(game, action, 1)
                                 tics_used += 1
                             # Push forward after strafe
                             for _ in range(4):
                                 if game.is_episode_finished():
                                     break
-                                action = self._build_action_list({
-                                    "MOVE_FORWARD_BACKWARD_DELTA": 25,
-                                })
+                                action = self._build_action_list(
+                                    {
+                                        "MOVE_FORWARD_BACKWARD_DELTA": 25,
+                                    }
+                                )
                                 self._make_action(game, action, 1)
                                 tics_used += 1
                             position_history.clear()
@@ -1554,18 +1723,24 @@ class GameManager:
                     clamped_angle = max(-30.0, min(30.0, angle))
                     if abs(angle) > 15:
                         # Large angle - turn only (no forward into walls)
-                        action = self._build_action_list({"TURN_LEFT_RIGHT_DELTA": clamped_angle})
+                        action = self._build_action_list(
+                            {"TURN_LEFT_RIGHT_DELTA": clamped_angle}
+                        )
                     else:
                         # Small angle - turn + forward
-                        action = self._build_action_list({
-                            "TURN_LEFT_RIGHT_DELTA": clamped_angle,
-                            "MOVE_FORWARD_BACKWARD_DELTA": 25,
-                        })
+                        action = self._build_action_list(
+                            {
+                                "TURN_LEFT_RIGHT_DELTA": clamped_angle,
+                                "MOVE_FORWARD_BACKWARD_DELTA": 25,
+                            }
+                        )
                     self._make_action(game, action, 1)
                     tics_used += 1
 
                 cx, cy = self._get_position(game)
-                summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
+                summary["distance_moved"] = round(
+                    math.hypot(cx - start_x, cy - start_y), 1
+                )
                 return self._compound_result(game, summary, "max_tics")
 
     def explore(
@@ -1624,11 +1799,13 @@ class GameManager:
                         delta = min(step, abs_turn)
                         turn_amount = delta * sign
                         turn_tics = max(1, int(abs(turn_amount) / 15.0))
-                        turn_action = self._build_action_list({"TURN_LEFT_RIGHT_DELTA": turn_amount})
+                        turn_action = self._build_action_list(
+                            {"TURN_LEFT_RIGHT_DELTA": turn_amount}
+                        )
                         for _ in range(turn_tics):
                             if game.is_episode_finished() or self._is_dead(game):
                                 break
-                            reward_val = self._make_action(game, turn_action, 1)
+                            self._make_action(game, turn_action, 1)
                             tics_used += 1
                         abs_turn -= delta
                     self._clear_action(game)
@@ -1636,8 +1813,12 @@ class GameManager:
                 while tics_used < max_tics:
                     if game.is_episode_finished() or self._is_dead(game):
                         cx, cy = self._get_position(game)
-                        summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
-                        reason = "player_died" if self._is_dead(game) else "episode_finished"
+                        summary["distance_moved"] = round(
+                            math.hypot(cx - start_x, cy - start_y), 1
+                        )
+                        reason = (
+                            "player_died" if self._is_dead(game) else "episode_finished"
+                        )
                         return self._compound_result(game, summary, reason)
 
                     # Track position for stuck detection + nav memory
@@ -1651,18 +1832,29 @@ class GameManager:
                     state = game.get_state()
                     if state is None:
                         cx, cy = self._get_position(game)
-                        summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
+                        summary["distance_moved"] = round(
+                            math.hypot(cx - start_x, cy - start_y), 1
+                        )
                         return self._compound_result(game, summary, "episode_finished")
 
                     # Object scanning
                     px, py, pa = self._get_player_pos(game)
-                    all_objs = extract_objects(state, player_x=px, player_y=py, player_angle=pa)
+                    all_objs = extract_objects(
+                        state, player_x=px, player_y=py, player_angle=pa
+                    )
                     from .objects import get_object_info
 
                     for obj in all_objs:
                         info = get_object_info(obj["name"])
-                        if info["type"] == "monster" and obj["is_visible"] and obj["distance"] < _ENEMY_ALERT_DIST:
-                            if obj["id"] not in seen_enemy_ids and obj["id"] not in ignore_set:
+                        if (
+                            info["type"] == "monster"
+                            and obj["is_visible"]
+                            and obj["distance"] < _ENEMY_ALERT_DIST
+                        ):
+                            if (
+                                obj["id"] not in seen_enemy_ids
+                                and obj["id"] not in ignore_set
+                            ):
                                 seen_enemy_ids.add(obj["id"])
                                 enemy_info = {
                                     "id": obj["id"],
@@ -1673,8 +1865,12 @@ class GameManager:
                                 summary["enemies_seen"].append(enemy_info)
                                 if stop_on_enemy and not first_iteration:
                                     cx, cy = self._get_position(game)
-                                    summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
-                                    return self._compound_result(game, summary, "enemy_spotted")
+                                    summary["distance_moved"] = round(
+                                        math.hypot(cx - start_x, cy - start_y), 1
+                                    )
+                                    return self._compound_result(
+                                        game, summary, "enemy_spotted"
+                                    )
 
                         if info["type"] in _ITEM_TYPES and obj["is_visible"]:
                             if obj["id"] not in seen_item_ids:
@@ -1687,8 +1883,12 @@ class GameManager:
                                 summary["items_seen"].append(item_info)
                                 if stop_on_item and not first_iteration:
                                     cx, cy = self._get_position(game)
-                                    summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
-                                    return self._compound_result(game, summary, "item_found")
+                                    summary["distance_moved"] = round(
+                                        math.hypot(cx - start_x, cy - start_y), 1
+                                    )
+                                    return self._compound_result(
+                                        game, summary, "item_found"
+                                    )
 
                     # Stuck detection
                     if len(position_history) >= _STUCK_WINDOW:
@@ -1697,21 +1897,27 @@ class GameManager:
                             stuck_recoveries += 1
                             if stuck_recoveries > 3:
                                 cx, cy = self._get_position(game)
-                                summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
+                                summary["distance_moved"] = round(
+                                    math.hypot(cx - start_x, cy - start_y), 1
+                                )
                                 return self._compound_result(game, summary, "stuck")
                             # Recovery: turn ~90 degrees then push forward
                             turn_dir = 30.0 if stuck_recoveries % 2 == 1 else -30.0
                             for _ in range(3):
                                 if game.is_episode_finished():
                                     break
-                                action = self._build_action_list({"TURN_LEFT_RIGHT_DELTA": turn_dir})
+                                action = self._build_action_list(
+                                    {"TURN_LEFT_RIGHT_DELTA": turn_dir}
+                                )
                                 self._make_action(game, action, 1)
                                 tics_used += 1
                             # Push forward after turning
                             for _ in range(5):
                                 if game.is_episode_finished():
                                     break
-                                action = self._build_action_list({"MOVE_FORWARD_BACKWARD_DELTA": 25})
+                                action = self._build_action_list(
+                                    {"MOVE_FORWARD_BACKWARD_DELTA": 25}
+                                )
                                 self._make_action(game, action, 1)
                                 tics_used += 1
                             summary["direction_changes"] += 1
@@ -1727,11 +1933,11 @@ class GameManager:
                         h, w = depth.shape
                         band_h = max(h // 6, 1)
                         mid = h // 2
-                        band = depth[mid - band_h:mid + band_h, :]
+                        band = depth[mid - band_h : mid + band_h, :]
                         third = w // 3
                         left_score = float(band[:, :third].mean())
-                        center_score = float(band[:, third:2*third].mean())
-                        right_score = float(band[:, 2*third:].mean())
+                        center_score = float(band[:, third : 2 * third].mean())
+                        right_score = float(band[:, 2 * third :].mean())
 
                         if center_score < _WALL_CLOSE:
                             if abs(left_score - right_score) > 3:
@@ -1751,7 +1957,9 @@ class GameManager:
                             turn_bias *= 0.5
                             if abs(turn_bias) < 1.0:
                                 turn_bias = 0.0
-                            frontier_turn = self._nav_memory.suggested_turn_delta(px, py, pa)
+                            frontier_turn = self._nav_memory.suggested_turn_delta(
+                                px, py, pa
+                            )
                             actions["TURN_LEFT_RIGHT_DELTA"] = turn_bias + frontier_turn
                             actions["MOVE_FORWARD_BACKWARD_DELTA"] = 25
                     else:
@@ -1763,7 +1971,9 @@ class GameManager:
                     first_iteration = False
 
                 cx, cy = self._get_position(game)
-                summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
+                summary["distance_moved"] = round(
+                    math.hypot(cx - start_x, cy - start_y), 1
+                )
                 return self._compound_result(game, summary, "max_tics")
 
     def retreat(
@@ -1799,13 +2009,21 @@ class GameManager:
                     while tics_used < tics:
                         if game.is_episode_finished() or self._is_dead(game):
                             cx, cy = self._get_position(game)
-                            summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
-                            reason = "player_died" if self._is_dead(game) else "episode_finished"
+                            summary["distance_moved"] = round(
+                                math.hypot(cx - start_x, cy - start_y), 1
+                            )
+                            reason = (
+                                "player_died"
+                                if self._is_dead(game)
+                                else "episode_finished"
+                            )
                             return self._compound_result(game, summary, reason)
-                        action = self._build_action_list({
-                            "MOVE_FORWARD_BACKWARD_DELTA": -25,
-                            "SPEED": 1,
-                        })
+                        action = self._build_action_list(
+                            {
+                                "MOVE_FORWARD_BACKWARD_DELTA": -25,
+                                "SPEED": 1,
+                            }
+                        )
                         self._make_action(game, action, 1)
                         tics_used += 1
                         pos = self._get_position(game)
@@ -1824,13 +2042,21 @@ class GameManager:
                     while tics_used < tics:
                         if game.is_episode_finished() or self._is_dead(game):
                             cx, cy = self._get_position(game)
-                            summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
-                            reason = "player_died" if self._is_dead(game) else "episode_finished"
+                            summary["distance_moved"] = round(
+                                math.hypot(cx - start_x, cy - start_y), 1
+                            )
+                            reason = (
+                                "player_died"
+                                if self._is_dead(game)
+                                else "episode_finished"
+                            )
                             return self._compound_result(game, summary, reason)
-                        action = self._build_action_list({
-                            "MOVE_FORWARD_BACKWARD_DELTA": 25,
-                            "SPEED": 1,
-                        })
+                        action = self._build_action_list(
+                            {
+                                "MOVE_FORWARD_BACKWARD_DELTA": 25,
+                                "SPEED": 1,
+                            }
+                        )
                         self._make_action(game, action, 1)
                         tics_used += 1
                         pos = self._get_position(game)
@@ -1838,7 +2064,9 @@ class GameManager:
                         self._nav_memory.update(pos[0], pos[1], pa)
 
                 cx, cy = self._get_position(game)
-                summary["distance_moved"] = round(math.hypot(cx - start_x, cy - start_y), 1)
+                summary["distance_moved"] = round(
+                    math.hypot(cx - start_x, cy - start_y), 1
+                )
                 return self._compound_result(game, summary, "complete")
 
     def strafe_and_shoot(
@@ -1886,7 +2114,9 @@ class GameManager:
                 initial_killcount = game.get_game_variable(vzd.GameVariable.KILLCOUNT)
                 initial_hitcount = game.get_game_variable(vzd.GameVariable.HITCOUNT)
                 initial_attack_ammo = self._current_usable_attack_ammo(game)
-                initial_damage_taken = game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN)
+                initial_damage_taken = game.get_game_variable(
+                    vzd.GameVariable.DAMAGE_TAKEN
+                )
                 summary["weapon_state_before"] = self._weapon_state(game)
 
                 target = self._find_object_by_id(game, object_id)
@@ -1895,43 +2125,98 @@ class GameManager:
 
                 while tics_used < max_tics and summary["shots_fired"] < shots:
                     if game.is_episode_finished() or self._is_dead(game):
-                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
-                        summary["damage_taken"] = int(game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN) - initial_damage_taken)
-                        reason = "player_died" if self._is_dead(game) else "episode_finished"
+                        self._update_combat_summary(
+                            game,
+                            summary,
+                            initial_killcount,
+                            initial_hitcount,
+                            initial_attack_ammo,
+                        )
+                        summary["damage_taken"] = int(
+                            game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN)
+                            - initial_damage_taken
+                        )
+                        reason = (
+                            "player_died" if self._is_dead(game) else "episode_finished"
+                        )
                         return self._compound_result(game, summary, reason)
 
                     target = self._find_object_by_id(game, object_id)
                     if target is None:
-                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
-                        summary["damage_taken"] = int(game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN) - initial_damage_taken)
+                        self._update_combat_summary(
+                            game,
+                            summary,
+                            initial_killcount,
+                            initial_hitcount,
+                            initial_attack_ammo,
+                        )
+                        summary["damage_taken"] = int(
+                            game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN)
+                            - initial_damage_taken
+                        )
                         kills = summary["kills"]
                         reason = "target_killed" if kills > 0 else "target_lost"
                         return self._compound_result(game, summary, reason)
                     if not target.get("is_visible"):
-                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
-                        summary["damage_taken"] = int(game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN) - initial_damage_taken)
-                        return self._compound_result(game, summary, "target_not_visible")
+                        self._update_combat_summary(
+                            game,
+                            summary,
+                            initial_killcount,
+                            initial_hitcount,
+                            initial_attack_ammo,
+                        )
+                        summary["damage_taken"] = int(
+                            game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN)
+                            - initial_damage_taken
+                        )
+                        return self._compound_result(
+                            game, summary, "target_not_visible"
+                        )
 
                     angle = target["angle_to_aim"]
 
-                    ready, weapon_reason, switch_summary, switch_tics = self._ensure_attack_capable_weapon(
-                        game,
-                        target.get("distance"),
+                    ready, weapon_reason, switch_summary, switch_tics = (
+                        self._ensure_attack_capable_weapon(
+                            game,
+                            target.get("distance"),
+                        )
                     )
                     tics_used += switch_tics
                     if switch_summary.get("attempted"):
                         summary["weapon_switch"] = switch_summary
                         initial_attack_ammo = self._current_usable_attack_ammo(game)
                     if not ready:
-                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
-                        summary["damage_taken"] = int(game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN) - initial_damage_taken)
+                        self._update_combat_summary(
+                            game,
+                            summary,
+                            initial_killcount,
+                            initial_hitcount,
+                            initial_attack_ammo,
+                        )
+                        summary["damage_taken"] = int(
+                            game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN)
+                            - initial_damage_taken
+                        )
                         return self._compound_result(game, summary, weapon_reason)
 
-                    current_ammo = game.get_game_variable(vzd.GameVariable.SELECTED_WEAPON_AMMO)
+                    current_ammo = game.get_game_variable(
+                        vzd.GameVariable.SELECTED_WEAPON_AMMO
+                    )
                     if current_ammo <= 0 and not self._selected_weapon_is_melee(game):
-                        self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
-                        summary["damage_taken"] = int(game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN) - initial_damage_taken)
-                        return self._compound_result(game, summary, "selected_weapon_empty")
+                        self._update_combat_summary(
+                            game,
+                            summary,
+                            initial_killcount,
+                            initial_hitcount,
+                            initial_attack_ammo,
+                        )
+                        summary["damage_taken"] = int(
+                            game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN)
+                            - initial_damage_taken
+                        )
+                        return self._compound_result(
+                            game, summary, "selected_weapon_empty"
+                        )
 
                     # Auto-alternate strafe direction every ~15 tics
                     if direction == "auto" and tics_used % 15 == 0 and tics_used > 0:
@@ -1943,48 +2228,77 @@ class GameManager:
 
                     strafe_delta = strafe_sign * 20.0
 
-                    if abs(angle) <= _AIM_TOLERANCE and game.get_game_variable(vzd.GameVariable.ATTACK_READY):
+                    if abs(angle) <= _AIM_TOLERANCE and game.get_game_variable(
+                        vzd.GameVariable.ATTACK_READY
+                    ):
                         # On target + ready - fire + strafe
-                        action = self._build_action_list({
-                            "TURN_LEFT_RIGHT_DELTA": angle,
-                            "MOVE_LEFT_RIGHT_DELTA": strafe_delta,
-                            "ATTACK": 1,
-                        })
+                        action = self._build_action_list(
+                            {
+                                "TURN_LEFT_RIGHT_DELTA": angle,
+                                "MOVE_LEFT_RIGHT_DELTA": strafe_delta,
+                                "ATTACK": 1,
+                            }
+                        )
                         self._make_action(game, action, 1)
                         tics_used += 1
                         summary["shots_fired"] += 1
                     elif game.get_game_variable(vzd.GameVariable.ATTACK_READY):
                         # Large angle but weapon ready - aim + strafe + fire
-                        action = self._build_action_list({
-                            "TURN_LEFT_RIGHT_DELTA": angle,
-                            "MOVE_LEFT_RIGHT_DELTA": strafe_delta,
-                            "ATTACK": 1,
-                        })
+                        action = self._build_action_list(
+                            {
+                                "TURN_LEFT_RIGHT_DELTA": angle,
+                                "MOVE_LEFT_RIGHT_DELTA": strafe_delta,
+                                "ATTACK": 1,
+                            }
+                        )
                         self._make_action(game, action, 1)
                         tics_used += 1
                         summary["shots_fired"] += 1
                     else:
                         # Weapon cooldown - strafe + aim only
-                        action = self._build_action_list({
-                            "TURN_LEFT_RIGHT_DELTA": angle,
-                            "MOVE_LEFT_RIGHT_DELTA": strafe_delta,
-                        })
+                        action = self._build_action_list(
+                            {
+                                "TURN_LEFT_RIGHT_DELTA": angle,
+                                "MOVE_LEFT_RIGHT_DELTA": strafe_delta,
+                            }
+                        )
                         self._make_action(game, action, 1)
                         tics_used += 1
 
-                self._update_combat_summary(game, summary, initial_killcount, initial_hitcount, initial_attack_ammo)
-                summary["damage_taken"] = int(game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN) - initial_damage_taken)
-                reason = "shots_complete" if summary["shots_fired"] >= shots else "max_tics"
+                self._update_combat_summary(
+                    game,
+                    summary,
+                    initial_killcount,
+                    initial_hitcount,
+                    initial_attack_ammo,
+                )
+                summary["damage_taken"] = int(
+                    game.get_game_variable(vzd.GameVariable.DAMAGE_TAKEN)
+                    - initial_damage_taken
+                )
+                reason = (
+                    "shots_complete" if summary["shots_fired"] >= shots else "max_tics"
+                )
                 return self._compound_result(game, summary, reason)
 
     def _update_combat_summary(
-        self, game: vzd.DoomGame, summary: dict,
-        initial_killcount: float, initial_hitcount: float, initial_attack_ammo: float,
+        self,
+        game: vzd.DoomGame,
+        summary: dict,
+        initial_killcount: float,
+        initial_hitcount: float,
+        initial_attack_ammo: float,
     ) -> None:
         """Update kills/hits/ammo in a combat summary dict."""
-        summary["kills"] = int(game.get_game_variable(vzd.GameVariable.KILLCOUNT) - initial_killcount)
-        summary["hits_landed"] = int(game.get_game_variable(vzd.GameVariable.HITCOUNT) - initial_hitcount)
-        summary["ammo_spent"] = max(0, int(initial_attack_ammo - self._current_usable_attack_ammo(game)))
+        summary["kills"] = int(
+            game.get_game_variable(vzd.GameVariable.KILLCOUNT) - initial_killcount
+        )
+        summary["hits_landed"] = int(
+            game.get_game_variable(vzd.GameVariable.HITCOUNT) - initial_hitcount
+        )
+        summary["ammo_spent"] = max(
+            0, int(initial_attack_ammo - self._current_usable_attack_ammo(game))
+        )
         summary["weapon_state_after"] = self._weapon_state(game)
 
     # ------------------------------------------------------------------
@@ -2005,12 +2319,21 @@ class GameManager:
         with self._game_lock:
             state = game.get_state()
             if state is None:
-                return {"threat_level": "none", "threats": [], "incoming_projectiles": [],
-                        "tactical_advice": [], "player_health": 0, "player_armor": 0,
-                        "selected_weapon_ammo": 0, "weapon_state": {}}
+                return {
+                    "threat_level": "none",
+                    "threats": [],
+                    "incoming_projectiles": [],
+                    "tactical_advice": [],
+                    "player_health": 0,
+                    "player_armor": 0,
+                    "selected_weapon_ammo": 0,
+                    "weapon_state": {},
+                }
 
             px, py, pa = self._get_player_pos(game)
-            all_objects = extract_objects(state, player_x=px, player_y=py, player_angle=pa)
+            all_objects = extract_objects(
+                state, player_x=px, player_y=py, player_angle=pa
+            )
             health = game.get_game_variable(vzd.GameVariable.HEALTH)
             armor = game.get_game_variable(vzd.GameVariable.ARMOR)
             weapon_state = self._weapon_state(game)
@@ -2024,11 +2347,13 @@ class GameManager:
             info = get_object_info(obj["name"])
 
             if info["type"] == "projectile" and obj["is_visible"]:
-                projectiles.append({
-                    "name": obj["name"],
-                    "distance": round(obj["distance"], 1),
-                    "angle_to_aim": round(obj["angle_to_aim"], 1),
-                })
+                projectiles.append(
+                    {
+                        "name": obj["name"],
+                        "distance": round(obj["distance"], 1),
+                        "angle_to_aim": round(obj["angle_to_aim"], 1),
+                    }
+                )
                 continue
 
             if info["type"] != "monster":
@@ -2048,16 +2373,18 @@ class GameManager:
             if obj["name"] == "Archvile":
                 score += 100
 
-            threats.append({
-                "id": obj["id"],
-                "name": obj["name"],
-                "distance": round(dist, 1),
-                "angle_to_aim": round(obj["angle_to_aim"], 1),
-                "attack_type": info["attack"],
-                "threat": info["threat"],
-                "is_visible": obj["is_visible"],
-                "priority_score": round(score, 1),
-            })
+            threats.append(
+                {
+                    "id": obj["id"],
+                    "name": obj["name"],
+                    "distance": round(dist, 1),
+                    "angle_to_aim": round(obj["angle_to_aim"], 1),
+                    "attack_type": info["attack"],
+                    "threat": info["threat"],
+                    "is_visible": obj["is_visible"],
+                    "priority_score": round(score, 1),
+                }
+            )
 
         # Sort by priority score descending
         threats.sort(key=lambda t: t["priority_score"], reverse=True)
@@ -2105,9 +2432,13 @@ class GameManager:
         if projectiles:
             advice.append(f"DODGE: {len(projectiles)} incoming projectile(s)")
 
-        hitscan_count = sum(1 for t in threats if t["attack_type"] == "hitscan" and t["is_visible"])
+        hitscan_count = sum(
+            1 for t in threats if t["attack_type"] == "hitscan" and t["is_visible"]
+        )
         if hitscan_count > 1:
-            advice.append(f"WARNING: {hitscan_count} hitscan enemies - use strafe_and_shoot")
+            advice.append(
+                f"WARNING: {hitscan_count} hitscan enemies - use strafe_and_shoot"
+            )
 
         return {
             "threat_level": level,
@@ -2141,7 +2472,9 @@ class GameManager:
                 return {"cells_explored": 0}
 
             px, py, pa = self._get_player_pos(game)
-            all_objects = extract_objects(state, player_x=px, player_y=py, player_angle=pa)
+            all_objects = extract_objects(
+                state, player_x=px, player_y=py, player_angle=pa
+            )
             sectors = extract_sectors(state)
 
             self._nav_memory.update(px, py, pa, objects=all_objects, sectors=sectors)
@@ -2176,7 +2509,9 @@ class GameManager:
 
             variables = extract_game_variables(game, self._variable_names)
             px, py, pa = self._get_player_pos(game)
-            all_objects = extract_objects(state, player_x=px, player_y=py, player_angle=pa)
+            all_objects = extract_objects(
+                state, player_x=px, player_y=py, player_angle=pa
+            )
             objects = _filter_objects(all_objects)
             screenshot_png = screen_buffer_to_png(state.screen_buffer)
             nav_summary = self._nav_memory.get_exploration_summary(px, py, pa)
@@ -2219,15 +2554,15 @@ class GameManager:
             replace: Clear the current queue before adding this objective.
         """
         if self._executor is None:
-            raise ToolError(
-                "Executor not running. Start game with async_player=True."
-            )
+            raise ToolError("Executor not running. Start game with async_player=True.")
 
         try:
             obj_type = ObjectiveType(objective_type)
         except ValueError:
             valid = [t.value for t in ObjectiveType]
-            raise ToolError(f"Unknown objective type {objective_type!r}. Valid: {valid}")
+            raise ToolError(
+                f"Unknown objective type {objective_type!r}. Valid: {valid}"
+            )
 
         objective = Objective(
             type=obj_type,
@@ -2262,9 +2597,7 @@ class GameManager:
             prefer_cover: try to use cover in combat
         """
         if self._executor is None:
-            raise ToolError(
-                "Executor not running. Start game with async_player=True."
-            )
+            raise ToolError("Executor not running. Start game with async_player=True.")
 
         self._executor.set_strategy(**kwargs)
         return {
@@ -2304,7 +2637,7 @@ class GameManager:
         and identification of sink nodes (potential softlock areas).
         No game tics are consumed.
         """
-        from doom_mcp.navigation import MapGraph, build_map_graph
+        from doom_mcp.navigation import build_map_graph
 
         game = self._require_running()
 
@@ -2316,9 +2649,14 @@ class GameManager:
             if state is None:
                 return {"error": "no_state"}
 
-            sectors = state.sectors if hasattr(state, "sectors") and state.sectors else []
+            sectors = (
+                state.sectors if hasattr(state, "sectors") and state.sectors else []
+            )
             if not sectors:
-                return {"error": "no_sector_data", "hint": "Sector data not available. Use get_state with include_sectors=True first."}
+                return {
+                    "error": "no_sector_data",
+                    "hint": "Sector data not available. Use get_state with include_sectors=True first.",
+                }
 
             px, py, pa = self._get_player_pos(game)
             current_sector = self._nav_memory._current_sector_id

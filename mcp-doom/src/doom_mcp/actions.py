@@ -30,8 +30,7 @@ def names_to_action_list(
         upper = name.upper()
         if upper not in BUTTON_NAMES:
             raise ValueError(
-                f"Unknown button {name!r}. "
-                f"Valid buttons: {sorted(BUTTON_NAMES.keys())}"
+                f"Unknown button {name!r}. Valid buttons: {sorted(BUTTON_NAMES.keys())}"
             )
         if upper not in button_set:
             raise ValueError(
