@@ -130,21 +130,21 @@ jobs:
           context: ./Backend
           push: false
           tags: doom-qa-backend
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
       - name: Build MCP Doom image
         uses: docker/build-push-action@v6
         with:
           context: ./mcp-doom
           push: false
           tags: doom-qa-mcp
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=mcp-doom
+          cache-to: type=gha,scope=mcp-doom,mode=max
       - name: Build frontend image
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
           push: false
           tags: doom-qa-frontend
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
