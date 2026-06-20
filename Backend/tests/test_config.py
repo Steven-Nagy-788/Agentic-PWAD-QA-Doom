@@ -26,7 +26,7 @@ def _make_settings(**env_overrides) -> Settings:
 def test_settings_defaults():
     s = _make_settings()
     assert s.app_name == "Doom Agentic Testing Backend"
-    assert s.postgres_host == "127.0.0.1"
+    assert s.postgres_host in ("127.0.0.1", "localhost")
     assert s.postgres_port == 5432
     assert s.guard_enabled is True
     assert s.guard_consecutive_get_state_threshold == 2

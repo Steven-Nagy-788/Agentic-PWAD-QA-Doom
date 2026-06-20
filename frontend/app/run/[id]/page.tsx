@@ -67,8 +67,8 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
   // Extract ASCII grid from latest decision's LLM input
   const asciiGrid = useMemo(() => {
     const latest = stream.decisions.at(-1);
-    const llmInput = (latest as LiveDecision | undefined)?.llmInput;
-    return llmInput?.map_ascii_grid ?? null;
+    const llmInput = (latest as LiveDecision | undefined)?.llmInput as Record<string, string> | undefined;
+    return (llmInput?.map_ascii_grid as string | null) ?? null;
   }, [stream.decisions]);
 
   return (
