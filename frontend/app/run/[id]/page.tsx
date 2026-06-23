@@ -8,8 +8,9 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { Activity, X } from "lucide-react";
 import { Run, Defect, Decision, PositionSample, TraceEntry, UsageStats, BenchmarkStats, WadMap, ReportStatus, apiGet, apiSend, API_BASE } from "@/lib/api";
-import { useRunStream, type LiveDecision, type SameRunMemory } from "@/hooks/useRunStream";
+import { useRunStream, type LiveDecision } from "@/hooks/useRunStream";
 import { Metric, OutcomeBadge, SkeletonRows, formatTime } from "@/lib/components/shared";
+import { isCosmeticTextureDefect, liveTrail } from "@/lib/game-utils";
 import { DefectBadge } from "@/components/DefectBadge";
 import { DecisionTimeline } from "@/components/DecisionTimeline";
 import { MapCanvas } from "@/components/MapCanvas";
@@ -300,41 +301,6 @@ function DefectPanel({ defects }: { defects: Defect[] }) {
       )}
     </div>
   );
-}
-
-function isCosmeticTextureDefect(defect: Defect) {
-  const type = (defect.defect_type ?? "").toLowerCase();
-  const text = `${type} ${defect.title ?? ""} ${defect.description ?? ""}`.toLowerCase();
-  if (text.includes("hom") || text.includes("hall of mirrors") || text.includes("missing texture") || text.includes("medusa")) {
-    return false;
-  }
-  if (type === "visual_texture_misalignment") {
-    return true;
-  }
-  const issue = ["alignment", "misalign", "offset", "tiling", "discontinuity", "repeat", "cut-off", "cut off", "seam"].some((term) => text.includes(term));
-  const surface = ["texture", "floor", "wall", "pillar"].some((term) => text.includes(term));
-  return issue && surface;
-}
-
-function liveTrail(memory: SameRunMemory | null, snapshotTrail: PositionSample[]): PositionSample[] {
-  const positions = memory?.recent_actions
-    .map((action) => ({ ...action.final_position, tick: action.tick_after }))
-    .filter((sample) => sample.x !== undefined && sample.y !== undefined) ?? [];
-  const latestHealth = snapshotTrail.at(-1)?.health ?? 0;
-  const merged = new Map(snapshotTrail.map((sample) => [`${sample.tick_number}:${sample.x}:${sample.y}`, sample]));
-  positions.forEach((sample, index) => {
-    const entry = {
-      id: -(index + 1),
-      run_id: "",
-      tick_number: sample.tick,
-      x: sample.x ?? 0,
-      y: sample.y ?? 0,
-      angle: sample.angle ?? 0,
-      health: latestHealth,
-    };
-    merged.set(`${entry.tick_number}:${entry.x}:${entry.y}`, entry);
-  });
-  return Array.from(merged.values()).sort((a, b) => a.tick_number - b.tick_number);
 }
 
 function RuntimeWarnings({ flags }: { flags?: Record<string, unknown> | null }) {

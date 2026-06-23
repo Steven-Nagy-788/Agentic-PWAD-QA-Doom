@@ -6,7 +6,14 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
-from app.models import Defect, GameEvent, StaticAnalysisResult, TestRun
+from app.models import (
+    Defect,
+    GameEvent,
+    NotableEventScreenshot,
+    StaticAnalysisResult,
+    TestRun,
+    WadHypothesis,
+)
 from app.repositories.defect_repository import DefectRepository
 from app.services.defect_service import DefectService, _streak_episodes
 
@@ -385,4 +392,270 @@ async def test_unreachable_secrets_no_defect_when_coverage_is_low(service, mock_
     analysis.secret_sector_count = 3
     events = [make_event(100, secret_count=0)]
     await service._unreachable_secrets(run, events, analysis)
+    service.repo.create.assert_not_called()
+
+
+# ── detect_for_run orchestration ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_detect_for_run_orchestration(mock_db):
+    run = MagicMock(spec=TestRun)
+    run.id = uuid4()
+    run.failure_category = "pwad_crash"
+    run.outcome = None
+    run.static_analysis_id = uuid4()
+    run.wad_file_id = uuid4()
+    run.map_name = "MAP01"
+
+    analysis = MagicMock(spec=StaticAnalysisResult)
+    analysis.spawn_summary_by_skill = {"_map_features": {"voodoo_doll_risk": False}}
+    mock_db.get = AsyncMock(return_value=analysis)
+
+    events = [make_event(i) for i in range(5)]
+    result_mock = MagicMock()
+    result_mock.scalars.return_value.all.return_value = events
+    mock_db.execute = AsyncMock(return_value=result_mock)
+
+    gemini = MagicMock()
+    gemini.settings.gemini_api_key = ""
+    svc = DefectService(mock_db, gemini_service=gemini)
+
+    called_detectors = []
+    original_pwad = svc._pwad_crash
+    original_voodoo = svc._voodoo_dolls
+    original_diff = svc._difficulty_spawn_mismatch
+    original_resource = svc._static_resource_balance
+    original_vision = svc._vision_defects
+    original_repeated = svc._repeated_deaths
+    original_ammo = svc._ammo_starvation
+    original_health = svc._health_deficit
+    original_softlock = svc._softlock
+    original_secrets = svc._unreachable_secrets
+    original_promote = svc._promote_hypotheses
+    original_link = svc._link_screenshots_to_defects
+
+    async def track_pwad(r): called_detectors.append("_pwad_crash")
+    async def track_voodoo(r, a): called_detectors.append("_voodoo_dolls")
+    async def track_diff(r, a): called_detectors.append("_difficulty_spawn_mismatch")
+    async def track_resource(r, a): called_detectors.append("_static_resource_balance")
+    async def track_vision(rid): called_detectors.append("_vision_defects")
+    async def track_repeated(rid, ev): called_detectors.append("_repeated_deaths")
+    async def track_ammo(rid, ev): called_detectors.append("_ammo_starvation")
+    async def track_health(rid, ev): called_detectors.append("_health_deficit")
+    async def track_softlock(r, ev): called_detectors.append("_softlock")
+    async def track_secrets(r, ev, a): called_detectors.append("_unreachable_secrets")
+    async def track_promote(r): called_detectors.append("_promote_hypotheses")
+    async def track_link(rid): called_detectors.append("_link_screenshots_to_defects")
+
+    svc._pwad_crash = track_pwad
+    svc._voodoo_dolls = track_voodoo
+    svc._difficulty_spawn_mismatch = track_diff
+    svc._static_resource_balance = track_resource
+    svc._vision_defects = track_vision
+    svc._repeated_deaths = track_repeated
+    svc._ammo_starvation = track_ammo
+    svc._health_deficit = track_health
+    svc._softlock = track_softlock
+    svc._unreachable_secrets = track_secrets
+    svc._promote_hypotheses = track_promote
+    svc._link_screenshots_to_defects = track_link
+
+    await svc.detect_for_run(run)
+
+    assert called_detectors == [
+        "_pwad_crash",
+        "_voodoo_dolls",
+        "_difficulty_spawn_mismatch",
+        "_static_resource_balance",
+        "_vision_defects",
+        "_repeated_deaths",
+        "_ammo_starvation",
+        "_health_deficit",
+        "_softlock",
+        "_unreachable_secrets",
+        "_promote_hypotheses",
+        "_link_screenshots_to_defects",
+    ]
+
+
+# ── _pwad_crash ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_pwad_crash_defect_created(service, mock_db):
+    run = MagicMock(spec=TestRun)
+    run.id = uuid4()
+    run.failure_category = "pwad_crash"
+    run.outcome = "timeout"
+    run.failure_summary = "Segfault in WAD init"
+    await service._pwad_crash(run)
+    service.repo.create.assert_awaited_once()
+    args = service.repo.create.call_args[0][0]
+    assert args.defect_type == "pwad_crash"
+    assert args.severity == 1
+    assert args.priority == 1
+
+
+@pytest.mark.asyncio
+async def test_pwad_crash_from_outcome(service, mock_db):
+    run = MagicMock(spec=TestRun)
+    run.id = uuid4()
+    run.failure_category = "other"
+    run.outcome = "pwad_crash"
+    run.failure_summary = None
+    await service._pwad_crash(run)
+    service.repo.create.assert_awaited_once()
+    args = service.repo.create.call_args[0][0]
+    assert args.defect_type == "pwad_crash"
+
+
+@pytest.mark.asyncio
+async def test_pwad_crash_not_created_for_other(service, mock_db):
+    run = MagicMock(spec=TestRun)
+    run.id = uuid4()
+    run.failure_category = "timeout"
+    run.outcome = "timeout"
+    await service._pwad_crash(run)
+    service.repo.create.assert_not_called()
+
+
+# ── _voodoo_dolls ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_voodoo_dolls_detects(service, mock_db):
+    run = MagicMock(spec=TestRun)
+    run.id = uuid4()
+    analysis = MagicMock(spec=StaticAnalysisResult)
+    analysis.spawn_summary_by_skill = {
+        "_map_features": {"voodoo_doll_risk": True, "player_start_count": 3}
+    }
+    await service._voodoo_dolls(run, analysis)
+    service.repo.create.assert_awaited_once()
+    args = service.repo.create.call_args[0][0]
+    assert args.defect_type == "geometry_voodoo_dolls"
+    assert "3" in args.title
+
+
+@pytest.mark.asyncio
+async def test_voodoo_dolls_no_risk_no_defect(service, mock_db):
+    run = MagicMock(spec=TestRun)
+    run.id = uuid4()
+    analysis = MagicMock(spec=StaticAnalysisResult)
+    analysis.spawn_summary_by_skill = {
+        "_map_features": {"voodoo_doll_risk": False}
+    }
+    await service._voodoo_dolls(run, analysis)
+    service.repo.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_voodoo_dolls_no_analysis_skipped(service, mock_db):
+    run = MagicMock(spec=TestRun)
+    run.id = uuid4()
+    await service._voodoo_dolls(run, None)
+    service.repo.create.assert_not_called()
+
+
+# ── _promote_hypotheses ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_promote_hypotheses_creates_defects(service, mock_db):
+    run = MagicMock(spec=TestRun)
+    run.id = uuid4()
+    run.wad_file_id = uuid4()
+    run.map_name = "MAP01"
+
+    hyp = MagicMock(spec=WadHypothesis)
+    hyp.id = uuid4()
+    hyp.confidence = 0.8
+    hyp.tag = "BLOCKED_PATH"
+    hyp.content = "Path blocked near start"
+
+    result_mock = MagicMock()
+    result_mock.scalars.return_value.all.return_value = [hyp]
+    mock_db.execute = AsyncMock(return_value=result_mock)
+
+    await service._promote_hypotheses(run)
+    service.repo.create.assert_awaited_once()
+    args = service.repo.create.call_args[0][0]
+    assert args.defect_type == "recurring_blocked_path"
+    assert args.severity == 2
+    assert hyp.confirmed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_promote_hypotheses_skips_low_confidence(service, mock_db):
+    run = MagicMock(spec=TestRun)
+    run.id = uuid4()
+    run.wad_file_id = uuid4()
+    run.map_name = "MAP01"
+
+    result_mock = MagicMock()
+    result_mock.scalars.return_value.all.return_value = []
+    mock_db.execute = AsyncMock(return_value=result_mock)
+
+    await service._promote_hypotheses(run)
+    service.repo.create.assert_not_called()
+    call_args = mock_db.execute.call_args[0][0]
+    compiled = call_args.compile(compile_kwargs={"literal_binds": True})
+    assert "0.6" in str(compiled)
+
+
+@pytest.mark.asyncio
+async def test_promote_hypotheses_no_wad_file_id(service, mock_db):
+    run = MagicMock(spec=TestRun)
+    run.id = uuid4()
+    run.wad_file_id = None
+
+    await service._promote_hypotheses(run)
+    mock_db.execute.assert_not_awaited()
+    service.repo.create.assert_not_called()
+
+
+# ── _link_screenshots_to_defects ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_link_screenshots_to_defects(service, mock_db):
+    run_id = uuid4()
+    event_id = 1
+    screenshot_id = uuid4()
+
+    screenshot = MagicMock(spec=NotableEventScreenshot)
+    screenshot.game_event_id = event_id
+    screenshot.id = screenshot_id
+
+    screenshots_result = MagicMock()
+    screenshots_result.scalars.return_value.all.return_value = [screenshot]
+
+    event_row = MagicMock()
+    event_row.tick_number = 42
+    event_row.id = event_id
+    events_result = MagicMock()
+    events_result.__iter__ = lambda self: iter([event_row])
+
+    defect = MagicMock(spec=Defect)
+    defect.screenshot_id = None
+    defect.detected_at_tick = 42
+    defects_result = MagicMock()
+    defects_result.scalars.return_value.all.return_value = [defect]
+
+    mock_db.execute = AsyncMock(side_effect=[screenshots_result, events_result, defects_result])
+
+    await service._link_screenshots_to_defects(run_id)
+    assert defect.screenshot_id == screenshot_id
+
+
+@pytest.mark.asyncio
+async def test_link_screenshots_no_screenshots(service, mock_db):
+    run_id = uuid4()
+    screenshots_result = MagicMock()
+    screenshots_result.scalars.return_value.all.return_value = []
+    mock_db.execute = AsyncMock(return_value=screenshots_result)
+
+    await service._link_screenshots_to_defects(run_id)
+    assert mock_db.execute.await_count == 1
     service.repo.create.assert_not_called()

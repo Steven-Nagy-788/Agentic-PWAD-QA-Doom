@@ -282,7 +282,7 @@ export function websocketUrl(runId: string): string {
   return base.toString();
 }
 
-function websocketBaseUrl(): URL {
+export function websocketBaseUrl(): URL {
   if (WS_BASE) {
     return new URL(WS_BASE);
   }
@@ -304,14 +304,14 @@ function isLocalFrontendOrigin(base: URL): boolean {
   return ["localhost", "127.0.0.1", "0.0.0.0"].includes(base.hostname);
 }
 
-function apiRootFromBase(base: string): string {
+export function apiRootFromBase(base: string): string {
   if (base.endsWith("/v1")) {
     return base.slice(0, -3);
   }
   return base.replace(/\/v1\/?$/, "");
 }
 
-async function errorText(response: Response): Promise<string> {
+export async function errorText(response: Response): Promise<string> {
   const text = await response.text();
   if (!text) {
     return `${response.status} ${response.statusText}`;

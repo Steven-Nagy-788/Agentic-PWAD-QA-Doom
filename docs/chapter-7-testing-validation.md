@@ -23,9 +23,9 @@ Testing was guided by three objectives: correctness of the lockstep agent loop t
 
 ### 7.2.1 Unit Testing
 
-Unit tests target the most critical business logic components where correctness directly impacts the quality of autonomous QA runs. A total of **438 automated tests** were developed across the three services.
+Unit tests target the most critical business logic components where correctness directly impacts the quality of autonomous QA runs. A total of **591 automated tests** were developed across the three services.
 
-**Backend Service.** The Backend received the most extensive testing, with **329 tests** covering guard logic, prompt sanitization, MCP state normalization, tool request validation, configuration validation, and run loop decision handling.
+**Backend Service.** The Backend received the most extensive testing, with **418 tests** covering guard logic, prompt sanitization, MCP state normalization, tool request validation, configuration validation, run loop decision handling, run finalization, cross-run memory context building, progress metrics, quality flags, and deterministic fallback decisions.
 
 The guard logic module (`run_guards.py`) was tested with particular care, as it intercepts and overrides LLM decisions that could compromise a QA run. Each guard — including get-state spam detection, position stuck recovery, decision diversity enforcement, and premature finish prevention — was tested with both triggering and non-triggering conditions. For example, the get-state spam guard was verified to force an exploration action with a 180-degree rotation after two consecutive `get_state` calls, while the premature finish guard was confirmed to block early termination when kill or coverage thresholds remain unmet.
 
@@ -33,15 +33,15 @@ Tool validation tests confirmed that the system rejects unsupported MCP tool nam
 
 **MCP-Doom Service.** The MCP-Doom service contributed **66 unit tests** covering edge cases in spatial navigation, breadcrumb memory limits, key tracking across multiple objects, and combat constant completeness. These tests verify the pure-logic components of the navigation and state systems. The relatively low line coverage (28%) is explained by the heavy dependency on the ViZDoom runtime for game execution logic, which requires OpenGL and SDL libraries. This code path is exercised by integration tests executed separately under a display server.
 
-**Frontend.** The Frontend received **43 unit tests** covering the API utility functions (WebSocket URL construction, asset URL normalization, date formatting), the AsciiGrid component's header-grid separation logic and legend rendering, and the DefectBadge component's severity-based color tone mapping. These tests confirm that visual indicators render correctly and that data transformation utilities handle edge cases such as null inputs and empty strings.
+**Frontend.** The Frontend received **107 unit tests** covering the API utility functions (WebSocket URL construction, asset URL normalization, date formatting, upload, error parsing), pure game utility functions (cosmetic defect classification, trail merging, run list normalization, sparkline path generation), shared UI components (formatBytes, formatTime, OutcomeBadge color tones, NavBar), the AsciiGrid component's header-grid separation logic and legend rendering, the MapCanvas component's trail and marker rendering, the DefectBadge component's severity-based color tone mapping, the DecisionTimeline's expandable decision cards, and the ReasoningLog's live-mode slicing and source badge styling. These tests confirm that visual indicators render correctly, data transformation utilities handle edge cases such as null inputs and empty strings, and the decision trace visualization displays metadata accurately.
 
 ### Test Execution Summary
 
 | Service | Total Tests | Passed | Failed | Skipped | Line Coverage |
 |---|---|---|---|---|---|
-| Backend | 329 | 329 | 0 | 0 | 57% |
+| Backend | 418 | 418 | 0 | 0 | 57% |
 | MCP-Doom (unit) | 66 | 66 | 0 | 13 | 28%* |
-| Frontend | 43 | 43 | 0 | 0 | 61% |
+| Frontend | 107 | 107 | 0 | 0 | 61% |
 
 *\*MCP-Doom unit coverage is low because most game logic requires the ViZDoom runtime, which is only available in integration test environments.*
 
@@ -167,4 +167,4 @@ High-severity infrastructure and configuration issues (CORS, database pooling, L
 
 ## Summary
 
-The testing and validation process encompassed **438 automated tests** across three services, with a CI pipeline that runs on every push and pull request. Unit tests focused on the most critical business logic — guard overrides, tool validation, state normalization, and component rendering. Integration tests verified service-to-service communication paths. The system achieved a SUS score of 78.3 and maintained sub-200ms API response times under typical load. Coverage remains uneven across services: the Backend achieves 57% line coverage, the Frontend 61%, while MCP-Doom unit coverage sits at 28% due to the heavy ViZDoom dependency. No critical defects remain open. The system is validated for demonstration and deployment.
+The testing and validation process encompassed **591 automated tests** across three services, with a CI pipeline that runs on every push and pull request. Unit tests focused on the most critical business logic — guard overrides, tool validation, state normalization, component rendering, run finalization, cross-run memory, deterministic fallback decisions, and defect detection orchestration. Integration tests verified service-to-service communication paths including multi-iteration lockstep loops and end-to-end finalization pipelines. The system achieved a SUS score of 78.3 and maintained sub-200ms API response times under typical load. Coverage remains uneven across services: the Backend achieves 57% line coverage, the Frontend 61%, while MCP-Doom unit coverage sits at 28% due to the heavy ViZDoom dependency. No critical defects remain open. The system is validated for demonstration and deployment.

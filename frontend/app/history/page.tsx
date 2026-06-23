@@ -6,13 +6,10 @@ import { useRouter } from "next/navigation";
 import { Run, RunList, WadFile, PositionSample, apiGet } from "@/lib/api";
 import { InlineError, OutcomeBadge, SkeletonRows, errorMessage } from "@/lib/components/shared";
 import { HealthSparkline } from "@/lib/components/HealthSparkline";
+import { normalizeRunList } from "@/lib/game-utils";
 
 type RunFilters = { wad: string; map: string; outcome: string; difficulty: string; after: string; before: string };
 const RUN_PAGE_SIZE = 20;
-
-function normalizeRunList(data: RunList | Run[]): RunList {
-  return Array.isArray(data) ? { total: data.length, items: data, offset: 0 } : data;
-}
 
 export default function RunHistoryPage() {
   const router = useRouter();

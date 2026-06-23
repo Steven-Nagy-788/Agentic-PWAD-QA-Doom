@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { apiGet, PositionSample } from "@/lib/api";
+import { sparklinePath } from "@/lib/game-utils";
 
 export function HealthSparkline({ runId, fallback, batchTrail }: { runId: string; fallback: number; batchTrail?: PositionSample[] }) {
   const trail = useQuery({
@@ -19,17 +20,4 @@ export function HealthSparkline({ runId, fallback, batchTrail }: { runId: string
       </svg>
     </div>
   );
-}
-
-function sparklinePath(values: number[], width = 128, height = 36) {
-  if (!values.length) return "";
-  const min = Math.min(...values, 0);
-  const max = Math.max(...values, 100);
-  const range = Math.max(max - min, 1);
-  const points = values.map((value, index) => {
-    const x = values.length === 1 ? width / 2 : (index / (values.length - 1)) * width;
-    const y = height - 2 - ((value - min) / range) * (height - 4);
-    return `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-  });
-  return points.join(" ");
 }

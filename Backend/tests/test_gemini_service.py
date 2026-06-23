@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.gemini_service import GeminiService, estimate_llm_cost_usd
+from app.services.gemini_service import (
+    GeminiService,
+    estimate_llm_cost_usd,
+    _is_rate_limit,
+    _retry_delay_seconds,
+    _normalize_hypotheses,
+)
 
 
 # ── _extract_json_balanced ───────────────────────────────────────────────────
@@ -181,3 +187,194 @@ def test_cost_estimate_uses_per_million_rates() -> None:
         input_cost_per_million=0.10,
         output_cost_per_million=0.40,
     ), 6) == 0.30
+
+
+# ── _fallback_decision branches ──────────────────────────────────────────────
+
+
+def test_fallback_visible_monster_strafe() -> None:
+    decision = GeminiService()._fallback_decision(
+        {
+            "scene_objects": [
+                {"id": 3, "type": "monster", "is_visible": True, "distance": 200, "attack_type": "hitscan"},
+            ],
+            "weapon_state": {"usable_weapons": [1, 2], "usable_attack_ammo": 30, "selected_weapon_ammo": 10, "best_viable_weapon": 2},
+            "lockstep_state": {},
+        },
+        "Fallback.",
+    )
+    assert decision["mcp_tool"] == "strafe_and_shoot"
+    assert decision["mcp_params"]["object_id"] == 3
+
+
+def test_fallback_visible_monster_aim() -> None:
+    decision = GeminiService()._fallback_decision(
+        {
+            "scene_objects": [
+                {"id": 8, "type": "monster", "is_visible": True, "distance": 400, "attack_type": "projectile"},
+            ],
+            "weapon_state": {"usable_weapons": [1], "usable_attack_ammo": 20, "selected_weapon_ammo": 10, "best_viable_weapon": 1},
+            "lockstep_state": {},
+        },
+        "Fallback.",
+    )
+    assert decision["mcp_tool"] == "aim_and_shoot"
+    assert decision["mcp_params"]["object_id"] == 8
+
+
+def test_fallback_visible_pickup() -> None:
+    decision = GeminiService()._fallback_decision(
+        {
+            "scene_objects": [
+                {"id": 10, "type": "ammo", "is_visible": True, "distance": 150},
+            ],
+            "weapon_state": {"usable_weapons": [1], "usable_attack_ammo": 30, "selected_weapon_ammo": 10, "best_viable_weapon": 1},
+            "lockstep_state": {},
+        },
+        "Fallback.",
+    )
+    assert decision["mcp_tool"] == "move_to"
+    assert decision["mcp_params"]["object_id"] == 10
+    assert decision["mcp_params"]["stop_on_enemy"] is True
+
+
+def test_fallback_no_usable_weapons() -> None:
+    decision = GeminiService()._fallback_decision(
+        {
+            "scene_objects": [],
+            "weapon_state": {"usable_weapons": [], "usable_attack_ammo": 0, "selected_weapon_ammo": 0, "best_viable_weapon": None},
+            "lockstep_state": {},
+        },
+        "Fallback.",
+    )
+    assert decision["mcp_tool"] == "retreat"
+    assert decision["mcp_params"]["tics"] == 28
+
+
+def test_fallback_unexplored_direction() -> None:
+    decision = GeminiService()._fallback_decision(
+        {
+            "scene_objects": [],
+            "weapon_state": {"usable_weapons": [1], "usable_attack_ammo": 10, "selected_weapon_ammo": 10, "best_viable_weapon": 1},
+            "navigation": {"unexplored_direction": "north"},
+            "lockstep_state": {},
+        },
+        "Fallback.",
+    )
+    assert decision["mcp_tool"] == "explore"
+    assert decision["mcp_params"]["max_tics"] == 80
+    assert decision["mcp_params"]["stop_on_enemy"] is True
+    assert decision["mcp_params"]["stop_on_item"] is True
+
+
+def test_fallback_default_explore() -> None:
+    decision = GeminiService()._fallback_decision(
+        {
+            "scene_objects": [],
+            "weapon_state": {"usable_weapons": [1], "usable_attack_ammo": 10, "selected_weapon_ammo": 10, "best_viable_weapon": 1},
+            "lockstep_state": {},
+        },
+        "Fallback.",
+    )
+    assert decision["mcp_tool"] == "explore"
+    assert decision["mcp_params"]["max_tics"] == 80
+    assert decision["mcp_params"]["stop_on_enemy"] is True
+    assert decision["mcp_params"]["stop_on_item"] is True
+
+
+def test_fallback_weapon_switch() -> None:
+    decision = GeminiService()._fallback_decision(
+        {
+            "scene_objects": [],
+            "weapon_state": {
+                "usable_weapons": [1, 3],
+                "usable_attack_ammo": 50,
+                "selected_weapon_ammo": 0,
+                "best_viable_weapon": 3,
+            },
+            "lockstep_state": {},
+        },
+        "Fallback.",
+    )
+    assert decision["mcp_tool"] == "select_weapon"
+    assert decision["mcp_params"]["weapon_slot"] == 3
+    assert decision["mcp_params"]["max_tics"] == 20
+
+
+def test_fallback_completed_object_skipped() -> None:
+    decision = GeminiService()._fallback_decision(
+        {
+            "scene_objects": [
+                {"id": 5, "type": "ammo", "is_visible": True, "distance": 100},
+            ],
+            "same_run_memory": {
+                "older_milestones": {"completed_targets": {"5": "done"}},
+            },
+            "weapon_state": {"usable_weapons": [1], "usable_attack_ammo": 10, "selected_weapon_ammo": 10, "best_viable_weapon": 1},
+            "lockstep_state": {},
+        },
+        "Fallback.",
+    )
+    assert decision["mcp_tool"] != "move_to"
+    assert decision["mcp_tool"] == "explore"
+
+
+def test_fallback_failed_object_skipped() -> None:
+    decision = GeminiService()._fallback_decision(
+        {
+            "scene_objects": [
+                {"id": 7, "type": "weapon", "is_visible": True, "distance": 200},
+            ],
+            "same_run_memory": {
+                "older_milestones": {"failed_targets": {"7": "unreachable"}},
+            },
+            "weapon_state": {"usable_weapons": [1], "usable_attack_ammo": 10, "selected_weapon_ammo": 10, "best_viable_weapon": 1},
+            "lockstep_state": {},
+        },
+        "Fallback.",
+    )
+    assert decision["mcp_tool"] != "move_to"
+    assert decision["mcp_tool"] == "explore"
+
+
+# ── _is_rate_limit ───────────────────────────────────────────────────────────
+
+
+def test_is_rate_limit_429() -> None:
+    assert _is_rate_limit(Exception("HTTP 429 Too Many Requests")) is True
+
+
+def test_is_rate_limit_exhausted() -> None:
+    assert _is_rate_limit(Exception("RESOURCE_EXHAUSTED quota exceeded")) is True
+
+
+def test_is_rate_limit_negative() -> None:
+    assert _is_rate_limit(Exception("Connection timeout")) is False
+
+
+# ── _retry_delay_seconds ─────────────────────────────────────────────────────
+
+
+def test_retry_delay_seconds_with_retry_delay() -> None:
+    exc = Exception("retryDelay : 7s")
+    delay = _retry_delay_seconds(exc)
+    assert 8.0 <= delay <= 17.0
+
+
+def test_retry_delay_seconds_without_retry_delay() -> None:
+    exc = Exception("some random error")
+    delay = _retry_delay_seconds(exc)
+    assert 16.0 <= delay <= 25.0
+
+
+# ── _normalize_hypotheses ────────────────────────────────────────────────────
+
+
+def test_normalize_hypotheses_string() -> None:
+    result = _normalize_hypotheses("single hypothesis")
+    assert result == ["single hypothesis"]
+
+
+def test_normalize_hypotheses_dedup() -> None:
+    result = _normalize_hypotheses(["foo", "FOO", "bar", "foo"])
+    assert result == ["foo", "bar"]
