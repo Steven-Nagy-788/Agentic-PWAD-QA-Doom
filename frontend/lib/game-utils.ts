@@ -1,7 +1,7 @@
 import type { Defect, PositionSample, Run, RunList } from "@/lib/api";
 import type { SameRunMemory } from "@/hooks/useRunStream";
 
-export function isCosmeticTextureDefect(defect: Defect) {
+export function isCosmeticTextureDefect(defect: { defect_type?: string | null; title?: string | null; description?: string | null }) {
   const type = (defect.defect_type ?? "").toLowerCase();
   const text = `${type} ${defect.title ?? ""} ${defect.description ?? ""}`.toLowerCase();
   if (text.includes("hom") || text.includes("hall of mirrors") || text.includes("missing texture") || text.includes("medusa")) {

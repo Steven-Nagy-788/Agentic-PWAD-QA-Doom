@@ -174,7 +174,9 @@ def _wire_common(started, run, wad, analysis):
     run_repo.update = AsyncMock()
     started["run_repo_cls"].return_value = run_repo
 
-    started["config_repo_cls"].return_value = AsyncMock(get_all=AsyncMock(return_value={}))
+    started["config_repo_cls"].return_value = AsyncMock(
+        get_all=AsyncMock(return_value={"llm_throttle_seconds": 5.0}),
+    )
     started["get_profile"].return_value = MagicMock(
         throttle_delays={"combat": 0.5, "low_health": 1.0, "stuck": 2.0, "default": 1.5},
         system_prompt_addendum="",
