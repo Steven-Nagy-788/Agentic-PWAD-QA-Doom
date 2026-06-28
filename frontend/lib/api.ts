@@ -234,6 +234,38 @@ export type MapMemory = {
   summary_counts: { prior_run_count: number; outcome_counts: Record<string, number> };
 };
 
+export type DashboardStats = {
+  total_wads: number;
+  total_runs: number;
+  total_defects: number;
+  avg_coverage_pct: number | null;
+  avg_kill_rate_pct: number | null;
+  total_llm_cost_usd: number;
+  runs_by_status: Record<string, number>;
+  runs_by_outcome: Record<string, number>;
+};
+
+export type DashboardRecentRun = {
+  id: string;
+  map_name: string;
+  wad_filename: string;
+  outcome: string | null;
+  difficulty_level: number | null;
+  coverage_pct: number | null;
+  total_kills: number | null;
+  spawned_enemies: number | null;
+  defect_count: number;
+  duration_seconds: number | null;
+  created_at: string;
+  llm_cost_usd: number;
+};
+
+export type DashboardDefectSummary = {
+  by_type: Array<{ defect_type: string; count: number; avg_severity: number }>;
+  by_severity: Array<{ severity: number; count: number }>;
+  total_defects: number;
+};
+
 export async function apiGet<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
   if (!response.ok) {
@@ -309,6 +341,18 @@ export function apiRootFromBase(base: string): string {
     return base.slice(0, -3);
   }
   return base.replace(/\/v1\/?$/, "");
+}
+
+export async function fetchDashboardStats(): Promise<DashboardStats> {
+  return apiGet<DashboardStats>("/dashboard/stats");
+}
+
+export async function fetchDashboardRecentRuns(limit = 10): Promise<DashboardRecentRun[]> {
+  return apiGet<DashboardRecentRun[]>(`/dashboard/recent-runs?limit=${limit}`);
+}
+
+export async function fetchDashboardDefectSummary(): Promise<DashboardDefectSummary> {
+  return apiGet<DashboardDefectSummary>("/dashboard/defect-summary");
 }
 
 export async function errorText(response: Response): Promise<string> {

@@ -14,6 +14,7 @@ from app.core.database import Base, SessionLocal, engine
 from app.routers import (
     admin_storage,
     analysis,
+    dashboard,
     memory,
     patterns,
     reports,
@@ -102,6 +103,7 @@ app.include_router(ws.router, prefix="/v1")
 app.include_router(admin_storage.router, prefix="/v1")
 app.include_router(settings_router.router, prefix="/v1")
 app.include_router(memory.router, prefix="/v1")
+app.include_router(dashboard.router, prefix="/v1")
 
 
 @app.get("/metrics", tags=["Metrics"])

@@ -3,7 +3,7 @@
 import { use, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { Play } from "lucide-react";
+import { Play, Trash2 } from "lucide-react";
 import { AppSettings, WadFile, WadMap, Run, BehaviorProfile, MapMemory, apiGet, apiSend } from "@/lib/api";
 import { Metric, SkeletonRows, InlineError, errorMessage } from "@/lib/components/shared";
 import { MapCanvas } from "@/components/MapCanvas";
@@ -54,15 +54,38 @@ export default function WadDetailPage({ params }: { params: Promise<{ id: string
     },
   });
 
+  const deleteWad = useMutation({
+    mutationFn: () => apiSend<void>(`/wads/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["wads"] });
+      queryClient.invalidateQueries({ queryKey: ["wad-all-maps"] });
+      router.push("/");
+    },
+  });
+
   if (wad.isLoading) return <SkeletonRows />;
   if (!wad.data) return <div className="p-6 text-neutral-500">WAD not found</div>;
 
   return (
     <div className="grid min-h-screen grid-cols-1 gap-0 lg:grid-cols-[1fr_360px]">
       <div className="space-y-5 p-4 lg:p-6">
-        <div>
-          <h2 className="text-xl font-semibold">{wad.data.original_filename}</h2>
-          <p className="text-sm text-neutral-500">{wad.data.iwad_required} · {maps.data?.length ?? 0} maps</p>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold">{wad.data.original_filename}</h2>
+            <p className="text-sm text-neutral-500">{wad.data.iwad_required} · {maps.data?.length ?? 0} maps</p>
+          </div>
+          <button
+            onClick={() => {
+              if (window.confirm("Delete this WAD and all its associated data? This cannot be undone.")) {
+                deleteWad.mutate();
+              }
+            }}
+            disabled={deleteWad.isPending}
+            className="inline-flex h-9 items-center gap-2 rounded border border-red-200 bg-white px-3 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Trash2 className="h-4 w-4" aria-hidden="true" />
+            {deleteWad.isPending ? "Deleting" : "Delete WAD"}
+          </button>
         </div>
         {maps.isLoading ? <SkeletonRows /> : null}
         <div className="grid gap-4 xl:grid-cols-2">

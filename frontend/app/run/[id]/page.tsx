@@ -6,7 +6,7 @@ import { use, useMemo, useState } from "react";
 import type React from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { Activity, X } from "lucide-react";
+import { Activity, X, Trash2 } from "lucide-react";
 import { Run, Defect, Decision, PositionSample, TraceEntry, UsageStats, BenchmarkStats, WadMap, ReportStatus, apiGet, apiSend, API_BASE } from "@/lib/api";
 import { useRunStream, type LiveDecision } from "@/hooks/useRunStream";
 import { Metric, OutcomeBadge, SkeletonRows, formatTime } from "@/lib/components/shared";
@@ -73,7 +73,7 @@ function LiveRunContent({ runId, initialRun }: { runId: string; initialRun: Run 
   }, [stream.decisions]);
 
   return (
-    <div className="fixed inset-0 z-50 grid grid-rows-[auto_1fr_auto] overflow-hidden bg-neutral-100">
+    <div className="grid grid-rows-[auto_1fr_auto] overflow-hidden bg-neutral-100" style={{ height: "calc(100vh - 3rem)" }}>
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 bg-white px-4 py-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -322,6 +322,7 @@ function RuntimeWarnings({ flags }: { flags?: Record<string, unknown> | null }) 
 
 function RunDetailContent({ runId }: { runId: string }) {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const run = useQuery({ queryKey: ["run", runId], queryFn: () => apiGet<Run>(`/runs/${runId}`), refetchInterval: 5_000 });
   const defects = useQuery({ queryKey: ["run-defects", runId], queryFn: () => apiGet<Defect[]>(`/runs/${runId}/defects`) });
   const decisions = useQuery({ queryKey: ["run-decisions", runId], queryFn: () => apiGet<Decision[]>(`/runs/${runId}/decisions?page_size=500`) });
@@ -337,26 +338,46 @@ function RunDetailContent({ runId }: { runId: string }) {
   });
   const map = maps.data?.find((item) => item.map_name === run.data?.map_name);
 
+  const deleteRun = useMutation({
+    mutationFn: () => apiSend<Run>(`/runs/${runId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["runs"] });
+      router.push("/history");
+    },
+  });
+
   if (!run.data) {
     return <SkeletonRows />;
   }
 
   return (
     <div className="space-y-5 p-4 lg:p-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold">{run.data.map_name}</h2>
-          <p className="text-sm text-neutral-500">{run.data.id}</p>
-          {run.data.behavior_profile ? <p className="text-xs text-neutral-400">Behavior: {run.data.behavior_profile}</p> : null}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold">{run.data.map_name}</h2>
+            <p className="text-sm text-neutral-500">{run.data.id}</p>
+            {run.data.behavior_profile ? <p className="text-xs text-neutral-400">Behavior: {run.data.behavior_profile}</p> : null}
+          </div>
+          <div className="flex items-center gap-2">
+            <OutcomeBadge outcome={run.data.outcome ?? run.data.status} />
+            <button onClick={() => router.push(`/run/${runId}`)} className="inline-flex h-10 items-center gap-2 rounded border border-neutral-300 bg-white px-3 text-sm font-semibold">
+              <Activity className="h-4 w-4" aria-hidden="true" />
+              Live
+            </button>
+            <button
+              onClick={() => {
+                if (window.confirm("Delete this run and all its data? This cannot be undone.")) {
+                  deleteRun.mutate();
+                }
+              }}
+              disabled={deleteRun.isPending}
+              className="inline-flex h-10 items-center gap-2 rounded border border-red-200 bg-white px-3 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Trash2 className="h-4 w-4" aria-hidden="true" />
+              {deleteRun.isPending ? "Deleting" : "Delete"}
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <OutcomeBadge outcome={run.data.outcome ?? run.data.status} />
-          <button onClick={() => router.push(`/run/${runId}`)} className="inline-flex h-10 items-center gap-2 rounded border border-neutral-300 bg-white px-3 text-sm font-semibold">
-            <Activity className="h-4 w-4" aria-hidden="true" />
-            Live
-          </button>
-        </div>
-      </div>
       <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
         <MapCanvas map={map} trail={trail.data ?? []} events={events.data ?? []} />
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3">

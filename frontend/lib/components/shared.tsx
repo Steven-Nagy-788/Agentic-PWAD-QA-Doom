@@ -1,23 +1,25 @@
 "use client";
 
 import type React from "react";
-import { FileArchive, History, HeartPulse, Cog, BookOpen } from "lucide-react";
+import { LayoutDashboard, FileArchive, History, HeartPulse, Cog } from "lucide-react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 
 export function NavBar() {
   const pathname = usePathname();
   const nav = [
+    { href: "/dashboard", icon: <LayoutDashboard />, label: "Dashboard", active: pathname === "/dashboard" },
     { href: "/", icon: <FileArchive />, label: "WADs", active: pathname === "/" || pathname.startsWith("/wad/") },
     { href: "/history", icon: <History />, label: "Runs", active: pathname.startsWith("/history") || pathname.startsWith("/run/") },
     { href: "/health", icon: <HeartPulse />, label: "Health", active: pathname.startsWith("/health") },
     { href: "/settings", icon: <Cog />, label: "Settings", active: pathname.startsWith("/settings") },
-    { href: "/docs", icon: <BookOpen />, label: "Docs", active: pathname.startsWith("/docs") },
   ];
   return (
     <aside className="border-b border-neutral-200 bg-white md:border-b-0 md:border-r">
-      <div className="border-b border-neutral-200 p-4">
-        <h1 className="text-lg font-semibold tracking-normal">Agentic PWAD QA Doom</h1>
+      <div className="flex items-center gap-3 border-b border-neutral-200 p-4">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/logo.png" alt="BoJack" className="h-9 w-9 rounded-full" />
+        <h1 className="text-lg font-semibold tracking-normal">BoJack</h1>
       </div>
       <nav className="grid grid-cols-3 gap-1 p-3 md:grid-cols-1">
         {nav.map((item) => (

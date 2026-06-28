@@ -15,8 +15,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Agentic PWAD QA Doom",
+  title: "BoJack — Agentic Game Tester",
   description: "Autonomous Doom PWAD QA dashboard",
+  icons: { icon: "/logo.png" },
 };
 
 export default function RootLayout({

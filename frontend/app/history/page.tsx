@@ -1,9 +1,10 @@
 "use client";
 
 import { useDeferredValue, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { Run, RunList, WadFile, PositionSample, apiGet } from "@/lib/api";
+import { Trash2 } from "lucide-react";
+import { Run, RunList, WadFile, PositionSample, apiGet, apiSend } from "@/lib/api";
 import { InlineError, OutcomeBadge, SkeletonRows, errorMessage } from "@/lib/components/shared";
 import { HealthSparkline } from "@/lib/components/HealthSparkline";
 import { normalizeRunList } from "@/lib/game-utils";
@@ -13,6 +14,7 @@ const RUN_PAGE_SIZE = 20;
 
 export default function RunHistoryPage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [filters, setFilters] = useState<RunFilters>({ wad: "", map: "", outcome: "", difficulty: "", after: "", before: "" });
   const [runOffset, setRunOffset] = useState(0);
   const deferredFilters = useDeferredValue(filters);
@@ -46,6 +48,13 @@ export default function RunHistoryPage() {
     queryKey: ["batch-trails", runIds],
     queryFn: () => apiGet<Record<string, PositionSample[]>>(`/runs/batch-trails?ids=${runIds}&limit=80`),
     enabled: visibleRuns.length > 0,
+  });
+
+  const deleteRun = useMutation({
+    mutationFn: (runId: string) => apiSend<void>(`/runs/${runId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["runs"] });
+    },
   });
 
   const total = runs.data?.total ?? 0;
@@ -113,6 +122,7 @@ export default function RunHistoryPage() {
                 <th className="px-3 py-3">Difficulty</th>
                 <th className="px-3 py-3">HP</th>
                 <th className="px-3 py-3">Created</th>
+                <th className="px-3 py-3"></th>
               </tr>
             </thead>
             <tbody>
@@ -128,6 +138,20 @@ export default function RunHistoryPage() {
                   <td className="px-3 py-3">{run.difficulty_level}</td>
                   <td className="px-3 py-3"><HealthSparkline runId={run.id} fallback={run.final_hp ?? 0} batchTrail={batchTrails.data?.[run.id]} /></td>
                   <td className="px-3 py-3 text-neutral-500">{new Date(run.created_at).toLocaleString()}</td>
+                  <td className="px-3 py-3">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (window.confirm("Delete this run?")) {
+                          deleteRun.mutate(run.id);
+                        }
+                      }}
+                      className="inline-flex items-center rounded p-1.5 text-neutral-400 hover:bg-red-50 hover:text-red-600"
+                      title="Delete run"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
