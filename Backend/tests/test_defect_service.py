@@ -432,6 +432,7 @@ async def test_detect_for_run_orchestration(mock_db):
     original_health = svc._health_deficit
     original_softlock = svc._softlock
     original_secrets = svc._unreachable_secrets
+    original_exec_time = svc._execution_time_anomalies
     original_promote = svc._promote_hypotheses
     original_link = svc._link_screenshots_to_defects
 
@@ -445,6 +446,7 @@ async def test_detect_for_run_orchestration(mock_db):
     async def track_health(rid, ev): called_detectors.append("_health_deficit")
     async def track_softlock(r, ev): called_detectors.append("_softlock")
     async def track_secrets(r, ev, a): called_detectors.append("_unreachable_secrets")
+    async def track_exec_time(r, ev): called_detectors.append("_execution_time_anomalies")
     async def track_promote(r): called_detectors.append("_promote_hypotheses")
     async def track_link(rid): called_detectors.append("_link_screenshots_to_defects")
 
@@ -458,6 +460,7 @@ async def test_detect_for_run_orchestration(mock_db):
     svc._health_deficit = track_health
     svc._softlock = track_softlock
     svc._unreachable_secrets = track_secrets
+    svc._execution_time_anomalies = track_exec_time
     svc._promote_hypotheses = track_promote
     svc._link_screenshots_to_defects = track_link
 
@@ -474,6 +477,7 @@ async def test_detect_for_run_orchestration(mock_db):
         "_health_deficit",
         "_softlock",
         "_unreachable_secrets",
+        "_execution_time_anomalies",
         "_promote_hypotheses",
         "_link_screenshots_to_defects",
     ]

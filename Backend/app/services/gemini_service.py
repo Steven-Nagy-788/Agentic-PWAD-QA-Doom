@@ -181,6 +181,8 @@ class GeminiService:
         map_layout_png: bytes | None = None,
     ) -> tuple[dict[str, Any], dict[str, int]]:
         if not self.settings.gemini_api_key:
+            if not self.settings.deterministic_fallback_enabled:
+                raise RuntimeError("Gemini API key is not configured and deterministic fallback is disabled")
             return self._fallback_decision(
                 llm_input,
                 "Gemini API key is not configured; using deterministic fallback.",

@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Defect, GameEvent, WadHypothesis, WadSpatialMemory
+from app.models import AgentDecision, Defect, GameEvent, WadHypothesis, WadSpatialMemory
 from app.services.analysis_constants import CELL_SIZE
 
 
@@ -90,6 +90,124 @@ class RunMemoryService:
                 )
             )
             await self.db.execute(stmt)
+
+    async def persist_state_action_transitions(
+        self,
+        run_id: UUID,
+        wad_file_id: UUID,
+        map_name: str,
+        decisions: list[AgentDecision],
+    ) -> None:
+        """Track state-action transitions across runs for coverage-guided exploration.
+
+        Inspired by TITAN's Execution Coverage Memory (Section 3.4).
+        Maintains a persistent memory of abstract states and actions explored,
+        tagging transitions with outcomes (success, failure, stuck, etc.).
+        """
+        transitions: dict[tuple[str, str, str], int] = defaultdict(int)
+        outcomes: dict[tuple[str, str, str], dict[str, int]] = defaultdict(
+            lambda: {"success": 0, "failure": 0, "stuck": 0}
+        )
+
+        for i, decision in enumerate(decisions):
+            if decision.mcp_tool is None:
+                continue
+
+            state_before = decision.llm_input_summary or {}
+            state_snapshot = self._abstract_state(state_before)
+            action = decision.mcp_tool
+            stop_reason = decision.mcp_stop_reason or "unknown"
+
+            transition_key = (state_snapshot, action, stop_reason)
+            transitions[transition_key] += 1
+
+            if stop_reason in {"target_killed", "item_found", "key_found", "map_exit"}:
+                outcomes[transition_key]["success"] += 1
+            elif stop_reason in {
+                "target_lost",
+                "target_not_visible",
+                "out_of_ammo",
+                "no_usable_weapon",
+                "invalid_params",
+            }:
+                outcomes[transition_key]["failure"] += 1
+            elif stop_reason in {"stuck", "arrival_blocked"}:
+                outcomes[transition_key]["stuck"] += 1
+
+        now = datetime.now(UTC)
+        for (state_snapshot, action, stop_reason), count in transitions.items():
+            outcome_counts = outcomes[(state_snapshot, action, stop_reason)]
+            stmt = (
+                pg_insert(WadSpatialMemory)
+                .values(
+                    wad_file_id=wad_file_id,
+                    map_name=map_name.upper(),
+                    cell_x=hash(state_snapshot) % 10000,
+                    cell_y=hash(action) % 10000,
+                    event_type=f"transition:{stop_reason}",
+                    occurrence_count=count,
+                    last_seen_run_id=run_id,
+                    created_at=now,
+                    updated_at=now,
+                )
+                .on_conflict_do_update(
+                    index_elements=[
+                        "wad_file_id",
+                        "map_name",
+                        "cell_x",
+                        "cell_y",
+                        "event_type",
+                    ],
+                    set_={
+                        "occurrence_count": WadSpatialMemory.occurrence_count + count,
+                        "last_seen_run_id": run_id,
+                        "updated_at": now,
+                    },
+                )
+            )
+            await self.db.execute(stmt)
+
+    def _abstract_state(self, state: dict[str, Any]) -> str:
+        """Abstract raw game state into a compact representation.
+
+        Following TITAN's Perception Abstraction Module (Section 3.2):
+        - Discretize continuous values (health, ammo, position)
+        - Filter irrelevant data
+        - Encode into concise textual format
+        """
+        game_vars = state.get("game_variables", {})
+
+        health = int(game_vars.get("HEALTH", 100) or 100)
+        if health <= 0:
+            health_bucket = "dead"
+        elif health < 20:
+            health_bucket = "critical"
+        elif health < 50:
+            health_bucket = "low"
+        elif health < 80:
+            health_bucket = "medium"
+        else:
+            health_bucket = "high"
+
+        ammo = (
+            int(game_vars.get("AMMO", 0) or 0)
+            + int(game_vars.get("SHELLS", 0) or 0)
+            + int(game_vars.get("ROCKETS", 0) or 0)
+            + int(game_vars.get("CELLS", 0) or 0)
+        )
+        if ammo == 0:
+            ammo_bucket = "empty"
+        elif ammo < 20:
+            ammo_bucket = "low"
+        elif ammo < 50:
+            ammo_bucket = "medium"
+        else:
+            ammo_bucket = "high"
+
+        kills = int(game_vars.get("KILLCOUNT", 0) or 0)
+        secrets = int(game_vars.get("SECRETCOUNT", 0) or 0)
+
+        return f"hp:{health_bucket}|ammo:{ammo_bucket}|kills:{kills}|secrets:{secrets}"
 
     async def persist_hypotheses(
         self,

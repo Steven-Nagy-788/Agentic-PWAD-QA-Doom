@@ -164,7 +164,7 @@ async def finalize_run(
                     },
                 )
 
-            # 8. Persist spatial memory + hypotheses
+            # 8. Persist spatial memory + hypotheses + state-action transitions
             try:
                 events_result = await db.execute(
                     select(GameEvent).where(GameEvent.run_id == run_id)
@@ -189,6 +189,21 @@ async def finalize_run(
                     map_name=map_name,
                     in_run_hypotheses=hyp_list,
                     agent_quality_flags=agent_quality_flags,
+                )
+                from app.models import AgentDecision
+
+                decisions_result = await db.execute(
+                    select(AgentDecision).where(
+                        AgentDecision.run_id == run_id,
+                        AgentDecision.status == "complete",
+                    )
+                )
+                run_decisions = list(decisions_result.scalars().all())
+                await memory_svc.persist_state_action_transitions(
+                    run_id=run_id,
+                    wad_file_id=wad_file_id,
+                    map_name=map_name,
+                    decisions=run_decisions,
                 )
                 await db.commit()
             except Exception as exc:

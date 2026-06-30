@@ -139,3 +139,58 @@ def behavior_profiles_route() -> dict:
         }
         for name, p in PROFILES.items()
     }
+
+
+class AblationApplyPayload(BaseModel):
+    config_name: str
+
+
+@router.get("/settings/ablation/configs")
+async def list_ablation_configs() -> dict:
+    from app.services.ablation_study import list_ablation_configs, get_ablation_config
+
+    names = list_ablation_configs()
+    configs = {}
+    for name in names:
+        cfg = get_ablation_config(name)
+        if cfg:
+            configs[name] = {
+                "name": cfg.name,
+                "description": cfg.description,
+                "disabled_components": list(cfg.disabled_components),
+            }
+    return {"configs": configs}
+
+
+@router.post("/settings/ablation/apply")
+async def apply_ablation_config(
+    payload: AblationApplyPayload,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    from app.services.ablation_study import get_ablation_config, get_runtime_overrides
+
+    config = get_ablation_config(payload.config_name)
+    if config is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Config '{payload.config_name}' not found")
+
+    overrides = get_runtime_overrides(config)
+    await ConfigRepository(db).set_many(overrides)
+    await db.commit()
+    return {"status": "applied", "config": payload.config_name, "overrides": overrides}
+
+
+@router.post("/settings/ablation/reset")
+async def reset_ablation_config(
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    keys = [
+        "guard_enabled",
+        "cross_run_memory_enabled",
+        "deterministic_fallback_enabled",
+        "execution_time_monitor_enabled",
+    ]
+    for key in keys:
+        await ConfigRepository(db).delete(key)
+    await db.commit()
+    return {"status": "reset", "cleared": keys}

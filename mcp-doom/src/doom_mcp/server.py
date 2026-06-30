@@ -398,7 +398,7 @@ def explore(
 
 @mcp.tool
 def finish(
-    summary: str,
+    summary: str = "",
     outcome: str = "completed",
 ):
     """End the run voluntarily. Use when testing is complete.

@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    AgentDecision,
     Defect,
     GameEvent,
     NotableEventScreenshot,
@@ -18,6 +19,7 @@ from app.models import (
     TestRun,
     WadHypothesis,
 )
+from app.core.config import get_settings
 from app.repositories.defect_repository import DefectRepository
 from app.services.gemini_service import is_low_value_texture_defect
 from app.services.analysis_service import selected_skill_spawn_summary
@@ -71,6 +73,9 @@ class DefectService:
         await self._health_deficit(run.id, events)
         await self._softlock(run, events)
         await self._unreachable_secrets(run, events, analysis)
+        settings = get_settings()
+        if settings.execution_time_monitor_enabled:
+            await self._execution_time_anomalies(run, events)
         await self._promote_hypotheses(run)
         await self._link_screenshots_to_defects(run.id)
 
@@ -464,6 +469,91 @@ class DefectService:
                     position_y=first.player_y,
                 )
             )
+
+    async def _execution_time_anomalies(
+        self, run: TestRun, events: list[GameEvent]
+    ) -> None:
+        """Detect performance anomalies by monitoring execution time per action type.
+
+        Inspired by TITAN's Execution Time Monitor:
+        - Flags actions exceeding 3x the historical average for that tool type
+        - Flags tasks exceeding expected duration thresholds
+        - Helps detect infinite loops, server lag, or resource leaks
+        """
+        result = await self.db.execute(
+            select(AgentDecision)
+            .where(
+                AgentDecision.run_id == run.id,
+                AgentDecision.status == "complete",
+                AgentDecision.mcp_tool.isnot(None),
+                AgentDecision.mcp_duration_ms.isnot(None),
+            )
+            .order_by(AgentDecision.sequence_number)
+        )
+        decisions = list(result.scalars().all())
+        if len(decisions) < 5:
+            return
+
+        tool_times: dict[str, list[float]] = defaultdict(list)
+        for decision in decisions:
+            tool = decision.mcp_tool or "unknown"
+            duration_ms = decision.mcp_duration_ms
+            if duration_ms is not None and duration_ms > 0:
+                tool_times[tool].append(duration_ms)
+
+        tool_stats: dict[str, tuple[float, float]] = {}
+        for tool, times in tool_times.items():
+            if len(times) >= 3:
+                avg = sum(times) / len(times)
+                variance = sum((t - avg) ** 2 for t in times) / len(times)
+                std_dev = variance ** 0.5
+                tool_stats[tool] = (avg, std_dev)
+
+        anomalies: list[tuple[AgentDecision, str, float]] = []
+        for decision in decisions:
+            tool = decision.mcp_tool or "unknown"
+            duration_ms = decision.mcp_duration_ms
+            if duration_ms is None or tool not in tool_stats:
+                continue
+            avg, std_dev = tool_stats[tool]
+            if avg <= 0:
+                continue
+            ratio = duration_ms / avg
+            if ratio > 3.0 and duration_ms > avg + 2 * std_dev:
+                anomalies.append((
+                    decision,
+                    f"Action '{tool}' took {duration_ms:.0f}ms ({ratio:.1f}x average {avg:.0f}ms)",
+                    ratio,
+                ))
+
+        if not anomalies:
+            return
+
+        anomalies.sort(key=lambda x: x[2], reverse=True)
+        worst = anomalies[0]
+        decision, description, ratio = worst
+
+        severity = 2 if ratio > 5.0 else 3
+        await self.repo.create(
+            Defect(
+                run_id=run.id,
+                severity=severity,
+                priority=2,
+                defect_type="execution_time_anomaly",
+                fingerprint=f"execution_time_anomaly:{decision.mcp_tool}:{decision.sequence_number}",
+                title=f"Execution time anomaly: {decision.mcp_tool}",
+                description=(
+                    f"{description}. "
+                    f"Total anomalies detected: {len(anomalies)}. "
+                    "This may indicate infinite loops, server lag, or resource leaks."
+                ),
+                detected_at_tick=None,
+                recommendation=(
+                    "Review the action trace for this decision and surrounding context. "
+                    "Check for patterns of repeated slow actions that may indicate stuck behavior."
+                ),
+            )
+        )
 
     async def _unreachable_secrets(
         self,

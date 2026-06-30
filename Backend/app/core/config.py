@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     default_agent_behavior: str = "thorough"
     cross_run_memory_enabled: bool = False
     guard_enabled: bool = True
+    deterministic_fallback_enabled: bool = True
+    execution_time_monitor_enabled: bool = True
     guard_consecutive_get_state_threshold: int = 2
     guard_position_stuck_threshold: int = 2
     guard_diversity_threshold: int = 3
